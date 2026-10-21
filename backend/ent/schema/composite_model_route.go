@@ -72,6 +72,9 @@ func (CompositeModelRoute) Fields() []ent.Field {
 			Optional().
 			Nillable().
 			SchemaType(map[string]string{dialect.Postgres: "text"}),
+		field.JSON("targets", []domain.CompositeRouteTarget{}).
+			Optional().
+			Comment("Ordered fallback targets; empty means use the legacy single target fields."),
 	}
 }
 

@@ -3976,12 +3976,20 @@
                       </div>
                     </td>
                     <td class="px-3 py-2">
-                      <div class="flex items-center gap-1.5 text-gray-900 dark:text-white">
-                        <PlatformIcon :platform="route.target_platform" size="xs" />
-                        <span>{{ formatCompositePlatform(route.target_platform) }}</span>
-                      </div>
-                      <div class="mt-1 break-all text-xs text-gray-500 dark:text-gray-400">
-                        {{ route.upstream_model || route.public_model }}
+                      <div class="space-y-1.5">
+                        <div
+                          v-for="target in compositeRouteTargets(route)"
+                          :key="`${target.priority}-${target.target_platform}-${target.upstream_model}`"
+                          class="flex items-center gap-1.5 text-gray-900 dark:text-white"
+                        >
+                          <span class="w-7 shrink-0 text-[11px] text-gray-400">{{ target.priority }}</span>
+                          <PlatformIcon :platform="target.target_platform" size="xs" />
+                          <span>{{ formatCompositePlatform(target.target_platform) }}</span>
+                          <span class="text-xs text-gray-500 dark:text-gray-400">/</span>
+                          <span class="break-all text-xs text-gray-500 dark:text-gray-400">
+                            {{ target.upstream_model || route.public_model }}
+                          </span>
+                        </div>
                       </div>
                     </td>
                     <td class="px-3 py-2">
@@ -4111,6 +4119,74 @@
               <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
                 {{ t("admin.groups.compositeRoutes.upstreamModelHint") }}
               </p>
+            </div>
+
+            <div class="border-t border-gray-200 pt-3 dark:border-dark-600">
+              <div class="mb-2 flex items-center justify-between gap-3">
+                <div>
+                  <div class="text-sm font-medium text-gray-900 dark:text-white">
+                    {{ t("admin.groups.compositeRoutes.fallbackTargets") }}
+                  </div>
+                  <div class="text-xs text-gray-500 dark:text-gray-400">
+                    {{ t("admin.groups.compositeRoutes.fallbackTargetsHint") }}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  class="btn btn-secondary btn-sm"
+                  @click="addCompositeFallbackTarget"
+                >
+                  <Icon name="plus" size="sm" class="mr-1" />
+                  {{ t("admin.groups.compositeRoutes.addFallback") }}
+                </button>
+              </div>
+
+              <div
+                v-if="compositeRouteForm.fallback_targets.length === 0"
+                class="py-2 text-xs text-gray-500 dark:text-gray-400"
+              >
+                {{ t("admin.groups.compositeRoutes.noFallbackTargets") }}
+              </div>
+
+              <div
+                v-for="(target, index) in compositeRouteForm.fallback_targets"
+                :key="index"
+                class="grid grid-cols-1 gap-2 border-t border-gray-100 py-2 first:border-t-0 dark:border-dark-700 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)_6rem_auto_auto]"
+              >
+                <Select
+                  v-model="target.target_platform"
+                  :options="compositeRoutePlatformOptions"
+                />
+                <input
+                  v-model.trim="target.upstream_model"
+                  type="text"
+                  class="input"
+                  :placeholder="t('admin.groups.compositeRoutes.upstreamModel')"
+                />
+                <input
+                  v-model.number="target.priority"
+                  type="number"
+                  min="1"
+                  step="1"
+                  class="input"
+                  :aria-label="t('admin.groups.compositeRoutes.priority')"
+                />
+                <label class="flex items-center justify-center" :title="t('admin.groups.compositeRoutes.enabled')">
+                  <input
+                    v-model="target.enabled"
+                    type="checkbox"
+                    class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-dark-600 dark:bg-dark-700"
+                  />
+                </label>
+                <button
+                  type="button"
+                  class="rounded p-2 text-gray-500 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20 dark:hover:text-red-400"
+                  :title="t('admin.groups.compositeRoutes.removeFallback')"
+                  @click="removeCompositeFallbackTarget(index)"
+                >
+                  <Icon name="trash" size="sm" />
+                </button>
+              </div>
             </div>
 
             <div>
@@ -4279,6 +4355,7 @@ import type {
   CompositeRouteDecision,
   CompositeRouteEndpoint,
   CompositeRouteMatchType,
+  CompositeRouteTarget,
   GroupI18n,
   GroupPlatform,
   SubscriptionType,
@@ -4857,6 +4934,7 @@ type CompositeRouteFormState = {
   priority: number;
   enabled: boolean;
   notes: string;
+  fallback_targets: CompositeRouteTarget[];
 };
 
 const showCompositeRoutesModal = ref(false);
@@ -4878,6 +4956,7 @@ const compositeRouteForm = reactive<CompositeRouteFormState>({
   priority: 100,
   enabled: true,
   notes: "",
+  fallback_targets: [],
 });
 const createMessagesDispatchDefaults = createDefaultMessagesDispatchFormState();
 const editMessagesDispatchDefaults = createDefaultMessagesDispatchFormState();
@@ -6488,6 +6567,7 @@ const resetCompositeRouteForm = () => {
   compositeRouteForm.priority = 100;
   compositeRouteForm.enabled = true;
   compositeRouteForm.notes = "";
+  compositeRouteForm.fallback_targets = [];
 };
 
 const toCompositeRouteInput = (): CompositeModelRouteInput => ({
@@ -6499,7 +6579,51 @@ const toCompositeRouteInput = (): CompositeModelRouteInput => ({
   priority: Number(compositeRouteForm.priority) || 100,
   enabled: compositeRouteForm.enabled,
   notes: compositeRouteForm.notes.trim(),
+  targets: [
+    {
+      target_platform: compositeRouteForm.target_platform,
+      upstream_model: compositeRouteForm.upstream_model.trim(),
+      priority: Number(compositeRouteForm.priority) || 100,
+      enabled: compositeRouteForm.enabled,
+      notes: compositeRouteForm.notes.trim(),
+    },
+    ...compositeRouteForm.fallback_targets.map((target, index) => ({
+      ...target,
+      upstream_model: target.upstream_model.trim(),
+      priority: Number(target.priority) || (index + 2) * 100,
+      notes: target.notes?.trim() || "",
+    })),
+  ],
 });
+
+const addCompositeFallbackTarget = () => {
+  const lastPriority =
+    compositeRouteForm.fallback_targets.at(-1)?.priority ||
+    compositeRouteForm.priority ||
+    100;
+  compositeRouteForm.fallback_targets.push({
+    target_platform: "openai",
+    upstream_model: "",
+    priority: lastPriority + 100,
+    enabled: true,
+    notes: "",
+  });
+};
+
+const removeCompositeFallbackTarget = (index: number) => {
+  compositeRouteForm.fallback_targets.splice(index, 1);
+};
+
+const compositeRouteTargets = (route: CompositeModelRoute): CompositeRouteTarget[] =>
+  route.targets?.length
+    ? route.targets
+    : [{
+        target_platform: route.target_platform,
+        upstream_model: route.upstream_model,
+        priority: route.priority,
+        enabled: route.enabled,
+        notes: route.notes,
+      }];
 
 const loadCompositeRoutes = async () => {
   if (!compositeRoutesGroup.value) return;
@@ -6543,15 +6667,18 @@ const closeCompositeRoutesModal = () => {
 };
 
 const editCompositeRoute = (route: CompositeModelRoute) => {
+  const targets = compositeRouteTargets(route);
+  const primary = targets[0];
   compositeRouteEditingId.value = route.id;
   compositeRouteForm.public_model = route.public_model;
   compositeRouteForm.match_type = route.match_type;
-  compositeRouteForm.target_platform = route.target_platform;
-  compositeRouteForm.upstream_model = route.upstream_model;
+  compositeRouteForm.target_platform = primary.target_platform;
+  compositeRouteForm.upstream_model = primary.upstream_model;
   compositeRouteForm.endpoint = route.endpoint;
-  compositeRouteForm.priority = route.priority || 100;
+  compositeRouteForm.priority = primary.priority || 100;
   compositeRouteForm.enabled = route.enabled;
   compositeRouteForm.notes = route.notes || "";
+  compositeRouteForm.fallback_targets = targets.slice(1).map((target) => ({ ...target }));
 };
 
 const saveCompositeRoute = async () => {

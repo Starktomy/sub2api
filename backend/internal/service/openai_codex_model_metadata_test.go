@@ -518,6 +518,47 @@ func TestBuildCodexModelsManifestForGroupIntersectsSyncedAccountMetadata(t *test
 	require.EqualValues(t, 128_000, models[0]["context_window"])
 }
 
+func TestBuildCodexModelsManifestForGroupPreservesOfficialIdentityWhenPeerMetadataIsMissing(t *testing.T) {
+	t.Parallel()
+
+	const groupID int64 = 748
+	reasoning := true
+	complete := Account{
+		ID: 41, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"base_url":      "https://provider.example/v1",
+			"model_mapping": map[string]any{"shared-model": "shared-model"},
+		},
+		Extra: map[string]any{UpstreamModelMetadataExtraKey: UpstreamModelMetadataSnapshot{Models: map[string]UpstreamModelMetadata{
+			"shared-model": {
+				ID: "shared-model", DisplayName: "Official Shared Model", Description: "Official upstream description.",
+				Reasoning: &reasoning, SupportedReasoningLevels: []string{"low", "high"},
+				InputModalities: []string{"text", "image"}, ContextWindow: 256_000,
+			},
+		}}},
+	}
+	incomplete := Account{
+		ID: 42, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"base_url":      "https://provider.example/v1",
+			"model_mapping": map[string]any{"shared-model": "shared-model"},
+		},
+	}
+	svc := &GatewayService{accountRepo: codexModelsVisibilityAccountRepo{byGroup: map[int64][]Account{
+		groupID: {complete, incomplete},
+	}}}
+
+	body, err := svc.BuildCodexModelsManifestForGroup(
+		context.Background(), &Group{ID: groupID, Platform: PlatformOpenAI}, "", []string{"shared-model"},
+	)
+	require.NoError(t, err)
+	models := decodeCodexManifestModels(t, body)
+	require.Len(t, models, 1)
+	require.Equal(t, "Official Shared Model", models[0]["display_name"])
+	require.Equal(t, "Official upstream description.", models[0]["description"])
+	require.Equal(t, []string{"none"}, effortsFromManifestModel(t, models[0]), "capabilities still fail closed")
+}
+
 // Scenario: the same public alias may target different models on one platform when complete snapshots can be intersected.
 func TestBuildCodexModelsManifestForGroupIntersectsDifferentMappedTargetsWithoutLeakingAlias(t *testing.T) {
 	t.Parallel()

@@ -36,9 +36,13 @@ func WithCompositeRouteDecision(ctx context.Context, decision CompositeRouteDeci
 	if ctx == nil || !decision.Matched {
 		return ctx
 	}
-	ctx = WithResolvedTargetPlatform(ctx, decision.TargetPlatform)
-	if model := strings.TrimSpace(decision.UpstreamModel); model != "" {
-		ctx = context.WithValue(ctx, ctxkey.ResolvedUpstreamModel, model)
+	if len(decision.Targets) == 0 {
+		decision.Targets = []CompositeRouteTarget{{
+			TargetPlatform: strings.TrimSpace(decision.TargetPlatform),
+			UpstreamModel:  strings.TrimSpace(decision.UpstreamModel),
+			Priority:       100,
+			Enabled:        true,
+		}}
 	}
 	if model := strings.TrimSpace(decision.PublicModel); model != "" {
 		ctx = context.WithValue(ctx, ctxkey.RequestedPublicModel, model)
@@ -46,7 +50,38 @@ func WithCompositeRouteDecision(ctx context.Context, decision CompositeRouteDeci
 	if source := strings.TrimSpace(decision.Source); source != "" {
 		ctx = context.WithValue(ctx, ctxkey.CompositeRouteSource, source)
 	}
+	return WithCompositeRouteTarget(ctx, decision, 0)
+}
+
+// WithCompositeRouteTarget stores the full route decision and selects one
+// target for the current upstream attempt. targetIndex is zero based over
+// decision.Targets; when Targets is empty, the decision itself is the target.
+func WithCompositeRouteTarget(ctx context.Context, decision CompositeRouteDecision, targetIndex int) context.Context {
+	if ctx == nil || !decision.Matched {
+		return ctx
+	}
+	if targetIndex < 0 || targetIndex >= len(decision.Targets) {
+		return ctx
+	}
+	target := decision.Targets[targetIndex]
+	attempt := decision
+	attempt.TargetPlatform = strings.TrimSpace(target.TargetPlatform)
+	attempt.UpstreamModel = strings.TrimSpace(target.UpstreamModel)
+	if attempt.TargetPlatform == "" || attempt.UpstreamModel == "" {
+		return ctx
+	}
+	ctx = context.WithValue(ctx, ctxkey.CompositeRouteDecision, attempt)
+	ctx = WithResolvedTargetPlatform(ctx, attempt.TargetPlatform)
+	ctx = context.WithValue(ctx, ctxkey.ResolvedUpstreamModel, attempt.UpstreamModel)
 	return ctx
+}
+
+func CompositeRouteDecisionFromContext(ctx context.Context) (CompositeRouteDecision, bool) {
+	if ctx == nil {
+		return CompositeRouteDecision{}, false
+	}
+	decision, ok := ctx.Value(ctxkey.CompositeRouteDecision).(CompositeRouteDecision)
+	return decision, ok && decision.Matched
 }
 
 func ResolvedUpstreamModelFromContext(ctx context.Context) (string, bool) {
@@ -187,7 +222,7 @@ func (s *GatewayService) resolveCompositeRouteDecision(ctx context.Context, grou
 		if resolvedSource, sourceOK := CompositeRouteSourceFromContext(ctx); sourceOK {
 			source = resolvedSource
 		}
-		return CompositeRouteDecision{
+		decision := CompositeRouteDecision{
 			Matched:        true,
 			Source:         source,
 			GroupID:        group.ID,
@@ -195,7 +230,14 @@ func (s *GatewayService) resolveCompositeRouteDecision(ctx context.Context, grou
 			TargetPlatform: platform,
 			UpstreamModel:  upstreamModel,
 			Endpoint:       normalizeCompositeRouteEndpoint(endpoint),
-		}, true, nil
+		}
+		if stored, storedOK := CompositeRouteDecisionFromContext(ctx); storedOK {
+			decision.Source = stored.Source
+			decision.PublicModel = stored.PublicModel
+			decision.Targets = stored.Targets
+			decision.Route = stored.Route
+		}
+		return decision, true, nil
 	}
 	decision, err := s.compositeResolver.Resolve(ctx, group.ID, requestedModel, endpoint)
 	if err != nil {

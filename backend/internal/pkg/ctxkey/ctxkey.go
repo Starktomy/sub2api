@@ -20,6 +20,10 @@ const (
 	// CompositeRouteSource 标识 composite 解析结果来自显式路由还是内置模型探测。
 	CompositeRouteSource Key = "ctx_composite_route_source"
 
+	// CompositeRouteDecision stores the resolved multi-target composite route for
+	// retry orchestration after an upstream target fails.
+	CompositeRouteDecision Key = "ctx_composite_route_decision"
+
 	// RequestID 为服务端生成/透传的请求 ID。
 	RequestID Key = "ctx_request_id"
 

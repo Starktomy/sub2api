@@ -287,6 +287,62 @@ func openAICompatibleRequestPlatform(ctx context.Context, apiKey *service.APIKey
 	return service.PlatformOpenAI
 }
 
+func compositeTargetFailoverEligible(failoverErr *service.UpstreamFailoverError) bool {
+	if failoverErr == nil {
+		return false
+	}
+	if failoverErr.Scope == service.GatewayFailureScopeRequest &&
+		failoverErr.StatusCode != http.StatusRequestTimeout &&
+		failoverErr.StatusCode != http.StatusTooManyRequests {
+		return false
+	}
+	switch failoverErr.StatusCode {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return failoverErr.Stage == service.GatewayFailureStageAccountAuth
+	case http.StatusRequestTimeout, http.StatusTooEarly, http.StatusTooManyRequests:
+		return true
+	default:
+		return failoverErr.StatusCode >= http.StatusInternalServerError
+	}
+}
+
+// prepareNextOpenAICompositeTarget advances a Composite route chain to the
+// next target that can run on the OpenAI-compatible gateway. The request body
+// is re-derived from the canonical body for every target so a fallback never
+// inherits the primary target's upstream model name.
+func (h *OpenAIGatewayHandler) prepareNextOpenAICompositeTarget(
+	c *gin.Context,
+	apiKey *service.APIKey,
+	body []byte,
+	startIndex int,
+) (forwardModel string, forwardBody []byte, platform string, mapping service.ChannelMappingResult, resolvedTargetIndex int, ok bool) {
+	if c == nil || c.Request == nil || apiKey == nil || apiKey.Group == nil {
+		return "", nil, "", mapping, -1, false
+	}
+	decision, found := service.CompositeRouteDecisionFromContext(c.Request.Context())
+	if !found || len(decision.Targets) == 0 {
+		return "", nil, "", mapping, -1, false
+	}
+	for targetIndex := startIndex; targetIndex < len(decision.Targets); targetIndex++ {
+		target := decision.Targets[targetIndex]
+		if !target.Enabled || !domain.UsesOpenAIGateway(target.TargetPlatform) {
+			continue
+		}
+		ctx := service.WithCompositeRouteTarget(c.Request.Context(), decision, targetIndex)
+		if ctx == c.Request.Context() {
+			continue
+		}
+		c.Request = c.Request.WithContext(ctx)
+		targetBody := h.gatewayService.ReplaceModelInBody(body, target.UpstreamModel)
+		mapping, _ = h.gatewayService.ResolveChannelMappingAndRestrict(ctx, apiKey.GroupID, target.UpstreamModel)
+		targetBody = openAIModelMappedBody(targetBody, mapping.Mapped, mapping.MappedModel, h.gatewayService.ReplaceModelInBody)
+		forwardModel = openAIChannelForwardModel(mapping, target.UpstreamModel)
+		platform = openAICompatibleRequestPlatform(ctx, apiKey)
+		return forwardModel, targetBody, platform, mapping, targetIndex, true
+	}
+	return "", nil, "", mapping, -1, false
+}
+
 func openAIResponsesRequiredCapability(imageIntent bool, platform string) service.OpenAIEndpointCapability {
 	if imageIntent && platform == service.PlatformOpenAI {
 		return service.OpenAIEndpointCapabilityResponses
@@ -639,6 +695,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	))
 	requireCompact := legacyCompact
 
+	compositeTargetIndex := 0
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
 	firstOutputTimeoutSwitchCount := 0
@@ -656,6 +713,47 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	// 该判断已排除 Codex 被动 image_gen namespace，避免 CC-only 账号被误过滤（#4476）。
 	needsResponses := nativeV2 || legacyCompact
 	requiredCapability := openAIResponsesRequiredCapabilityForRequest(imageIntent, needsResponses, requestPlatform)
+	advanceCompositeTarget := func() bool {
+		// Response continuation IDs are provider/account state. Moving the same
+		// continuation to another provider would silently corrupt the thread.
+		if previousResponseID != "" {
+			return false
+		}
+		nextModel, nextBody, nextPlatform, nextMapping, nextTargetIndex, advanced := h.prepareNextOpenAICompositeTarget(
+			c, apiKey, body, compositeTargetIndex+1,
+		)
+		if !advanced {
+			return false
+		}
+		compositeTargetIndex = nextTargetIndex
+		forwardModel = nextModel
+		forwardBody = nextBody
+		requestPlatform = nextPlatform
+		channelMapping = nextMapping
+		requiredCapability = openAIResponsesRequiredCapabilityForRequest(imageIntent, needsResponses, requestPlatform)
+		c.Request = c.Request.WithContext(service.WithOpenAIForwardModel(c.Request.Context(), forwardModel, legacyCompact))
+		seedOpenAIForwardImageIntentHint(c, channelMapping.Mapped, imageIntent)
+		failedAccountIDs = make(map[int64]struct{})
+		sameAccountRetryCount = make(map[int64]int)
+		switchCount = 0
+		firstOutputTimeoutSwitchCount = 0
+		profitVetoCount = 0
+		lastFailoverErr = nil
+		oauth429FailoverState = service.OpenAIOAuth429FailoverState{}
+		passthroughFailoverState = openAIPassthroughFailoverState{}
+		reqLog.Warn("openai.composite_target_failover",
+			zap.Int("target_index", compositeTargetIndex),
+			zap.String("target_platform", requestPlatform),
+			zap.String("upstream_model", forwardModel),
+		)
+		return true
+	}
+	advanceCompositeTargetForError := func(failoverErr *service.UpstreamFailoverError) bool {
+		if !compositeTargetFailoverEligible(failoverErr) {
+			return false
+		}
+		return advanceCompositeTarget()
+	}
 
 	// 分组利润控制：请求级装配定价上下文——pricingAt 固定本请求的
 	// D 与计费高峰因子，选号、槽位终检与全部 failover 重入共用同一门与阈值。
@@ -692,6 +790,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				reqLog.Info("openai.account_select_aborted_client_disconnected", zap.Error(err))
 				return
 			}
+			if advanceCompositeTarget() {
+				continue
+			}
 			reqLog.Warn("openai.account_select_failed",
 				zap.Error(openAICompatibleSelectionErrorForLog(err, requestPlatform)),
 				zap.Int("excluded_account_count", len(failedAccountIDs)),
@@ -718,6 +819,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			return
 		}
 		if selection == nil || selection.Account == nil {
+			if advanceCompositeTarget() {
+				continue
+			}
 			cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, reqModel, reqModel, requestPlatform)
 			if !cls.ModelNotFound {
 				markOpsRoutingCapacityLimited(c)
@@ -905,10 +1009,16 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, forwardModel, requireCompact, nil), false, nil, err)
 					}
 					if !failoverErr.ShouldRetryNextAccount() {
+						if advanceCompositeTargetForError(failoverErr) {
+							continue
+						}
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
 					if openAIFirstOutputFailoverExhausted(failoverErr, &firstOutputTimeoutSwitchCount) {
+						if advanceCompositeTargetForError(failoverErr) {
+							continue
+						}
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
@@ -937,6 +1047,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					failedAccountIDs[account.ID] = struct{}{}
 					lastFailoverErr = failoverErr
 					if switchCount >= maxAccountSwitches {
+						if advanceCompositeTargetForError(failoverErr) {
+							continue
+						}
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}

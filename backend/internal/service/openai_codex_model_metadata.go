@@ -230,6 +230,8 @@ func groupCodexModelMetadata(
 	if missingMetadata {
 		metadata = codexModelMetadataOverride{UpstreamModelMetadata: UpstreamModelMetadata{
 			CodexToolCapabilities: metadata.CodexToolCapabilities,
+			DisplayName:           metadata.DisplayName,
+			Description:           metadata.Description,
 		}}
 	}
 	if publicAlias {

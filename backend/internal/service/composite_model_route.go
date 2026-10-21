@@ -2,9 +2,11 @@ package service
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 )
 
@@ -41,6 +43,8 @@ type CompositeModelOwnership struct {
 
 type CompositeModelOwnershipResolver func(context.Context, int64, string) (CompositeModelOwnership, error)
 
+type CompositeRouteTarget = domain.CompositeRouteTarget
+
 var (
 	ErrCompositeRouteNotFound = infraerrors.NotFound("COMPOSITE_ROUTE_NOT_FOUND", "composite route not found")
 	ErrCompositeRouteExists   = infraerrors.Conflict("COMPOSITE_ROUTE_EXISTS", "composite route already exists")
@@ -49,18 +53,19 @@ var (
 // CompositeModelRoute maps one public model identifier in a composite group to
 // the concrete provider/model that should handle the request.
 type CompositeModelRoute struct {
-	ID             int64     `json:"id"`
-	GroupID        int64     `json:"group_id"`
-	PublicModel    string    `json:"public_model"`
-	MatchType      string    `json:"match_type"`
-	TargetPlatform string    `json:"target_platform"`
-	UpstreamModel  string    `json:"upstream_model"`
-	Endpoint       string    `json:"endpoint"`
-	Priority       int       `json:"priority"`
-	Enabled        bool      `json:"enabled"`
-	Notes          string    `json:"notes"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID             int64                  `json:"id"`
+	GroupID        int64                  `json:"group_id"`
+	PublicModel    string                 `json:"public_model"`
+	MatchType      string                 `json:"match_type"`
+	TargetPlatform string                 `json:"target_platform"`
+	UpstreamModel  string                 `json:"upstream_model"`
+	Endpoint       string                 `json:"endpoint"`
+	Priority       int                    `json:"priority"`
+	Enabled        bool                   `json:"enabled"`
+	Notes          string                 `json:"notes"`
+	Targets        []CompositeRouteTarget `json:"targets,omitempty"`
+	CreatedAt      time.Time              `json:"created_at"`
+	UpdatedAt      time.Time              `json:"updated_at"`
 }
 
 type CompositeRoutePreviewRequest struct {
@@ -69,15 +74,16 @@ type CompositeRoutePreviewRequest struct {
 }
 
 type CompositeRouteDecision struct {
-	Matched        bool                 `json:"matched"`
-	Source         string               `json:"source"`
-	GroupID        int64                `json:"group_id"`
-	PublicModel    string               `json:"public_model"`
-	TargetPlatform string               `json:"target_platform"`
-	UpstreamModel  string               `json:"upstream_model"`
-	Endpoint       string               `json:"endpoint"`
-	Route          *CompositeModelRoute `json:"route,omitempty"`
-	Reason         string               `json:"reason,omitempty"`
+	Matched        bool                   `json:"matched"`
+	Source         string                 `json:"source"`
+	GroupID        int64                  `json:"group_id"`
+	PublicModel    string                 `json:"public_model"`
+	TargetPlatform string                 `json:"target_platform"`
+	UpstreamModel  string                 `json:"upstream_model"`
+	Endpoint       string                 `json:"endpoint"`
+	Targets        []CompositeRouteTarget `json:"targets,omitempty"`
+	Route          *CompositeModelRoute   `json:"route,omitempty"`
+	Reason         string                 `json:"reason,omitempty"`
 }
 
 type CompositeRouteInput struct {
@@ -89,6 +95,7 @@ type CompositeRouteInput struct {
 	Priority       int
 	Enabled        bool
 	Notes          string
+	Targets        []CompositeRouteTarget
 }
 
 type CompositeModelRouteRepository interface {
@@ -143,5 +150,75 @@ func normalizeCompositeRouteInput(input CompositeRouteInput) CompositeRouteInput
 		input.UpstreamModel = input.PublicModel
 	}
 	input.Notes = strings.TrimSpace(input.Notes)
+	if len(input.Targets) == 0 {
+		input.Targets = []CompositeRouteTarget{{
+			TargetPlatform: input.TargetPlatform,
+			UpstreamModel:  input.UpstreamModel,
+			Priority:       input.Priority,
+			Enabled:        input.Enabled,
+			Notes:          input.Notes,
+		}}
+	} else {
+		for i := range input.Targets {
+			target := &input.Targets[i]
+			target.TargetPlatform = strings.TrimSpace(target.TargetPlatform)
+			target.UpstreamModel = strings.TrimSpace(target.UpstreamModel)
+			target.Notes = strings.TrimSpace(target.Notes)
+			if target.Priority == 0 {
+				target.Priority = (i + 1) * 100
+			}
+			if target.UpstreamModel == "" && input.MatchType == CompositeRouteMatchExact {
+				target.UpstreamModel = input.PublicModel
+			}
+		}
+		sort.SliceStable(input.Targets, func(i, j int) bool {
+			if input.Targets[i].Priority != input.Targets[j].Priority {
+				return input.Targets[i].Priority < input.Targets[j].Priority
+			}
+			return false
+		})
+		first := input.Targets[0]
+		for _, target := range input.Targets {
+			if target.Enabled {
+				first = target
+				break
+			}
+		}
+		input.TargetPlatform = first.TargetPlatform
+		input.UpstreamModel = first.UpstreamModel
+		input.Priority = first.Priority
+	}
 	return input
+}
+
+// ResolvedCompositeRouteTargets returns enabled targets in retry order. Legacy
+// routes without a targets array are represented as a one-element chain.
+func (r CompositeModelRoute) ResolvedCompositeRouteTargets() []CompositeRouteTarget {
+	targets := r.Targets
+	if len(targets) == 0 {
+		// Repository listing already applies the route-level enabled filter.
+		// Preserve the legacy resolver behavior for callers that construct
+		// routes directly without setting Enabled.
+		return []CompositeRouteTarget{{
+			TargetPlatform: r.TargetPlatform,
+			UpstreamModel:  r.UpstreamModel,
+			Priority:       r.Priority,
+			Enabled:        true,
+			Notes:          r.Notes,
+		}}
+	}
+	out := make([]CompositeRouteTarget, 0, len(targets))
+	for _, target := range targets {
+		if !target.Enabled {
+			continue
+		}
+		out = append(out, target)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Priority != out[j].Priority {
+			return out[i].Priority < out[j].Priority
+		}
+		return false
+	})
+	return out
 }

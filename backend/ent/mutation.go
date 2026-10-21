@@ -19722,6 +19722,8 @@ type CompositeModelRouteMutation struct {
 	addpriority     *int
 	enabled         *bool
 	notes           *string
+	targets         *[]domain.CompositeRouteTarget
+	appendtargets   []domain.CompositeRouteTarget
 	clearedFields   map[string]struct{}
 	group           *int64
 	clearedgroup    bool
@@ -20306,6 +20308,71 @@ func (m *CompositeModelRouteMutation) ResetNotes() {
 	delete(m.clearedFields, compositemodelroute.FieldNotes)
 }
 
+// SetTargets sets the "targets" field.
+func (m *CompositeModelRouteMutation) SetTargets(drt []domain.CompositeRouteTarget) {
+	m.targets = &drt
+	m.appendtargets = nil
+}
+
+// Targets returns the value of the "targets" field in the mutation.
+func (m *CompositeModelRouteMutation) Targets() (r []domain.CompositeRouteTarget, exists bool) {
+	v := m.targets
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldTargets returns the old "targets" field's value of the CompositeModelRoute entity.
+// If the CompositeModelRoute object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CompositeModelRouteMutation) OldTargets(ctx context.Context) (v []domain.CompositeRouteTarget, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldTargets is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldTargets requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldTargets: %w", err)
+	}
+	return oldValue.Targets, nil
+}
+
+// AppendTargets adds drt to the "targets" field.
+func (m *CompositeModelRouteMutation) AppendTargets(drt []domain.CompositeRouteTarget) {
+	m.appendtargets = append(m.appendtargets, drt...)
+}
+
+// AppendedTargets returns the list of values that were appended to the "targets" field in this mutation.
+func (m *CompositeModelRouteMutation) AppendedTargets() ([]domain.CompositeRouteTarget, bool) {
+	if len(m.appendtargets) == 0 {
+		return nil, false
+	}
+	return m.appendtargets, true
+}
+
+// ClearTargets clears the value of the "targets" field.
+func (m *CompositeModelRouteMutation) ClearTargets() {
+	m.targets = nil
+	m.appendtargets = nil
+	m.clearedFields[compositemodelroute.FieldTargets] = struct{}{}
+}
+
+// TargetsCleared returns if the "targets" field was cleared in this mutation.
+func (m *CompositeModelRouteMutation) TargetsCleared() bool {
+	_, ok := m.clearedFields[compositemodelroute.FieldTargets]
+	return ok
+}
+
+// ResetTargets resets all changes to the "targets" field.
+func (m *CompositeModelRouteMutation) ResetTargets() {
+	m.targets = nil
+	m.appendtargets = nil
+	delete(m.clearedFields, compositemodelroute.FieldTargets)
+}
+
 // ClearGroup clears the "group" edge to the Group entity.
 func (m *CompositeModelRouteMutation) ClearGroup() {
 	m.clearedgroup = true
@@ -20367,7 +20434,7 @@ func (m *CompositeModelRouteMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *CompositeModelRouteMutation) Fields() []string {
-	fields := make([]string, 0, 12)
+	fields := make([]string, 0, 13)
 	if m.created_at != nil {
 		fields = append(fields, compositemodelroute.FieldCreatedAt)
 	}
@@ -20404,6 +20471,9 @@ func (m *CompositeModelRouteMutation) Fields() []string {
 	if m.notes != nil {
 		fields = append(fields, compositemodelroute.FieldNotes)
 	}
+	if m.targets != nil {
+		fields = append(fields, compositemodelroute.FieldTargets)
+	}
 	return fields
 }
 
@@ -20436,6 +20506,8 @@ func (m *CompositeModelRouteMutation) Field(name string) (ent.Value, bool) {
 		return m.Enabled()
 	case compositemodelroute.FieldNotes:
 		return m.Notes()
+	case compositemodelroute.FieldTargets:
+		return m.Targets()
 	}
 	return nil, false
 }
@@ -20469,6 +20541,8 @@ func (m *CompositeModelRouteMutation) OldField(ctx context.Context, name string)
 		return m.OldEnabled(ctx)
 	case compositemodelroute.FieldNotes:
 		return m.OldNotes(ctx)
+	case compositemodelroute.FieldTargets:
+		return m.OldTargets(ctx)
 	}
 	return nil, fmt.Errorf("unknown CompositeModelRoute field %s", name)
 }
@@ -20562,6 +20636,13 @@ func (m *CompositeModelRouteMutation) SetField(name string, value ent.Value) err
 		}
 		m.SetNotes(v)
 		return nil
+	case compositemodelroute.FieldTargets:
+		v, ok := value.([]domain.CompositeRouteTarget)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetTargets(v)
+		return nil
 	}
 	return fmt.Errorf("unknown CompositeModelRoute field %s", name)
 }
@@ -20613,6 +20694,9 @@ func (m *CompositeModelRouteMutation) ClearedFields() []string {
 	if m.FieldCleared(compositemodelroute.FieldNotes) {
 		fields = append(fields, compositemodelroute.FieldNotes)
 	}
+	if m.FieldCleared(compositemodelroute.FieldTargets) {
+		fields = append(fields, compositemodelroute.FieldTargets)
+	}
 	return fields
 }
 
@@ -20632,6 +20716,9 @@ func (m *CompositeModelRouteMutation) ClearField(name string) error {
 		return nil
 	case compositemodelroute.FieldNotes:
 		m.ClearNotes()
+		return nil
+	case compositemodelroute.FieldTargets:
+		m.ClearTargets()
 		return nil
 	}
 	return fmt.Errorf("unknown CompositeModelRoute nullable field %s", name)
@@ -20676,6 +20763,9 @@ func (m *CompositeModelRouteMutation) ResetField(name string) error {
 		return nil
 	case compositemodelroute.FieldNotes:
 		m.ResetNotes()
+		return nil
+	case compositemodelroute.FieldTargets:
+		m.ResetTargets()
 		return nil
 	}
 	return fmt.Errorf("unknown CompositeModelRoute field %s", name)

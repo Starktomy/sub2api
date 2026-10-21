@@ -91,6 +91,85 @@ func TestCompositeRouteResolverCodexFilteringMatchesProductionPriority(t *testin
 	}
 }
 
+func TestCompositeRouteResolverReturnsOrderedEnabledTargetChain(t *testing.T) {
+	route := CompositeModelRoute{
+		ID:             9,
+		GroupID:        7,
+		PublicModel:    "deepseek-v4.1-flash",
+		MatchType:      CompositeRouteMatchExact,
+		TargetPlatform: PlatformOpenCodeGo,
+		UpstreamModel:  "deepseek-v4.1-flash",
+		Endpoint:       CompositeRouteEndpointResponses,
+		Priority:       200,
+		Enabled:        true,
+		Targets: []CompositeRouteTarget{
+			{TargetPlatform: PlatformDeepseek, UpstreamModel: "deepseek-flash", Priority: 200, Enabled: true},
+			{TargetPlatform: PlatformOpenCodeGo, UpstreamModel: "deepseek-v4.1-flash", Priority: 10, Enabled: true},
+			{TargetPlatform: PlatformZhipu, UpstreamModel: "glm-5.3-flash", Priority: 20, Enabled: false},
+		},
+	}
+	resolver := NewCompositeRouteResolver(compositeRouteRepoStub{routes: []CompositeModelRoute{route}})
+
+	decision, err := resolver.Resolve(context.Background(), 7, route.PublicModel, CompositeRouteEndpointResponses)
+	require.NoError(t, err)
+	require.True(t, decision.Matched)
+	require.Equal(t, PlatformOpenCodeGo, decision.TargetPlatform)
+	require.Equal(t, "deepseek-v4.1-flash", decision.UpstreamModel)
+	require.Equal(t, []CompositeRouteTarget{
+		{TargetPlatform: PlatformOpenCodeGo, UpstreamModel: "deepseek-v4.1-flash", Priority: 10, Enabled: true},
+		{TargetPlatform: PlatformDeepseek, UpstreamModel: "deepseek-flash", Priority: 200, Enabled: true},
+	}, decision.Targets)
+}
+
+func TestCompositeRouteResolverTreatsLegacyRouteAsSingleTarget(t *testing.T) {
+	route := CompositeModelRoute{
+		ID:             10,
+		GroupID:        7,
+		PublicModel:    "glm-5.3-flash",
+		MatchType:      CompositeRouteMatchExact,
+		TargetPlatform: PlatformZhipu,
+		UpstreamModel:  "glm-5.3-flash",
+		Endpoint:       CompositeRouteEndpointResponses,
+		Priority:       100,
+		Enabled:        true,
+	}
+	resolver := NewCompositeRouteResolver(compositeRouteRepoStub{routes: []CompositeModelRoute{route}})
+
+	decision, err := resolver.Resolve(context.Background(), 7, route.PublicModel, CompositeRouteEndpointResponses)
+	require.NoError(t, err)
+	require.True(t, decision.Matched)
+	require.Equal(t, []CompositeRouteTarget{{
+		TargetPlatform: PlatformZhipu,
+		UpstreamModel:  "glm-5.3-flash",
+		Priority:       100,
+		Enabled:        true,
+	}}, decision.Targets)
+}
+
+func TestCompositeRouteDecisionContextSelectsFallbackTarget(t *testing.T) {
+	decision := CompositeRouteDecision{
+		Matched:     true,
+		Source:      CompositeRouteSourceExplicit,
+		PublicModel: "deepseek-v4.1-flash",
+		Targets: []CompositeRouteTarget{
+			{TargetPlatform: PlatformOpenCodeGo, UpstreamModel: "deepseek-v4.1-flash", Priority: 10, Enabled: true},
+			{TargetPlatform: PlatformDeepseek, UpstreamModel: "deepseek-flash", Priority: 20, Enabled: true},
+		},
+	}
+	ctx := WithCompositeRouteDecision(context.Background(), decision)
+	ctx = WithCompositeRouteTarget(ctx, decision, 1)
+
+	platform, ok := ResolvedTargetPlatformFromContext(ctx)
+	require.True(t, ok)
+	require.Equal(t, PlatformDeepseek, platform)
+	model, ok := ResolvedUpstreamModelFromContext(ctx)
+	require.True(t, ok)
+	require.Equal(t, "deepseek-flash", model)
+	chain, ok := CompositeRouteDecisionFromContext(ctx)
+	require.True(t, ok)
+	require.Len(t, chain.Targets, 2)
+}
+
 func (s compositeRouteRepoStub) ListByGroup(ctx context.Context, groupID int64, includeDisabled bool) ([]CompositeModelRoute, error) {
 	routes := make([]CompositeModelRoute, 0, len(s.routes))
 	for _, route := range s.routes {

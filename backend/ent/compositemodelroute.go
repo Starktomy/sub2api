@@ -3,6 +3,7 @@
 package ent
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"entgo.io/ent/dialect/sql"
 	"github.com/Wei-Shaw/sub2api/ent/compositemodelroute"
 	"github.com/Wei-Shaw/sub2api/ent/group"
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 )
 
 // CompositeModelRoute is the model entity for the CompositeModelRoute schema.
@@ -42,6 +44,8 @@ type CompositeModelRoute struct {
 	Enabled bool `json:"enabled,omitempty"`
 	// Notes holds the value of the "notes" field.
 	Notes *string `json:"notes,omitempty"`
+	// Ordered fallback targets; empty means use the legacy single target fields.
+	Targets []domain.CompositeRouteTarget `json:"targets,omitempty"`
 	// Edges holds the relations/edges for other nodes in the graph.
 	// The values are being populated by the CompositeModelRouteQuery when eager-loading is set.
 	Edges        CompositeModelRouteEdges `json:"edges"`
@@ -73,6 +77,8 @@ func (*CompositeModelRoute) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
+		case compositemodelroute.FieldTargets:
+			values[i] = new([]byte)
 		case compositemodelroute.FieldEnabled:
 			values[i] = new(sql.NullBool)
 		case compositemodelroute.FieldID, compositemodelroute.FieldGroupID, compositemodelroute.FieldPriority:
@@ -176,6 +182,14 @@ func (_m *CompositeModelRoute) assignValues(columns []string, values []any) erro
 				_m.Notes = new(string)
 				*_m.Notes = value.String
 			}
+		case compositemodelroute.FieldTargets:
+			if value, ok := values[i].(*[]byte); !ok {
+				return fmt.Errorf("unexpected type %T for field targets", values[i])
+			} else if value != nil && len(*value) > 0 {
+				if err := json.Unmarshal(*value, &_m.Targets); err != nil {
+					return fmt.Errorf("unmarshal field targets: %w", err)
+				}
+			}
 		default:
 			_m.selectValues.Set(columns[i], values[i])
 		}
@@ -256,6 +270,9 @@ func (_m *CompositeModelRoute) String() string {
 		builder.WriteString("notes=")
 		builder.WriteString(*v)
 	}
+	builder.WriteString(", ")
+	builder.WriteString("targets=")
+	builder.WriteString(fmt.Sprintf("%v", _m.Targets))
 	builder.WriteByte(')')
 	return builder.String()
 }

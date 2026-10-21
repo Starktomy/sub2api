@@ -18,6 +18,7 @@ Composite groups can route to these concrete account platforms:
 - Zhipu GLM
 - DeepSeek
 - MiniMax
+- OpenCode Go
 
 The selected concrete platform is used for account selection, user platform
 quota checks, post-usage billing, ops error platform attribution, channel
@@ -46,6 +47,10 @@ Each route belongs to one composite group and contains:
 - `priority`: lower values win after match specificity.
 - `enabled`: disabled routes are ignored by runtime resolution but remain
   visible to admins.
+- `targets`: optional ordered fallback chain. Each target has
+  `target_platform`, `upstream_model`, `priority`, and `enabled`. Existing
+  routes without this field remain valid and are treated as one target using
+  the legacy top-level target fields.
 
 Resolution order is explicit route first, then built-in detection. When more
 than one explicit route matches, exact matches beat prefix matches,
@@ -56,6 +61,14 @@ For JSON-body endpoints, the gateway rewrites the request `model` field to the
 route's `upstream_model` before dispatch. For Gemini native paths such as
 `/v1beta/models/{model}:generateContent`, the gateway resolves `{model}` and
 the handler forwards the resolved upstream model.
+
+For OpenAI-compatible Responses and Chat Completions requests, enabled targets
+are attempted in ascending target priority. Failover is allowed for account
+authentication failures, `408`, `425`, `429`, and `5xx` responses while no
+semantic response content has been sent. Once a stream has emitted model output,
+the gateway returns the upstream error instead of replaying the request against
+another provider. Requests carrying `previous_response_id` are not moved across
+targets because continuation IDs are provider/account state.
 
 Codex Alpha Search and Live requests use the `responses` route domain. Live
 requests resolve the model from `session.model`, including multipart `session`

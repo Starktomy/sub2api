@@ -258,8 +258,17 @@ func compositeRouteFromInput(groupID int64, input CompositeRouteInput) (*Composi
 	if input.PublicModel == "" {
 		return nil, fmt.Errorf("public_model is required")
 	}
-	if !isConcreteRequestPlatform(input.TargetPlatform) {
-		return nil, fmt.Errorf("target_platform must be a concrete provider")
+	enabledTargets := 0
+	for i, target := range input.Targets {
+		if !isConcreteRequestPlatform(target.TargetPlatform) {
+			return nil, fmt.Errorf("targets[%d].target_platform must be a concrete provider", i)
+		}
+		if target.Enabled {
+			enabledTargets++
+		}
+	}
+	if input.Enabled && enabledTargets == 0 {
+		return nil, fmt.Errorf("enabled route requires at least one enabled target")
 	}
 	if input.Priority == 0 {
 		input.Priority = 100
@@ -274,6 +283,7 @@ func compositeRouteFromInput(groupID int64, input CompositeRouteInput) (*Composi
 		Priority:       input.Priority,
 		Enabled:        input.Enabled,
 		Notes:          input.Notes,
+		Targets:        input.Targets,
 	}, nil
 }
 

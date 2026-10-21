@@ -51,6 +51,7 @@ func (r *compositeModelRouteRepository) Create(ctx context.Context, route *servi
 		SetPriority(route.Priority).
 		SetEnabled(route.Enabled).
 		SetNotes(route.Notes).
+		SetTargets(route.Targets).
 		Save(ctx)
 	if err != nil {
 		return translatePersistenceError(err, nil, service.ErrCompositeRouteExists)
@@ -72,6 +73,7 @@ func (r *compositeModelRouteRepository) Update(ctx context.Context, route *servi
 		SetPriority(route.Priority).
 		SetEnabled(route.Enabled).
 		SetNotes(route.Notes).
+		SetTargets(route.Targets).
 		Save(ctx)
 	if err != nil {
 		return translatePersistenceError(err, service.ErrCompositeRouteNotFound, service.ErrCompositeRouteExists)
@@ -107,6 +109,7 @@ func compositeModelRouteEntityToService(row *dbent.CompositeModelRoute) *service
 		Priority:       row.Priority,
 		Enabled:        row.Enabled,
 		Notes:          derefString(row.Notes),
+		Targets:        row.Targets,
 		CreatedAt:      row.CreatedAt,
 		UpdatedAt:      row.UpdatedAt,
 	}

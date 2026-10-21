@@ -113,18 +113,28 @@ func (r *CompositeRouteResolver) Resolve(ctx context.Context, groupID int64, mod
 			return decision, fmt.Errorf("list composite routes: %w", err)
 		}
 		if route, ok := matchCompositeRoute(routes, model, endpoint); ok {
-			upstreamModel := strings.TrimSpace(route.UpstreamModel)
-			if upstreamModel == "" {
-				upstreamModel = model
+			targets := route.ResolvedCompositeRouteTargets()
+			for i := range targets {
+				targets[i].TargetPlatform = strings.TrimSpace(targets[i].TargetPlatform)
+				targets[i].UpstreamModel = strings.TrimSpace(targets[i].UpstreamModel)
+				if targets[i].UpstreamModel == "" {
+					targets[i].UpstreamModel = model
+				}
 			}
+			if len(targets) == 0 {
+				decision.Reason = "route has no enabled targets"
+				return decision, nil
+			}
+			first := targets[0]
 			return CompositeRouteDecision{
 				Matched:        true,
 				Source:         CompositeRouteSourceExplicit,
 				GroupID:        groupID,
 				PublicModel:    model,
-				TargetPlatform: route.TargetPlatform,
-				UpstreamModel:  upstreamModel,
+				TargetPlatform: first.TargetPlatform,
+				UpstreamModel:  first.UpstreamModel,
 				Endpoint:       endpoint,
+				Targets:        targets,
 				Route:          &route,
 			}, nil
 		}
@@ -160,6 +170,12 @@ func (r *CompositeRouteResolver) Resolve(ctx context.Context, groupID int64, mod
 				TargetPlatform: platform,
 				UpstreamModel:  model,
 				Endpoint:       endpoint,
+				Targets: []CompositeRouteTarget{{
+					TargetPlatform: platform,
+					UpstreamModel:  model,
+					Priority:       100,
+					Enabled:        true,
+				}},
 			}, nil
 		}
 	}
@@ -173,6 +189,12 @@ func (r *CompositeRouteResolver) Resolve(ctx context.Context, groupID int64, mod
 			TargetPlatform: platform,
 			UpstreamModel:  model,
 			Endpoint:       endpoint,
+			Targets: []CompositeRouteTarget{{
+				TargetPlatform: platform,
+				UpstreamModel:  model,
+				Priority:       100,
+				Enabled:        true,
+			}},
 		}, nil
 	}
 	decision.Reason = "no explicit route or built-in detector match"

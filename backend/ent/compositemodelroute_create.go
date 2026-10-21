@@ -13,6 +13,7 @@ import (
 	"entgo.io/ent/schema/field"
 	"github.com/Wei-Shaw/sub2api/ent/compositemodelroute"
 	"github.com/Wei-Shaw/sub2api/ent/group"
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 )
 
 // CompositeModelRouteCreate is the builder for creating a CompositeModelRoute entity.
@@ -172,6 +173,12 @@ func (_c *CompositeModelRouteCreate) SetNillableNotes(v *string) *CompositeModel
 	if v != nil {
 		_c.SetNotes(*v)
 	}
+	return _c
+}
+
+// SetTargets sets the "targets" field.
+func (_c *CompositeModelRouteCreate) SetTargets(v []domain.CompositeRouteTarget) *CompositeModelRouteCreate {
+	_c.mutation.SetTargets(v)
 	return _c
 }
 
@@ -388,6 +395,10 @@ func (_c *CompositeModelRouteCreate) createSpec() (*CompositeModelRoute, *sqlgra
 	if value, ok := _c.mutation.Notes(); ok {
 		_spec.SetField(compositemodelroute.FieldNotes, field.TypeString, value)
 		_node.Notes = &value
+	}
+	if value, ok := _c.mutation.Targets(); ok {
+		_spec.SetField(compositemodelroute.FieldTargets, field.TypeJSON, value)
+		_node.Targets = value
 	}
 	if nodes := _c.mutation.GroupIDs(); len(nodes) > 0 {
 		edge := &sqlgraph.EdgeSpec{
@@ -608,6 +619,24 @@ func (u *CompositeModelRouteUpsert) ClearNotes() *CompositeModelRouteUpsert {
 	return u
 }
 
+// SetTargets sets the "targets" field.
+func (u *CompositeModelRouteUpsert) SetTargets(v []domain.CompositeRouteTarget) *CompositeModelRouteUpsert {
+	u.Set(compositemodelroute.FieldTargets, v)
+	return u
+}
+
+// UpdateTargets sets the "targets" field to the value that was provided on create.
+func (u *CompositeModelRouteUpsert) UpdateTargets() *CompositeModelRouteUpsert {
+	u.SetExcluded(compositemodelroute.FieldTargets)
+	return u
+}
+
+// ClearTargets clears the value of the "targets" field.
+func (u *CompositeModelRouteUpsert) ClearTargets() *CompositeModelRouteUpsert {
+	u.SetNull(compositemodelroute.FieldTargets)
+	return u
+}
+
 // UpdateNewValues updates the mutable fields using the new values that were set on create.
 // Using this option is equivalent to using:
 //
@@ -825,6 +854,27 @@ func (u *CompositeModelRouteUpsertOne) UpdateNotes() *CompositeModelRouteUpsertO
 func (u *CompositeModelRouteUpsertOne) ClearNotes() *CompositeModelRouteUpsertOne {
 	return u.Update(func(s *CompositeModelRouteUpsert) {
 		s.ClearNotes()
+	})
+}
+
+// SetTargets sets the "targets" field.
+func (u *CompositeModelRouteUpsertOne) SetTargets(v []domain.CompositeRouteTarget) *CompositeModelRouteUpsertOne {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.SetTargets(v)
+	})
+}
+
+// UpdateTargets sets the "targets" field to the value that was provided on create.
+func (u *CompositeModelRouteUpsertOne) UpdateTargets() *CompositeModelRouteUpsertOne {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.UpdateTargets()
+	})
+}
+
+// ClearTargets clears the value of the "targets" field.
+func (u *CompositeModelRouteUpsertOne) ClearTargets() *CompositeModelRouteUpsertOne {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.ClearTargets()
 	})
 }
 
@@ -1211,6 +1261,27 @@ func (u *CompositeModelRouteUpsertBulk) UpdateNotes() *CompositeModelRouteUpsert
 func (u *CompositeModelRouteUpsertBulk) ClearNotes() *CompositeModelRouteUpsertBulk {
 	return u.Update(func(s *CompositeModelRouteUpsert) {
 		s.ClearNotes()
+	})
+}
+
+// SetTargets sets the "targets" field.
+func (u *CompositeModelRouteUpsertBulk) SetTargets(v []domain.CompositeRouteTarget) *CompositeModelRouteUpsertBulk {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.SetTargets(v)
+	})
+}
+
+// UpdateTargets sets the "targets" field to the value that was provided on create.
+func (u *CompositeModelRouteUpsertBulk) UpdateTargets() *CompositeModelRouteUpsertBulk {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.UpdateTargets()
+	})
+}
+
+// ClearTargets clears the value of the "targets" field.
+func (u *CompositeModelRouteUpsertBulk) ClearTargets() *CompositeModelRouteUpsertBulk {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.ClearTargets()
 	})
 }
 
