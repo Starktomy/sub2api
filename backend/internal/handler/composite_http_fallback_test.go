@@ -75,6 +75,30 @@ func TestCompositeHTTPFallbackSafety(t *testing.T) {
 	}
 }
 
+func TestCompositeHTTPFallbackAdvancesThroughOrderedTargets(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	decision := compositeHTTPTestDecision()
+	decision.FallbackTargets = append(decision.FallbackTargets,
+		service.CompositeFallbackTarget{TargetPlatform: service.PlatformOpenAI, UpstreamModel: "deepseek-v4.1-flash"},
+	)
+	c.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil).
+		WithContext(service.WithCompositeRouteDecision(context.Background(), decision))
+	f := newCompositeHTTPFallback(c, nil, false)
+	require.NotNil(t, f)
+
+	require.True(t, f.advance(c, service.ErrNoAvailableAccounts, nil))
+	platform, ok := service.ResolvedTargetPlatformFromContext(c.Request.Context())
+	require.True(t, ok)
+	require.Equal(t, service.PlatformDeepseek, platform)
+
+	require.True(t, f.advance(c, service.ErrNoAvailableAccounts, nil))
+	platform, ok = service.ResolvedTargetPlatformFromContext(c.Request.Context())
+	require.True(t, ok)
+	require.Equal(t, service.PlatformOpenAI, platform)
+
+	require.False(t, f.advance(c, service.ErrNoAvailableAccounts, nil), "chain is exhausted")
+}
+
 type compositeFallbackHTTPUpstream struct {
 	service.HTTPUpstream
 	mu          sync.Mutex

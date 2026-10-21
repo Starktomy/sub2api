@@ -14,7 +14,7 @@ import (
 
 type compositeHTTPFallback struct {
 	decision service.CompositeRouteDecision
-	used     bool
+	next     int
 	baseline int
 }
 
@@ -23,7 +23,7 @@ func newCompositeHTTPFallback(c *gin.Context, body []byte, disabled bool) *compo
 		return nil
 	}
 	decision, ok := service.CompositeFallbackDecisionFromContext(c.Request.Context())
-	if !ok || len(decision.FallbackTargets) != 1 {
+	if !ok || len(decision.FallbackTargets) == 0 {
 		return nil
 	}
 	for _, field := range []string{"previous_response_id", "conversation", "cached_content", "cachedContent"} {
@@ -51,7 +51,7 @@ func safeCompositeFallbackFailure(err *service.UpstreamFailoverError) bool {
 }
 
 func (f *compositeHTTPFallback) advance(c *gin.Context, selectionErr error, last *service.UpstreamFailoverError) bool {
-	if f == nil || f.used || failoverClientGone(c) || service.OpenAIStreamKeepaliveAdjustedWrittenSize(c) > f.baseline || !safeCompositeFallbackFailure(last) {
+	if f == nil || f.next >= len(f.decision.FallbackTargets) || failoverClientGone(c) || service.OpenAIStreamKeepaliveAdjustedWrittenSize(c) > f.baseline || !safeCompositeFallbackFailure(last) {
 		return false
 	}
 	if selectionErr != nil {
@@ -65,8 +65,8 @@ func (f *compositeHTTPFallback) advance(c *gin.Context, selectionErr error, last
 			}
 		}
 	}
-	f.used = true
-	target := f.decision.FallbackTargets[0]
+	target := f.decision.FallbackTargets[f.next]
+	f.next++
 	decision := f.decision
 	decision.TargetPlatform, decision.UpstreamModel = target.TargetPlatform, target.UpstreamModel
 	c.Request = c.Request.WithContext(service.WithCompositeRouteDecision(c.Request.Context(), decision))

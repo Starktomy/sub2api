@@ -72,27 +72,33 @@ the gateway can resolve the route and select an account again.
 
 ## Guarded HTTP Fallback
 
-An explicit `exact` route can optionally set `fallback_targets` to one backup
-`{ "target_platform": "...", "upstream_model": "..." }`. An empty list preserves
-single-provider routing. `priority` still orders matching routes; it does not
-create a fallback chain. The admin route editor and preview expose the backup.
+An explicit `exact` route can optionally set an ordered `fallback_targets` list
+of `{ "target_platform": "...", "upstream_model": "..." }` entries. An empty
+list preserves single-provider routing. Up to two unique backup platforms are
+supported. `priority` still orders matching routes; the array order is the
+fallback order. The admin route editor exposes add, remove, and reorder actions.
 
 The initial supported directions are deliberately limited:
 
 - OpenCode Go paid DeepSeek Flash/Pro to official DeepSeek of the same tier.
 - Official MiniMax M2.5/M2.7/M3 to OpenCode Go of the same model.
+- Z.AI GLM 5.3/5.3 Flash to OpenCode Go of the same model tier.
 
-Free/Zen targets, tier changes, arbitrary provider chains, and prefix routes are
-not supported. Go `deepseek-v4.1-flash` and official Flash have **not** been
-verified to use an identical checkpoint; same-tier fallback is not a guarantee
-of model equivalence.
+OpenAI-compatible accounts may also participate when their mapped upstream
+model has the same canonical class. All targets must use distinct platforms.
+
+Free/Zen targets, tier changes, duplicate platforms, arbitrary provider chains,
+and prefix routes are not supported. Go `deepseek-v4.1-flash` and official Flash
+have **not** been verified to use an identical checkpoint; same-tier fallback is
+not a guarantee of model equivalence.
 
 Fallback applies only to HTTP Messages, Responses, and Chat Completions. It
 excludes WebSocket, Live, media, and requests bound to upstream state (such as
 `previous_response_id`, conversation, or cached content). An unavailable account
-pool or a safe pre-output upstream failure may select the backup once, within
-the existing shared retry budget. Cancellation, request/policy failures, mapping
-restrictions, and semantic output prevent replay; heartbeat-only output does not.
+pool or a safe pre-output upstream failure may advance to the next target in
+array order, within the existing shared retry budget. Cancellation,
+request/policy failures, mapping restrictions, and semantic output prevent
+replay; heartbeat-only output does not.
 
 Each target rechecks billing eligibility, platform quota, model mapping, and
 account capabilities. The public model stays client-visible while usage and

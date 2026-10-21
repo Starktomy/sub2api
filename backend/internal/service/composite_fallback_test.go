@@ -32,7 +32,10 @@ func TestCompositeFallbackValidation(t *testing.T) {
 		{"tier changed", func(i *CompositeRouteInput) { i.FallbackTargets[0].UpstreamModel = "deepseek-pro" }, false},
 		{"public tier changed", func(i *CompositeRouteInput) { i.PublicModel = "deepseek-pro" }, false},
 		{"cycle", func(i *CompositeRouteInput) { i.FallbackTargets[0].TargetPlatform = PlatformOpenCodeGo }, false},
-		{"unbounded", func(i *CompositeRouteInput) { i.FallbackTargets = append(i.FallbackTargets, i.FallbackTargets[0]) }, false},
+		{"duplicate platform", func(i *CompositeRouteInput) { i.FallbackTargets = append(i.FallbackTargets, i.FallbackTargets[0]) }, false},
+		{"ordered multi-target DS", func(i *CompositeRouteInput) {
+			i.FallbackTargets = append(i.FallbackTargets, CompositeFallbackTarget{TargetPlatform: PlatformOpenAI, UpstreamModel: "deepseek-v4.1-flash"})
+		}, true},
 		{"Kimi", func(i *CompositeRouteInput) { i.TargetPlatform = PlatformKimi; i.UpstreamModel = "kimi-k3" }, false},
 		{"GLM", func(i *CompositeRouteInput) { i.TargetPlatform = PlatformZhipu; i.UpstreamModel = "glm-5.3" }, false},
 		{"Go Kimi", func(i *CompositeRouteInput) { i.UpstreamModel = "kimi-k3" }, false},
@@ -52,6 +55,24 @@ func TestCompositeFallbackValidation(t *testing.T) {
 			i.UpstreamModel = "MiniMax-M2.7"
 			i.FallbackTargets = []CompositeFallbackTarget{{TargetPlatform: PlatformOpenCodeGo, UpstreamModel: "minimax-m2.5"}}
 		}, false},
+		{"GLM chain", func(i *CompositeRouteInput) {
+			i.PublicModel = "glm-5.3-flash"
+			i.TargetPlatform = PlatformZhipu
+			i.UpstreamModel = "glm-5.3-flash"
+			i.FallbackTargets = []CompositeFallbackTarget{
+				{TargetPlatform: PlatformOpenCodeGo, UpstreamModel: "glm-5.3-flash"},
+				{TargetPlatform: PlatformOpenAI, UpstreamModel: "glm-5.3-flash"},
+			}
+		}, true},
+		{"MiniMax ordered chain", func(i *CompositeRouteInput) {
+			i.PublicModel = "MiniMax-M3"
+			i.TargetPlatform = PlatformMiniMax
+			i.UpstreamModel = "MiniMax-M3"
+			i.FallbackTargets = []CompositeFallbackTarget{
+				{TargetPlatform: PlatformOpenCodeGo, UpstreamModel: "minimax-m3"},
+				{TargetPlatform: PlatformOpenAI, UpstreamModel: "minimax-m3"},
+			}
+		}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			input := paidDeepseekFallbackInput()

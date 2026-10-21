@@ -4126,9 +4126,13 @@
                 <label class="input-label">{{ t("admin.groups.compositeRoutes.fallbackOrder", { order: index + 1 }) }}</label>
                 <Select v-model="target.target_platform" :options="compositeRoutePlatformOptions" :aria-label="t('admin.groups.compositeRoutes.targetPlatform')" />
                 <input v-model.trim="target.upstream_model" type="text" class="input" :aria-label="t('admin.groups.compositeRoutes.upstreamModel')" />
-                <button type="button" class="btn btn-secondary btn-sm" @click="compositeRouteForm.fallback_targets.splice(index, 1)">{{ t("common.delete") }}</button>
+                <div class="flex gap-2">
+                  <button type="button" data-testid="move-composite-fallback-up" class="btn btn-secondary btn-sm" :disabled="index === 0" :title="t('admin.groups.compositeRoutes.moveFallbackUp')" @click="moveCompositeFallbackTarget(index, -1)">↑</button>
+                  <button type="button" data-testid="move-composite-fallback-down" class="btn btn-secondary btn-sm" :disabled="index === compositeRouteForm.fallback_targets.length - 1" :title="t('admin.groups.compositeRoutes.moveFallbackDown')" @click="moveCompositeFallbackTarget(index, 1)">↓</button>
+                  <button type="button" data-testid="remove-composite-fallback" class="btn btn-secondary btn-sm" @click="compositeRouteForm.fallback_targets.splice(index, 1)">{{ t("common.delete") }}</button>
+                </div>
               </div>
-              <button type="button" class="btn btn-secondary btn-sm" :disabled="!compositeFallbackTargetPlatform || compositeRouteForm.fallback_targets.length > 0" @click="addCompositeFallbackTarget">{{ t("admin.groups.compositeRoutes.addFallback") }}</button>
+              <button type="button" data-testid="add-composite-fallback" class="btn btn-secondary btn-sm" :disabled="compositeFallbackAvailablePlatforms.length === 0" @click="addCompositeFallbackTarget">{{ t("admin.groups.compositeRoutes.addFallback") }}</button>
               <p v-if="compositeFallbackError" role="alert" class="text-xs text-red-600 dark:text-red-400">{{ t(`admin.groups.compositeRoutes.${compositeFallbackError}`) }}</p>
             </fieldset>
 
@@ -4377,7 +4381,7 @@ import {
 import { createModelAllowlistCandidatesTracker } from "./modelAllowlistCandidates";
 import {
   compositeFallbackDefaultModelID,
-  compositeFallbackPlatform,
+  compositeFallbackPlatforms,
   copyCompositeFallbackTargets,
   validateCompositeFallback,
 } from "./groupsCompositeFallback";
@@ -4915,15 +4919,28 @@ const compositeRouteForm = reactive<CompositeRouteFormState>({
   enabled: true,
   notes: "",
 });
-const compositeFallbackTargetPlatform = computed(() => compositeFallbackPlatform(compositeRouteForm));
+const compositeFallbackAllowedPlatforms = computed(() => compositeFallbackPlatforms(compositeRouteForm));
+const compositeFallbackAvailablePlatforms = computed(() => {
+  const used = new Set([
+    compositeRouteForm.target_platform,
+    ...compositeRouteForm.fallback_targets.map((target) => target.target_platform),
+  ]);
+  return compositeFallbackAllowedPlatforms.value.filter((platform) => !used.has(platform));
+});
 const compositeFallbackError = computed(() => validateCompositeFallback(compositeRouteForm));
 const addCompositeFallbackTarget = () => {
-  const platform = compositeFallbackTargetPlatform.value;
-  if (!platform || compositeRouteForm.fallback_targets.length) return;
+  const platform = compositeFallbackAvailablePlatforms.value[0];
+  if (!platform) return;
   compositeRouteForm.fallback_targets.push({
     target_platform: platform,
-    upstream_model: compositeFallbackDefaultModelID(compositeRouteForm),
+    upstream_model: compositeFallbackDefaultModelID(compositeRouteForm, platform),
   });
+};
+const moveCompositeFallbackTarget = (index: number, delta: -1 | 1) => {
+  const next = index + delta;
+  if (next < 0 || next >= compositeRouteForm.fallback_targets.length) return;
+  const [target] = compositeRouteForm.fallback_targets.splice(index, 1);
+  compositeRouteForm.fallback_targets.splice(next, 0, target);
 };
 const createMessagesDispatchDefaults = createDefaultMessagesDispatchFormState();
 const editMessagesDispatchDefaults = createDefaultMessagesDispatchFormState();

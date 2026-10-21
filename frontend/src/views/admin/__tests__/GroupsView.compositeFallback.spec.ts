@@ -84,7 +84,7 @@ describe('GroupsView composite fallback editing and preview', () => {
     await wrapper.get('form').trigger('submit')
     expect(api.updateCompositeRoute).not.toHaveBeenCalled()
     expect(showError).toHaveBeenCalledWith('admin.groups.compositeRoutes.fallbackPolicyError')
-    await editor.get('button').trigger('click')
+    await editor.get('[data-testid="remove-composite-fallback"]').trigger('click')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
     expect(api.updateCompositeRoute).toHaveBeenCalledWith(12, 8, expect.objectContaining({ fallback_targets: [] }))
@@ -93,12 +93,13 @@ describe('GroupsView composite fallback editing and preview', () => {
   it.each([
     { publicModel: 'deepseek-pro', platform: 'opencode_go', upstreamModel: 'deepseek-v4-pro', fallbackPlatform: 'deepseek', fallbackModel: 'deepseek-v4-pro' },
     { publicModel: 'deepseek-v4-flash', platform: 'opencode_go', upstreamModel: 'deepseek-v4.1-flash', fallbackPlatform: 'deepseek', fallbackModel: 'deepseek-flash' },
-    { publicModel: 'minimax-m3', platform: 'minimax', upstreamModel: 'MiniMax-M3', fallbackPlatform: 'opencode_go', fallbackModel: 'minimax-m3' }
+    { publicModel: 'minimax-m3', platform: 'minimax', upstreamModel: 'MiniMax-M3', fallbackPlatform: 'opencode_go', fallbackModel: 'minimax-m3' },
+    { publicModel: 'glm-5.3-flash', platform: 'zhipu', upstreamModel: 'glm-5.3-flash', fallbackPlatform: 'opencode_go', fallbackModel: 'glm-5.3-flash' }
   ])('adds and saves a real upstream ID for $publicModel', async ({ publicModel, platform, upstreamModel, fallbackPlatform, fallbackModel }) => {
     api.listCompositeRoutes.mockResolvedValue([{ ...saved, public_model: publicModel, target_platform: platform, upstream_model: upstreamModel, fallback_targets: [] }])
     const wrapper = await openEditor()
     const editor = wrapper.get('[data-testid="composite-fallback-editor"]')
-    await editor.get('button').trigger('click')
+    await editor.get('[data-testid="add-composite-fallback"]').trigger('click')
     expect(editor.get('input').element.value).toBe(fallbackModel)
     await wrapper.get('form').trigger('submit')
     await flushPromises()
@@ -117,18 +118,20 @@ describe('GroupsView composite fallback editing and preview', () => {
     expect(showError).toHaveBeenCalledWith('admin.groups.compositeRoutes.fallbackPolicyError')
   })
 
-  it('adds only one explicit fallback and resets it when cancelling', async () => {
+  it('adds ordered fallbacks, supports reordering, and resets when cancelling', async () => {
     const wrapper = await openEditor()
     const editor = wrapper.get('[data-testid="composite-fallback-editor"]')
-    await editor.get('button').trigger('click')
-    await editor.get('button').trigger('click')
-    expect(editor.findAll('input')).toHaveLength(1)
-    expect(editor.get('input').element.value).toBe('deepseek-v4-pro')
-    expect(editor.findAll('button')[1]!.attributes('disabled')).toBeDefined()
+    const add = editor.get('[data-testid="add-composite-fallback"]')
+    await add.trigger('click')
+    await add.trigger('click')
+    expect(editor.findAll('input')).toHaveLength(2)
+    expect(editor.findAll('input').map(input => input.element.value)).toEqual(['deepseek-v4-pro', 'deepseek-v4-pro'])
+    expect(add.attributes('disabled')).toBeDefined()
+    await editor.get('[data-testid="move-composite-fallback-up"]:not([disabled])').trigger('click')
     const cancel = wrapper.findAll('form button').find(button => button.text() === 'common.cancel')!
     await cancel.trigger('click')
     expect(editor.findAll('input')).toHaveLength(0)
-    expect(editor.get('button').attributes('disabled')).toBeDefined()
+    expect(editor.get('[data-testid="add-composite-fallback"]').attributes('disabled')).toBeDefined()
   })
 
   it('accepts legacy routes without fallback_targets and explicitly saves an empty array', async () => {
