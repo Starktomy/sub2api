@@ -892,6 +892,64 @@ func (s *AccountRepoSuite) TestSetRateLimitedIfLaterDoesNotShortenReset() {
 	s.Require().WithinDuration(later, *cacheRecorder.setAccounts[1].RateLimitResetAt, time.Second)
 }
 
+func (s *AccountRepoSuite) TestListOpenAIQuotaRecoveryCandidatesFiltersCooldownOwners() {
+	now := time.Now().UTC().Truncate(time.Second)
+	limitedAt := now.Add(-time.Minute)
+	createCandidate := func(name string, resetAt time.Time) *service.Account {
+		return mustCreateAccount(s.T(), s.client, &service.Account{
+			Name:             name,
+			Platform:         service.PlatformOpenAI,
+			Type:             service.AccountTypeOAuth,
+			Status:           service.StatusActive,
+			RateLimitedAt:    &limitedAt,
+			RateLimitResetAt: &resetAt,
+		})
+	}
+
+	first := createCandidate("openai-quota-recovery-first", now.Add(-time.Second))
+	second := createCandidate("openai-quota-recovery-second", now.Add(20*time.Second))
+	createCandidate("openai-quota-recovery-future", now.Add(time.Minute))
+
+	mustCreateAccount(s.T(), s.client, &service.Account{
+		Name:             "openai-quota-recovery-api-key",
+		Platform:         service.PlatformOpenAI,
+		Type:             service.AccountTypeAPIKey,
+		Status:           service.StatusActive,
+		RateLimitedAt:    &limitedAt,
+		RateLimitResetAt: ptrTime(now.Add(-time.Second)),
+	})
+
+	parent := mustCreateAccount(s.T(), s.client, &service.Account{Name: "openai-quota-recovery-parent"})
+	shadowResetAt := now.Add(-time.Second)
+	mustCreateAccount(s.T(), s.client, &service.Account{
+		Name:             "openai-quota-recovery-shadow",
+		Platform:         service.PlatformOpenAI,
+		Type:             service.AccountTypeOAuth,
+		Status:           service.StatusActive,
+		RateLimitedAt:    &limitedAt,
+		RateLimitResetAt: &shadowResetAt,
+		ParentAccountID:  &parent.ID,
+		QuotaDimension:   service.QuotaDimensionSpark,
+	})
+
+	disabled := createCandidate("openai-quota-recovery-disabled", now.Add(-time.Second))
+	s.Require().NoError(s.client.Account.UpdateOneID(disabled.ID).SetStatus(service.StatusDisabled).Exec(s.ctx))
+
+	unschedulable := createCandidate("openai-quota-recovery-unschedulable", now.Add(-time.Second))
+	s.Require().NoError(s.client.Account.UpdateOneID(unschedulable.ID).SetSchedulable(false).Exec(s.ctx))
+
+	temporary := createCandidate("openai-quota-recovery-temporary", now.Add(-time.Second))
+	s.Require().NoError(s.client.Account.UpdateOneID(temporary.ID).SetTempUnschedulableUntil(now.Add(time.Minute)).Exec(s.ctx))
+
+	overloaded := createCandidate("openai-quota-recovery-overloaded", now.Add(-time.Second))
+	s.Require().NoError(s.client.Account.UpdateOneID(overloaded.ID).SetOverloadUntil(now.Add(time.Minute)).Exec(s.ctx))
+
+	result, err := s.repo.ListOpenAIQuotaRecoveryCandidates(s.ctx, now.Add(30*time.Second), 2)
+	s.Require().NoError(err)
+	s.Require().Len(result, 2)
+	s.Require().Equal([]int64{first.ID, second.ID}, []int64{result[0].ID, result[1].ID})
+}
+
 func (s *AccountRepoSuite) TestClearRateLimitIfObservedProtectsRearmed429Generation() {
 	account := mustCreateAccount(s.T(), s.client, &service.Account{
 		Name:     "acc-rl-conditional-clear",
@@ -940,6 +998,30 @@ func (s *AccountRepoSuite) TestClearRateLimitIfObservedProtectsRearmed429Generat
 	s.Require().NotNil(retyped.RateLimitedAt)
 	s.Require().NotNil(retyped.RateLimitResetAt)
 	s.Require().WithinDuration(rearmedReset, *retyped.RateLimitResetAt, time.Second)
+}
+
+func (s *AccountRepoSuite) TestClearRateLimitIfObservedSupportsOpenAIOAuth() {
+	account := mustCreateAccount(s.T(), s.client, &service.Account{
+		Name:     "acc-openai-rl-conditional-clear",
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeOAuth,
+	})
+	resetAt := time.Now().Add(30 * time.Minute).UTC().Truncate(time.Second)
+	s.Require().NoError(s.repo.SetRateLimited(s.ctx, account.ID, resetAt))
+
+	limited, err := s.repo.GetByID(s.ctx, account.ID)
+	s.Require().NoError(err)
+	s.Require().NotNil(limited.RateLimitedAt)
+	s.Require().NotNil(limited.RateLimitResetAt)
+
+	cleared, err := s.repo.ClearRateLimitIfObserved(s.ctx, account.ID, *limited.RateLimitedAt, *limited.RateLimitResetAt)
+	s.Require().NoError(err)
+	s.Require().True(cleared)
+
+	got, err := s.repo.GetByID(s.ctx, account.ID)
+	s.Require().NoError(err)
+	s.Require().Nil(got.RateLimitedAt)
+	s.Require().Nil(got.RateLimitResetAt)
 }
 
 func (s *AccountRepoSuite) TestClearRateLimit() {

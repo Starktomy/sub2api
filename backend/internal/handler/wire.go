@@ -205,6 +205,7 @@ func ProvideHandlers(
 	_ *service.IdempotencyCoordinator,
 	_ *service.IdempotencyCleanupService,
 	_ *service.OpenAIQuotaAutoResetService,
+	_ *service.OpenAIQuotaRecoveryService,
 ) *Handlers {
 	return &Handlers{
 		Auth:             authHandler,

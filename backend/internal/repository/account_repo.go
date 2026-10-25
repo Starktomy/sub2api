@@ -1129,6 +1129,38 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 	return outAccounts, paginationResultFromTotal(int64(total), params), nil
 }
 
+// ListOpenAIQuotaRecoveryCandidates returns OpenAI OAuth parent accounts whose
+// account-level 429 cooldown has reached, or is about to reach, its known reset
+// boundary. It excludes every other active scheduling block so the quota worker
+// only reconciles cooldowns it owns.
+func (r *accountRepository) ListOpenAIQuotaRecoveryCandidates(ctx context.Context, resetBefore time.Time, limit int) ([]service.Account, error) {
+	if limit <= 0 {
+		return []service.Account{}, nil
+	}
+	now := time.Now()
+	accounts, err := r.client.Account.Query().
+		Where(
+			dbaccount.PlatformEQ(service.PlatformOpenAI),
+			dbaccount.TypeEQ(service.AccountTypeOAuth),
+			dbaccount.StatusEQ(service.StatusActive),
+			dbaccount.SchedulableEQ(true),
+			dbaccount.ParentAccountIDIsNil(),
+			dbaccount.RateLimitedAtNotNil(),
+			dbaccount.RateLimitResetAtNotNil(),
+			dbaccount.RateLimitResetAtLTE(resetBefore),
+			tempUnschedulablePredicate(),
+			notExpiredPredicate(now),
+			dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
+		).
+		Order(dbent.Asc(dbaccount.FieldRateLimitResetAt), dbent.Asc(dbaccount.FieldID)).
+		Limit(limit).
+		All(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return r.accountsToService(ctx, accounts)
+}
+
 func (r *accountRepository) ListAllWithFilters(ctx context.Context, platform, accountType, status, search string, groupID int64, privacyMode string) ([]service.Account, error) {
 	accounts, err := r.accountListFilteredQuery(platform, accountType, status, search, groupID, privacyMode).All(ctx)
 	if err != nil {
@@ -2326,15 +2358,24 @@ func (r *accountRepository) SetRateLimitedIfLater(ctx context.Context, id int64,
 	return nil
 }
 
-// ClearRateLimitIfObserved clears exactly the Grok rate-limit generation seen
-// by a successful request. Matching both timestamps prevents a stale success
-// from erasing a later clear/re-arm generation with an equal or shorter reset.
+// ClearRateLimitIfObserved clears exactly the observed OpenAI or Grok OAuth
+// rate-limit generation. Matching both timestamps prevents a stale recovery
+// probe from erasing a later clear/re-arm generation with an equal or shorter
+// reset.
 func (r *accountRepository) ClearRateLimitIfObserved(ctx context.Context, id int64, observedLimitedAt, observedResetAt time.Time) (bool, error) {
 	updated, err := r.client.Account.Update().
 		Where(
 			dbaccount.IDEQ(id),
-			dbaccount.PlatformEQ(service.PlatformGrok),
-			dbaccount.TypeEQ(service.AccountTypeOAuth),
+			dbaccount.Or(
+				dbaccount.And(
+					dbaccount.PlatformEQ(service.PlatformGrok),
+					dbaccount.TypeEQ(service.AccountTypeOAuth),
+				),
+				dbaccount.And(
+					dbaccount.PlatformEQ(service.PlatformOpenAI),
+					dbaccount.TypeEQ(service.AccountTypeOAuth),
+				),
+			),
 			dbaccount.RateLimitedAtEQ(observedLimitedAt),
 			dbaccount.RateLimitResetAtEQ(observedResetAt),
 		).

@@ -221,6 +221,20 @@ func ProvideOpenAIQuotaAutoResetService(
 	return service
 }
 
+// ProvideOpenAIQuotaRecoveryService starts periodic reconciliation for natural
+// OpenAI quota-window resets. Unlike OpenAIQuotaAutoResetService, it never
+// consumes reset credits.
+func ProvideOpenAIQuotaRecoveryService(
+	accountRepo AccountRepository,
+	quotaService *OpenAIQuotaService,
+	runtimeBlocker AccountRuntimeBlocker,
+	leaderLock LeaderLockCache,
+) *OpenAIQuotaRecoveryService {
+	service := NewOpenAIQuotaRecoveryService(accountRepo, quotaService, runtimeBlocker, leaderLock)
+	service.Start()
+	return service
+}
+
 func ProvideAccountUsageService(
 	accountRepo AccountRepository,
 	usageLogRepo UsageLogRepository,
@@ -905,6 +919,7 @@ var ProviderSet = wire.NewSet(
 	ProvideOpenAITokenProvider,
 	ProvideOpenAIQuotaService,
 	ProvideOpenAIQuotaAutoResetService,
+	ProvideOpenAIQuotaRecoveryService,
 	ProvideGrokQuotaService,
 	ProvideCNProviderQuotaService,
 	ProvideCNProviderBalanceService,
