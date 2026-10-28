@@ -61,3 +61,14 @@ func TestGPT61SolIdentityAndEffort(t *testing.T) {
 	}
 	require.Contains(t, CodexBaseInstructionsForModel("gpt-6.1-sol"), "based on GPT-6")
 }
+
+func TestGPT61TerraIdentityAndCatalog(t *testing.T) {
+	require.Contains(t, DefaultModelIDs(), "gpt-6.1-terra")
+	for _, id := range []string{"gpt-6.1-terra", "openai/gpt-6.1-terra-max", "GPT_6.1_TERRA", "gpt-6.1-terra-openai-compact"} {
+		require.True(t, IsGPT61TerraModelSpelling(id), id)
+	}
+	for _, id := range []string{"gpt-6.1", "gpt-6.1-terrestrial", "gpt-6.1-terra-preview", "gpt-6.1-sol"} {
+		require.False(t, IsGPT61TerraModelSpelling(id), id)
+	}
+	require.Contains(t, CodexBaseInstructionsForModel("gpt-6.1-terra"), "based on GPT-6")
+}

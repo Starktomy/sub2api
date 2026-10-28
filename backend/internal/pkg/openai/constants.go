@@ -26,6 +26,7 @@ var DefaultModels = []Model{
 	{ID: "gpt-5.6-terra", Object: "model", Created: 1780876800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.6 Terra"},
 	{ID: "gpt-5.6-luna", Object: "model", Created: 1780876800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.6 Luna"},
 	{ID: "gpt-6.1-sol", Object: "model", Created: 1790640000, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6.1 Sol"},
+	{ID: "gpt-6.1-terra", Object: "model", Created: 1790640000, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6.1 Terra"},
 	{ID: "gpt-6-sol", Object: "model", Created: 1790035200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6 Sol"},
 	{ID: "gpt-6-luna", Object: "model", Created: 1790035200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6 Luna"},
 	{ID: "gpt-6-astra", Object: "model", Created: 1788480000, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6 Astra"},
@@ -159,7 +160,9 @@ func CodexBaseInstructionsForModel(model string) string {
 			panic(err)
 		}
 		return metadata.ModelMessages.InstructionsTemplate
-	case canonical == "gpt-6" || canonical == "gpt-6-astra" || strings.HasPrefix(canonical, "gpt-6-astra-"):
+	case IsGPT61TerraModelSpelling(canonical), canonical == "gpt-6" || canonical == "gpt-6-astra" || strings.HasPrefix(canonical, "gpt-6-astra-"):
+		// Terra has no separately bundled Codex prompt yet. It shares the GPT-6
+		// coding-family template until upstream metadata provides a dedicated one.
 		if v := strings.TrimSpace(instructionsGPT6Astra); v != "" {
 			return instructionsGPT6Astra
 		}
@@ -200,11 +203,21 @@ func IsGPT6SolOrLunaModelSpelling(model string) bool {
 // IsGPT61SolModelSpelling recognizes the published model and local effort/compact
 // spellings. Invalid effort suffixes remain identifiable for request validation.
 func IsGPT61SolModelSpelling(model string) bool {
+	return isGPT61ModelSpelling(model, "gpt-6.1-sol")
+}
+
+// IsGPT61TerraModelSpelling recognizes GPT-6.1 Terra aliases and the same
+// reasoning/compact suffixes accepted by the Codex model catalog.
+func IsGPT61TerraModelSpelling(model string) bool {
+	return isGPT61ModelSpelling(model, "gpt-6.1-terra")
+}
+
+func isGPT61ModelSpelling(model, base string) bool {
 	canonical := CanonicalizeOpenAIModelAliasSpelling(model)
-	if canonical == "gpt-6.1-sol" {
+	if canonical == base {
 		return true
 	}
-	suffix, ok := strings.CutPrefix(canonical, "gpt-6.1-sol-")
+	suffix, ok := strings.CutPrefix(canonical, base+"-")
 	if !ok {
 		return false
 	}

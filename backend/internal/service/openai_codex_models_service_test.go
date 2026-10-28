@@ -204,7 +204,7 @@ func requireCompleteConfiguredCodexModel(t *testing.T, model map[string]any, slu
 	require.Equal(t, "list", model["visibility"])
 	require.Equal(t, true, model["supported_in_api"])
 	require.NotNil(t, model["priority"])
-	require.Equal(t, []any{}, model["additional_speed_tiers"])
+	require.IsType(t, []any{}, model["additional_speed_tiers"])
 	require.IsType(t, []any{}, model["service_tiers"])
 	require.Contains(t, model, "default_service_tier")
 	require.Contains(t, model, "availability_nux")
@@ -344,7 +344,7 @@ func TestNewConfiguredCodexModelDescriptorUsesProviderMetadataAndSafeFallback(t 
 
 	gpt56 := newConfiguredCodexModelDescriptor("gpt-5.6-sol")
 	require.Equal(t, "GPT-5.6 Sol", gpt56.DisplayName)
-	require.Equal(t, "OpenAI GPT coding model routed through Sub2API.", gpt56.Description)
+	require.Equal(t, "Older generation workhorse model.", gpt56.Description)
 	require.NotNil(t, gpt56.DefaultReasoningLevel)
 	require.Equal(t, "low", *gpt56.DefaultReasoningLevel)
 	require.Equal(t, configuredCodexGPTReasoningLevels("gpt-5.6-sol"), gpt56.SupportedReasoningLevels)
@@ -358,6 +358,7 @@ func TestNewConfiguredCodexModelDescriptorUsesProviderMetadataAndSafeFallback(t 
 	require.Equal(t, "low", *gpt56.DefaultVerbosity)
 	require.True(t, gpt56.SupportsReasoningSummaryParameter)
 	require.Equal(t, "none", gpt56.DefaultReasoningSummary)
+	require.Equal(t, []string{"fast"}, gpt56.AdditionalSpeedTiers)
 
 	gpt56Luna := newConfiguredCodexModelDescriptor("gpt-5.6-luna")
 	require.Equal(t, []string{"low", "medium", "high", "xhigh", "max"}, effortsFromConfiguredCodexLevels(gpt56Luna.SupportedReasoningLevels))
@@ -379,6 +380,7 @@ func TestNewConfiguredCodexModelDescriptorUsesProviderMetadataAndSafeFallback(t 
 		Name:        "Fast",
 		Description: "Priority processing for lower latency.",
 	}}, gpt6Astra.ServiceTiers)
+	require.Equal(t, []string{"fast"}, gpt6Astra.AdditionalSpeedTiers)
 	require.True(t, isOpenAICodexImageInputModel("gpt-6-astra"))
 	require.True(t, isOpenAICodexReasoningGPTModel("openai/gpt-6-astra"))
 	require.True(t, isOpenAIGPT6AstraModel("gpt-6-astra-2026-09-01"))
@@ -448,6 +450,61 @@ func TestBuildCodexModelsManifestUsesGPT6AstraInstructions(t *testing.T) {
 	))
 }
 
+func TestConfiguredCodexAllCatalogModelsHaveCompleteMetadata(t *testing.T) {
+	t.Parallel()
+
+	modelIDs := []string{
+		"gpt-6.1-sol",
+		"gpt-6.1-terra",
+		"gpt-6-astra",
+		"gpt-6-sol",
+		"gpt-6-luna",
+		"gpt-5.6-sol",
+		"gpt-5.6-terra",
+		"gpt-5.6-luna",
+		"MiniMax-M3",
+		"MiniMax-M3.1-Flash",
+		"gemini-3.8-flash",
+		"gemini-4-argon",
+		"deepseek-v4.1-flash",
+		"glm-5.3",
+		"glm-5.3-flash",
+	}
+
+	for _, modelID := range modelIDs {
+		t.Run(modelID, func(t *testing.T) {
+			descriptor := newConfiguredCodexModelDescriptor(modelID)
+			require.NotEmpty(t, descriptor.DisplayName)
+			require.NotEmpty(t, descriptor.Description)
+			require.NotEqual(t, configuredCodexCustomDescription, descriptor.Description)
+			require.NotNil(t, descriptor.DefaultReasoningLevel)
+			require.NotEmpty(t, descriptor.SupportedReasoningLevels)
+			require.Contains(t, effortsFromConfiguredCodexLevels(descriptor.SupportedReasoningLevels), *descriptor.DefaultReasoningLevel)
+			require.Contains(t, descriptor.InputModalities, "text")
+			require.Greater(t, descriptor.ContextWindow, int64(0))
+			require.Greater(t, descriptor.MaxContextWindow, int64(0))
+		})
+	}
+}
+
+func TestConfiguredCodexGPT61TerraSupportsFastAndGPT6Reasoning(t *testing.T) {
+	t.Parallel()
+
+	terra := newConfiguredCodexModelDescriptor("gpt-6.1-terra")
+	require.Equal(t, "GPT-6.1 Terra", terra.DisplayName)
+	require.Equal(t, "GPT-6.1 Terra Codex model.", terra.Description)
+	require.Equal(t, []string{"low", "medium", "high", "xhigh", "max", "ultra"}, effortsFromConfiguredCodexLevels(terra.SupportedReasoningLevels))
+	require.Equal(t, []configuredCodexServiceTier{{
+		ID:          "priority",
+		Name:        "Fast",
+		Description: "Priority processing for lower latency.",
+	}}, terra.ServiceTiers)
+	require.Equal(t, []string{"fast"}, terra.AdditionalSpeedTiers)
+	require.Equal(t, []string{"text", "image"}, terra.InputModalities)
+	require.Equal(t, int64(500_000), terra.ContextWindow)
+	require.Equal(t, int64(configuredCodexGPT56MaxContext), terra.MaxContextWindow)
+}
+
 func effortsFromConfiguredCodexLevels(levels []configuredCodexReasoningLevel) []string {
 	efforts := make([]string, 0, len(levels))
 	for _, level := range levels {
@@ -511,6 +568,7 @@ func TestBuildCodexModelsManifestAdvertisesPriorityServiceTierForFastGPTModels(t
 				"description": "Priority processing for lower latency.",
 			},
 		}, model["service_tiers"])
+		require.Equal(t, []any{"fast"}, model["additional_speed_tiers"])
 		require.Nil(t, model["default_service_tier"])
 	}
 }
@@ -2187,6 +2245,45 @@ func TestCompleteAPIKeyCodexModelsManifestForClientUsesKnownGPTImageFallback(t *
 	require.Equal(t, []any{"text"}, bySlug["gpt-4o"]["input_modalities"])
 }
 
+func TestCompleteAPIKeyCodexModelsManifestForClientFillsEmptyFastMetadata(t *testing.T) {
+	t.Parallel()
+
+	svc := &OpenAIGatewayService{}
+	manifest := &OpenAIModelsResponse{Body: []byte(`{"models":[
+		{"slug":"gpt-5.6-sol","service_tiers":[],"additional_speed_tiers":[]},
+		{"slug":"gpt-6-astra","service_tiers":[],"additional_speed_tiers":[]},
+		{"slug":"gpt-6.1-sol","service_tiers":[],"additional_speed_tiers":[]},
+		{"slug":"gpt-6.1-terra","service_tiers":[],"additional_speed_tiers":[]},
+		{"slug":"gpt-5.5","service_tiers":[{"id":"provider-priority","name":"Provider Fast","description":"Provider supplied tier."}],"additional_speed_tiers":["provider-fast"]}
+	]}`)}
+	account := newCodexModelsAPIKeyTestAccount("https://openai-compatible.example.test/v1")
+
+	require.NoError(t, svc.CompleteAPIKeyCodexModelsManifestForClient(manifest, account))
+	models := decodeCodexManifestModels(t, manifest.Body)
+	bySlug := make(map[string]map[string]any, len(models))
+	for _, model := range models {
+		slug, ok := model["slug"].(string)
+		require.True(t, ok)
+		bySlug[slug] = model
+	}
+
+	for _, slug := range []string{"gpt-5.6-sol", "gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra"} {
+		expectedBody, err := json.Marshal(newConfiguredCodexModelDescriptor(slug))
+		require.NoError(t, err)
+		var expected map[string]any
+		require.NoError(t, json.Unmarshal(expectedBody, &expected))
+		require.Equal(t, expected["service_tiers"], bySlug[slug]["service_tiers"], slug)
+		require.Equal(t, expected["additional_speed_tiers"], bySlug[slug]["additional_speed_tiers"], slug)
+	}
+
+	require.Equal(t, []any{map[string]any{
+		"id":          "provider-priority",
+		"name":        "Provider Fast",
+		"description": "Provider supplied tier.",
+	}}, bySlug["gpt-5.5"]["service_tiers"])
+	require.Equal(t, []any{"provider-fast"}, bySlug["gpt-5.5"]["additional_speed_tiers"])
+}
+
 // Scenario: 标准 /models 型号列表优先使用已同步账号能力，再使用本地 descriptor 兜底。
 func TestCompleteAPIKeyCodexModelsManifestForClientUsesSyncedMetadataForConvertedModelList(t *testing.T) {
 	t.Parallel()
@@ -3848,16 +3945,29 @@ func TestAstraUltrafastCatalogUsesAccountCapabilities(t *testing.T) {
 	}
 }
 
-func TestGPT61SolAPIKeyCatalogUsesFullResponses(t *testing.T) {
+func TestGPT61APIKeyCatalogUsesFullResponses(t *testing.T) {
 	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://api.openai.com"}}
-	body, err := completeAPIKeyCodexModelsManifestMetadata([]byte(`{"models":[{"slug":"gpt-6.1-sol"}]}`), true, account)
-	require.NoError(t, err)
-	var catalog struct {
-		Models []map[string]any `json:"models"`
+	for _, modelID := range []string{"gpt-6.1-sol", "gpt-6.1-terra"} {
+		t.Run(modelID, func(t *testing.T) {
+			body, err := completeAPIKeyCodexModelsManifestMetadata([]byte(`{"models":[{"slug":"`+modelID+`"}]}`), true, account)
+			require.NoError(t, err)
+			var catalog struct {
+				Models []map[string]any `json:"models"`
+			}
+			require.NoError(t, json.Unmarshal(body, &catalog))
+			require.Equal(t, false, catalog.Models[0]["use_responses_lite"])
+			require.Equal(t, "low", catalog.Models[0]["default_reasoning_level"])
+		})
 	}
-	require.NoError(t, json.Unmarshal(body, &catalog))
-	require.Equal(t, false, catalog.Models[0]["use_responses_lite"])
-	require.Equal(t, "low", catalog.Models[0]["default_reasoning_level"])
+}
+
+func TestGPT61TerraOfficialCodexCapabilities(t *testing.T) {
+	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"base_url": "https://chatgpt.com"}}
+	caps := accountCodexToolCapabilities(account, "gpt-6.1-terra")
+	require.JSONEq(t, `true`, string(caps["supports_search_tool"]))
+	require.JSONEq(t, `"freeform"`, string(caps["apply_patch_tool_type"]))
+	require.JSONEq(t, `"code_mode_only"`, string(caps["tool_mode"]))
+	require.JSONEq(t, `true`, string(caps["use_responses_lite"]))
 }
 
 func TestGPT61SolAPIKeyCatalogContextWindow(t *testing.T) {

@@ -423,6 +423,166 @@ type codexModelMetadataOverride struct {
 	inputModalitiesConflict bool
 }
 
+// configuredCodexKnownModelMetadata is the conservative offline catalog for
+// public aliases that are intentionally exposed by the bundled All group.
+// Account snapshots remain authoritative and replace these values whenever an
+// upstream supplies a concrete declaration.
+type configuredCodexKnownModelMetadataEntry struct {
+	DisplayName              string
+	Description              string
+	DefaultReasoningLevel    string
+	SupportedReasoningLevels []string
+	InputModalities          []string
+	ContextWindow            int64
+	MaxContextWindow         int64
+}
+
+var configuredCodexKnownModelMetadata = map[string]configuredCodexKnownModelMetadataEntry{
+	"gpt-6.1-sol": {
+		DisplayName: "GPT-6.1 Sol",
+		Description: "Latest workhorse model for coding and everyday work.",
+	},
+	"gpt-6.1-terra": {
+		DisplayName:              "GPT-6.1 Terra",
+		Description:              "GPT-6.1 Terra Codex model.",
+		DefaultReasoningLevel:    "low",
+		SupportedReasoningLevels: []string{"low", "medium", "high", "xhigh", "max", "ultra"},
+		InputModalities:          []string{"text", "image"},
+		ContextWindow:            500_000,
+		MaxContextWindow:         configuredCodexGPT56MaxContext,
+	},
+	"gpt-6-astra": {
+		DisplayName: "GPT-6 Astra",
+		Description: "Frontier intelligence for the most demanding work.",
+	},
+	"gpt-6-sol": {
+		DisplayName: "GPT-6 Sol",
+		Description: "Previous generation workhorse model.",
+	},
+	"gpt-6-luna": {
+		DisplayName: "GPT-6 Luna",
+		Description: "Fast and affordable model for easier tasks.",
+	},
+	"gpt-5.6-sol": {
+		DisplayName: "GPT-5.6 Sol",
+		Description: "Older generation workhorse model.",
+	},
+	"gpt-5.6-terra": {
+		DisplayName: "GPT-5.6 Terra",
+		Description: "Older balanced model for straightforward work.",
+	},
+	"gpt-5.6-luna": {
+		DisplayName: "GPT-5.6 Luna",
+		Description: "Older fast and efficient model.",
+	},
+	"minimax-m3": {
+		DisplayName:              "MiniMax-M3",
+		Description:              "MiniMax frontier multimodal coding model with a 1M-token context window.",
+		DefaultReasoningLevel:    "none",
+		SupportedReasoningLevels: []string{"none"},
+		InputModalities:          []string{"text", "image"},
+		ContextWindow:            1_000_000,
+		MaxContextWindow:         1_000_000,
+	},
+	"minimax-m3.1-flash": {
+		DisplayName:              "MiniMax-M3.1-Flash",
+		Description:              "MiniMax frontier multimodal coding model with a 1M-token context window and tunable thinking depth.",
+		DefaultReasoningLevel:    "max",
+		SupportedReasoningLevels: []string{"low", "medium", "high", "xhigh", "max"},
+		InputModalities:          []string{"text", "image"},
+		ContextWindow:            1_000_000,
+		MaxContextWindow:         1_000_000,
+	},
+	"gemini-3.8-flash": {
+		DisplayName:              "Gemini 3.8 Flash",
+		Description:              "Fast multimodal Gemini model with selectable thinking depth.",
+		DefaultReasoningLevel:    "high",
+		SupportedReasoningLevels: []string{"low", "medium", "high"},
+		InputModalities:          []string{"text", "image"},
+		ContextWindow:            1_048_576,
+		MaxContextWindow:         1_048_576,
+	},
+	"gemini-4-argon": {
+		DisplayName:              "Gemini 4 Argon",
+		Description:              "Dynamic Gemini 4 selector backed by low, medium, and high reasoning variants.",
+		DefaultReasoningLevel:    "medium",
+		SupportedReasoningLevels: []string{"low", "medium", "high"},
+		InputModalities:          []string{"text", "image"},
+		ContextWindow:            1_048_576,
+		MaxContextWindow:         1_048_576,
+	},
+	"deepseek-v4.1-flash": {
+		DisplayName:              "DeepSeek V4.1 Flash",
+		Description:              "DeepSeek V4.1 Flash model for reasoning and agentic coding.",
+		DefaultReasoningLevel:    "low",
+		SupportedReasoningLevels: []string{"low", "high", "max"},
+		InputModalities:          []string{"text", "image"},
+		ContextWindow:            configuredCodexDeepSeekV4Context,
+		MaxContextWindow:         configuredCodexDeepSeekV4Context,
+	},
+	"glm-5.3": {
+		DisplayName:              "GLM-5.3",
+		Description:              "Flagship GLM model for long-horizon coding, agents, and complex project delivery.",
+		DefaultReasoningLevel:    "low",
+		SupportedReasoningLevels: []string{"low", "high", "max"},
+		InputModalities:          []string{"text"},
+		ContextWindow:            1_000_000,
+		MaxContextWindow:         1_000_000,
+	},
+	"glm-5.3-flash": {
+		DisplayName:              "GLM-5.3 Flash",
+		Description:              "Native multimodal GLM model for efficient coding and long-horizon agent tasks.",
+		DefaultReasoningLevel:    "low",
+		SupportedReasoningLevels: []string{"low", "high", "max"},
+		InputModalities:          []string{"text", "image"},
+		ContextWindow:            1_000_000,
+		MaxContextWindow:         1_000_000,
+	},
+}
+
+func applyConfiguredCodexKnownModelMetadata(descriptor *configuredCodexModelDescriptor, modelID string) {
+	if descriptor == nil {
+		return
+	}
+	modelID = strings.ToLower(codexProviderQualifiedModelID(modelID))
+	metadata, ok := configuredCodexKnownModelMetadata[modelID]
+	if !ok {
+		return
+	}
+	if metadata.DisplayName != "" {
+		descriptor.DisplayName = metadata.DisplayName
+	}
+	if metadata.Description != "" {
+		descriptor.Description = metadata.Description
+	}
+	if len(metadata.SupportedReasoningLevels) > 0 {
+		levels := make([]configuredCodexReasoningLevel, 0, len(metadata.SupportedReasoningLevels))
+		for _, effort := range metadata.SupportedReasoningLevels {
+			levels = append(levels, configuredCodexReasoningLevel{
+				Effort:      effort,
+				Description: configuredCodexReasoningLevelDescription(effort),
+			})
+		}
+		descriptor.SupportedReasoningLevels = levels
+		defaultLevel := metadata.DefaultReasoningLevel
+		if defaultLevel == "" || !stringSliceContains(metadata.SupportedReasoningLevels, defaultLevel) {
+			defaultLevel = metadata.SupportedReasoningLevels[0]
+		}
+		descriptor.DefaultReasoningLevel = &defaultLevel
+	}
+	if modalities := normalizeCodexInputModalities(metadata.InputModalities); len(modalities) > 0 {
+		descriptor.InputModalities = modalities
+	}
+	if metadata.ContextWindow > 0 {
+		descriptor.ContextWindow = metadata.ContextWindow
+	}
+	if metadata.MaxContextWindow > 0 {
+		descriptor.MaxContextWindow = metadata.MaxContextWindow
+	} else if metadata.ContextWindow > 0 {
+		descriptor.MaxContextWindow = metadata.ContextWindow
+	}
+}
+
 func newConfiguredCodexModelDescriptor(modelID string) configuredCodexModelDescriptor {
 	modelID = strings.TrimSpace(modelID)
 	noReasoningLevel := "none"
@@ -503,9 +663,12 @@ func newConfiguredCodexModelDescriptor(modelID string) configuredCodexModelDescr
 		descriptor.Description = "OpenAI GPT coding model routed through Sub2API."
 		descriptor.SupportsParallelToolCalls = true
 		descriptor.ServiceTiers = configuredCodexServiceTiersForModel(modelID)
+		if configuredCodexSupportsPriorityServiceTier(modelID) {
+			descriptor.AdditionalSpeedTiers = []string{"fast"}
+		}
 		if isOpenAICodexReasoningGPTModel(modelID) {
 			defaultReasoningLevel := "medium"
-			if getNormalizedCodexModel(modelID) == "gpt-5.6-sol" || openai.IsGPT61SolModelSpelling(modelID) {
+			if getNormalizedCodexModel(modelID) == "gpt-5.6-sol" || openai.IsGPT61SolModelSpelling(modelID) || openai.IsGPT61TerraModelSpelling(modelID) {
 				defaultReasoningLevel = "low"
 			}
 			descriptor.DefaultReasoningLevel = &defaultReasoningLevel
@@ -514,7 +677,7 @@ func newConfiguredCodexModelDescriptor(modelID string) configuredCodexModelDescr
 			descriptor.TruncationPolicy = configuredCodexTruncationPolicy{Mode: "tokens", Limit: configuredCodexToolOutputMaxTokens}
 			// GPT-6 Sol/Luna retain the existing 5.6 Codex window as an offline
 			// compatibility template; live account metadata remains authoritative.
-			if isOpenAIGPT56Model(modelID) || openai.IsGPT6SolOrLunaModelSpelling(modelID) || openai.IsGPT61SolModelSpelling(modelID) {
+			if isOpenAIGPT56Model(modelID) || openai.IsGPT6SolOrLunaModelSpelling(modelID) || openai.IsGPT61SolModelSpelling(modelID) || openai.IsGPT61TerraModelSpelling(modelID) {
 				descriptor.MaxContextWindow = configuredCodexGPT56MaxContext
 			}
 			if isOpenAIGPT6AstraModel(modelID) {
@@ -533,6 +696,8 @@ func newConfiguredCodexModelDescriptor(modelID string) configuredCodexModelDescr
 			descriptor.DefaultVerbosity = &defaultVerbosity
 		}
 	}
+
+	applyConfiguredCodexKnownModelMetadata(&descriptor, modelID)
 
 	if openai.IsGPT61SolModelSpelling(modelID) {
 		if err := json.Unmarshal(openai.CodexGPT61SolMetadata, &descriptor); err != nil {
@@ -643,7 +808,7 @@ func configuredCodexGPTReasoningLevels(modelID string) []configuredCodexReasonin
 			Description: "Maximum reasoning depth for complex tasks",
 		})
 	}
-	if isOpenAIGPT6AstraModel(modelID) || openai.IsGPT61SolModelSpelling(modelID) || normalized == "gpt-5.6-sol" || normalized == "gpt-5.6-terra" {
+	if isOpenAIGPT6AstraModel(modelID) || openai.IsGPT61SolModelSpelling(modelID) || openai.IsGPT61TerraModelSpelling(modelID) || normalized == "gpt-5.6-sol" || normalized == "gpt-5.6-terra" {
 		levels = append(levels, configuredCodexReasoningLevel{
 			Effort:      "ultra",
 			Description: "Maximum reasoning with automatic task delegation",
@@ -2222,8 +2387,8 @@ func convertOpenAIModelListToCodexManifestForAccount(body []byte, account *Accou
 }
 
 // completeAPIKeyCodexModelsManifestMetadata fills fields omitted by standard
-// OpenAI-compatible /models endpoints. Existing provider metadata always wins;
-// only absent or null values are synthesized.
+// OpenAI-compatible /models endpoints. Existing provider metadata wins except
+// empty Fast capability arrays, which are completed from verified local defaults.
 // CompleteAPIKeyCodexModelsManifestForClient fills the complete ModelInfo
 // contract immediately before a group-specific API key manifest is returned.
 // The shared upstream cache remains independent from local group policy.
@@ -2497,6 +2662,11 @@ func mergeMissingCodexModelFields(current, defaults map[string]json.RawMessage) 
 	changed := false
 	for key, defaultValue := range defaults {
 		currentValue, exists := current[key]
+		if exists && shouldFillEmptyCodexModelArrayFromDefaults(key, currentValue, defaultValue) {
+			current[key] = append(json.RawMessage(nil), defaultValue...)
+			changed = true
+			continue
+		}
 		if exists && stringSliceContains(codexToolCapabilityFields, key) {
 			continue
 		}
@@ -2530,6 +2700,17 @@ func mergeMissingCodexModelFields(current, defaults map[string]json.RawMessage) 
 		changed = true
 	}
 	return changed, nil
+}
+
+// Upstreams often return empty capability arrays for known Codex GPT models.
+// An empty declaration does not make the capability selectable in Codex, so use
+// the local descriptor's verified default while preserving non-empty upstream data.
+func shouldFillEmptyCodexModelArrayFromDefaults(key string, currentValue, defaultValue json.RawMessage) bool {
+	if key != "additional_speed_tiers" && key != "service_tiers" {
+		return false
+	}
+	return bytes.Equal(bytes.TrimSpace(currentValue), []byte("[]")) &&
+		!bytes.Equal(bytes.TrimSpace(defaultValue), []byte("[]"))
 }
 
 func validateCodexModelsManifestEnvelope(body []byte) error {
