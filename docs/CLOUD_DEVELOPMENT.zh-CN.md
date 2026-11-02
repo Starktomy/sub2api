@@ -63,6 +63,8 @@ manifest 校验允许数据库额外存在后续迁移，以便 expand/contract 
 
 `RUNTIME_SHUTDOWN_TIMEOUT_SECONDS` 控制真实 HTTP Shutdown 的等待预算，默认 90 秒，上限 110 秒。它不实现 SIGTERM 前排空，不迁移 WebSocket，也不保证全部 cleanup 在 ECS 120 秒停止阶段内完成。生产长连接生命周期仍为待办。
 
+第二批已在路由层和 provider 生命周期中接线角色归属，但进程启动门禁仍保持关闭。真实迁移范围、eager构造器和本地队列阻碍见 [CLOUD_RUNTIME_MIGRATION.zh-CN.md](CLOUD_RUNTIME_MIGRATION.zh-CN.md)。可单独验证路由矩阵与显式生命周期，不要把这些单元契约当成独立角色可上线的证据。
+
 ## 聚焦测试
 
 ```sh

@@ -28,6 +28,7 @@ type Application struct {
 	Server        *http.Server
 	PromptAudit   *securityaudit.PromptService
 	PluginManager *service.PluginManager
+	Lifecycle     *service.RuntimeLifecycle
 	Cleanup       func()
 }
 
@@ -58,7 +59,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 		provideCleanup,
 
 		// Application struct
-		wire.Struct(new(Application), "Server", "PromptAudit", "PluginManager", "Cleanup"),
+		wire.Struct(new(Application), "Server", "PromptAudit", "PluginManager", "Lifecycle", "Cleanup"),
 	)
 	return nil, nil
 }
@@ -131,6 +132,8 @@ func provideCleanup(
 	openAIAutoReset *service.OpenAIQuotaAutoResetService,
 	promptAudit *securityaudit.PromptService,
 	pluginManager *service.PluginManager,
+	lifecycle *service.RuntimeLifecycle,
+	timingWheel *service.TimingWheelService,
 ) func() {
 	return func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -143,12 +146,6 @@ func provideCleanup(
 
 		// 应用层清理步骤可并行执行，基础设施资源（Redis/Ent）最后按顺序关闭。
 		parallelSteps := []cleanupStep{
-			{"PluginManager", func() error {
-				if pluginManager != nil {
-					pluginManager.Stop()
-				}
-				return nil
-			}},
 			{"OpenAIQuotaAutoResetService", func() error {
 				if openAIAutoReset != nil {
 					openAIAutoReset.Stop()
@@ -176,12 +173,6 @@ func provideCleanup(
 			{"OpsRuntimeSettingsRefresh", func() error {
 				if opsService != nil {
 					opsService.StopRuntimeSettingsRefresh()
-				}
-				return nil
-			}},
-			{"PromptAuditService", func() error {
-				if promptAudit != nil {
-					return promptAudit.Shutdown(ctx)
 				}
 				return nil
 			}},
@@ -311,12 +302,6 @@ func provideCleanup(
 				billingCache.Stop()
 				return nil
 			}},
-			{"UsageRecordWorkerPool", func() error {
-				if usageRecordWorkerPool != nil {
-					usageRecordWorkerPool.Stop()
-				}
-				return nil
-			}},
 			{"OAuthService", func() error {
 				oauth.Stop()
 				return nil
@@ -402,6 +387,12 @@ func provideCleanup(
 		}
 
 		infraSteps := []cleanupStep{
+			{"TimingWheelService", func() error {
+				if timingWheel != nil {
+					timingWheel.Stop()
+				}
+				return nil
+			}},
 			{"Redis", func() error {
 				if rdb == nil {
 					return nil
@@ -420,6 +411,9 @@ func provideCleanup(
 			var wg sync.WaitGroup
 			for i := range steps {
 				step := steps[i]
+				if lifecycle != nil && lifecycle.ManagesTask(step.name) {
+					continue // Deferred tasks are stopped exactly once by their lifecycle.
+				}
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
@@ -444,6 +438,27 @@ func provideCleanup(
 			}
 		}
 
+		// Drain the process-local request writer before stopping managed producers
+		// and their downstream stores. The old parallel cleanup is retained only
+		// for eager constructors that have not yet been migrated.
+		// Plugin and prompt-audit writers can still enqueue process-local work;
+		// stop those producers before draining usage and downstream sinks.
+		if pluginManager != nil {
+			pluginManager.Stop()
+		}
+		if promptAudit != nil {
+			if err := promptAudit.Shutdown(ctx); err != nil {
+				log.Printf("[Cleanup] PromptAuditService failed: %v", err)
+			}
+		}
+		if usageRecordWorkerPool != nil {
+			usageRecordWorkerPool.Stop()
+		}
+		if lifecycle != nil {
+			if err := lifecycle.Stop(ctx); err != nil {
+				log.Printf("[Cleanup] RuntimeLifecycle failed: %v", err)
+			}
+		}
 		runParallel(parallelSteps)
 		runSequential(infraSteps)
 

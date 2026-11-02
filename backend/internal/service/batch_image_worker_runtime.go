@@ -22,6 +22,7 @@ func NewBatchImageWorkerRuntime(worker *BatchImageWorker, cfg *config.Config) *B
 }
 
 func ProvideBatchImageWorkerRuntime(
+	lifecycle *RuntimeLifecycle,
 	repo BatchImageRepository,
 	accountRepo AccountRepository,
 	queue BatchImageQueue,
@@ -57,7 +58,7 @@ func ProvideBatchImageWorkerRuntime(
 		StaleAfter: NewBatchImageWorkerOptionsFromConfig(cfg).StaleActiveAfter,
 		Limit:      NewBatchImageWorkerOptionsFromConfig(cfg).RecoverLimit,
 	}
-	runtime.Start()
+	registerRuntimeService(lifecycle, "BatchImageWorkerRuntime", RuntimeScopeWorker, runtime)
 	return runtime
 }
 

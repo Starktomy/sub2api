@@ -58,7 +58,9 @@ jobs:
         run: |
           go test ./internal/config
           go test ./internal/repository -run 'Test(CheckMigrations|InitializeSchema|InitEntCheck|InitEntPostgres)' -count=1
-          go test ./cmd/migrate -count=1
+          go test ./cmd/migrate ./cmd/server -count=1
+          go test ./internal/service -run 'TestRuntimeLifecycle|TestProvideTimingWheelService' -count=1
+          go test ./internal/server ./internal/server/routes -count=1
 
   terraform-offline:
     runs-on: ubuntu-latest

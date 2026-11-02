@@ -381,6 +381,7 @@ func NewOpenCodeGoUsageService(
 }
 
 func ProvideOpenCodeGoUsageService(
+	lifecycle *RuntimeLifecycle,
 	accountRepo AccountRepository,
 	httpUpstream HTTPUpstream,
 	settingService *SettingService,
@@ -390,7 +391,7 @@ func ProvideOpenCodeGoUsageService(
 	svc := NewOpenCodeGoUsageService(accountRepo, httpUpstream, settingService)
 	svc.lockCache = lockCache
 	svc.db = db
-	svc.Start()
+	registerRuntimeService(lifecycle, "OpenCodeGoUsageService", RuntimeScopeWorker, svc)
 	return svc
 }
 

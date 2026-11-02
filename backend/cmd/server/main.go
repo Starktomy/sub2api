@@ -7,6 +7,7 @@ import (
 	_ "embed"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -106,7 +107,9 @@ func main() {
 	}
 
 	// Normal server mode
-	runMainServer()
+	if err := runMainServer(); err != nil {
+		log.Fatalf("Server stopped with an error: %v", err)
+	}
 }
 
 func runSetupServer() {
@@ -146,16 +149,16 @@ func runSetupServer() {
 	}
 }
 
-func runMainServer() {
+func runMainServer() error {
 	cfg, err := config.LoadForBootstrap()
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		return fmt.Errorf("load config: %w", err)
 	}
 	if err := cfg.Runtime.ValidateRoleSupport(); err != nil {
-		log.Fatalf("Unsupported runtime role: %v", err)
+		return fmt.Errorf("unsupported runtime role: %w", err)
 	}
 	if err := logger.Init(logger.OptionsFromConfig(cfg.Log)); err != nil {
-		log.Fatalf("Failed to initialize logger: %v", err)
+		return fmt.Errorf("initialize logger: %w", err)
 	}
 	if cfg.RunMode == config.RunModeSimple {
 		log.Println("⚠️  WARNING: Running in SIMPLE mode - billing and quota checks are DISABLED")
@@ -168,9 +171,14 @@ func runMainServer() {
 
 	app, err := initializeApplication(buildInfo)
 	if err != nil {
-		log.Fatalf("Failed to initialize application: %v", err)
+		return fmt.Errorf("initialize application: %w", err)
 	}
 	defer app.Cleanup()
+	// All provider dependencies exist before deferred maintenance tasks begin.
+	// Returning on failure runs Cleanup, which unwinds successful starts.
+	if err := app.Lifecycle.Start(context.Background()); err != nil {
+		return fmt.Errorf("start application lifecycle: %w", err)
+	}
 	if app.PluginManager != nil {
 		if err := app.PluginManager.Start(context.Background()); err != nil {
 			log.Printf("Plugin manager started in degraded state: %v", err)
@@ -186,11 +194,11 @@ func runMainServer() {
 		}
 	}
 
-	// 启动服务器
+	// Report listener failure through the main goroutine so deferred lifecycle
+	// cleanup still runs instead of os.Exit from a background goroutine.
+	serverErrors := make(chan error, 1)
 	go func() {
-		if err := app.Server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("Failed to start server: %v", err)
-		}
+		serverErrors <- app.Server.ListenAndServe()
 	}()
 
 	log.Printf("Server started on %s", app.Server.Addr)
@@ -198,7 +206,15 @@ func runMainServer() {
 	// 等待中断信号
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+	defer signal.Stop(quit)
+	select {
+	case <-quit:
+	case err := <-serverErrors:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return fmt.Errorf("serve HTTP: %w", err)
+		}
+		return nil
+	}
 
 	log.Println("Shutting down server...")
 
@@ -212,4 +228,5 @@ func runMainServer() {
 	}
 
 	log.Println("Server exited")
+	return nil
 }

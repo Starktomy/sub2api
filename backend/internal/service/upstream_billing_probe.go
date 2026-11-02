@@ -294,6 +294,7 @@ func (s *UpstreamBillingProbeService) SetLeaderLock(lockCache LeaderLockCache, d
 
 // ProvideUpstreamBillingProbeService starts the process-wide periodic runner.
 func ProvideUpstreamBillingProbeService(
+	lifecycle *RuntimeLifecycle,
 	accountRepo AccountRepository,
 	accountTestService *AccountTestService,
 	settingService *SettingService,
@@ -302,7 +303,7 @@ func ProvideUpstreamBillingProbeService(
 ) *UpstreamBillingProbeService {
 	svc := NewUpstreamBillingProbeService(accountRepo, accountTestService, settingService)
 	svc.SetLeaderLock(lockCache, db)
-	svc.Start()
+	registerRuntimeService(lifecycle, "UpstreamBillingProbeService", RuntimeScopeWorker, svc)
 	return svc
 }
 

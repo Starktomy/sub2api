@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"log"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -18,6 +19,37 @@ import (
 )
 
 const frameSrcRefreshTimeout = 5 * time.Second
+
+// runtimeHTTPRole preserves legacy zero-valued configurations without treating
+// unknown roles as all. Executables validate the role before dependency wiring.
+func runtimeHTTPRole(cfg *config.Config) string {
+	if cfg == nil {
+		return config.RuntimeRoleAll
+	}
+	role := strings.ToLower(strings.TrimSpace(cfg.Runtime.Role))
+	if role == "" {
+		return config.RuntimeRoleAll
+	}
+	return role
+}
+
+func servesControlRoutes(cfg *config.Config) bool {
+	switch runtimeHTTPRole(cfg) {
+	case config.RuntimeRoleAll, config.RuntimeRoleControl:
+		return true
+	default:
+		return false
+	}
+}
+
+func servesGatewayRoutes(cfg *config.Config) bool {
+	switch runtimeHTTPRole(cfg) {
+	case config.RuntimeRoleAll, config.RuntimeRoleGateway:
+		return true
+	default:
+		return false
+	}
+}
 
 // SetupRouter 配置路由器中间件和路由
 func SetupRouter(
@@ -37,23 +69,37 @@ func SetupRouter(
 	cfg *config.Config,
 	redisClient *redis.Client,
 ) *gin.Engine {
-	middleware2.SetIngressRejectRecorder(opsService)
-	// 缓存 iframe 页面的 origin 列表，用于动态注入 CSP frame-src
-	var cachedFrameOrigins atomic.Pointer[[]string]
-	emptyOrigins := []string{}
-	cachedFrameOrigins.Store(&emptyOrigins)
-
-	refreshFrameOrigins := func() {
-		ctx, cancel := context.WithTimeout(context.Background(), frameSrcRefreshTimeout)
-		defer cancel()
-		origins, err := settingService.GetFrameSrcOrigins(ctx)
-		if err != nil {
-			// 获取失败时保留已有缓存，避免 frame-src 被意外清空
-			return
-		}
-		cachedFrameOrigins.Store(&origins)
+	if cfg == nil {
+		cfg = &config.Config{}
 	}
-	refreshFrameOrigins() // 启动时初始化
+	middleware2.SetIngressRejectRecorder(opsService)
+
+	// Only the control surface serves HTML. Gateway/worker startup must not
+	// query panel settings or install frontend invalidation callbacks.
+	var getFrameSrcOrigins func() []string
+	var refreshFrameOrigins func()
+	if servesControlRoutes(cfg) {
+		var cachedFrameOrigins atomic.Pointer[[]string]
+		emptyOrigins := []string{}
+		cachedFrameOrigins.Store(&emptyOrigins)
+		getFrameSrcOrigins = func() []string {
+			if p := cachedFrameOrigins.Load(); p != nil {
+				return *p
+			}
+			return nil
+		}
+		refreshFrameOrigins = func() {
+			ctx, cancel := context.WithTimeout(context.Background(), frameSrcRefreshTimeout)
+			defer cancel()
+			origins, err := settingService.GetFrameSrcOrigins(ctx)
+			if err != nil {
+				// 获取失败时保留已有缓存，避免 frame-src 被意外清空
+				return
+			}
+			cachedFrameOrigins.Store(&origins)
+		}
+		refreshFrameOrigins() // 启动时初始化
+	}
 
 	// 应用中间件
 	r.Use(middleware2.RequestLogger())
@@ -62,31 +108,28 @@ func SetupRouter(
 	r.Use(middleware2.SessionBindingContext(cfg))
 	r.Use(middleware2.Logger())
 	r.Use(middleware2.CORS(cfg.CORS))
-	r.Use(middleware2.SecurityHeaders(cfg.Security.CSP, func() []string {
-		if p := cachedFrameOrigins.Load(); p != nil {
-			return *p
-		}
-		return nil
-	}))
+	r.Use(middleware2.SecurityHeaders(cfg.Security.CSP, getFrameSrcOrigins))
 	r.Use(middleware2.ServerTiming(cfg.Server.EnableServerTiming))
 
-	// Serve embedded frontend with settings injection if available
-	if web.HasEmbeddedFrontend() {
-		frontendServer, err := web.NewFrontendServer(settingService) //nolint:staticcheck // SA4023: the !embed stub always errors; embed builds can return nil
-		if err != nil {                                              //nolint:staticcheck // SA4023: see above
-			log.Printf("Warning: Failed to create frontend server with settings injection: %v, using legacy mode", err)
-			r.Use(web.ServeEmbeddedFrontend())
-			settingService.SetOnUpdateCallback(refreshFrameOrigins)
+	// Serve embedded frontend with settings injection only on the control surface.
+	if servesControlRoutes(cfg) {
+		if web.HasEmbeddedFrontend() {
+			frontendServer, err := web.NewFrontendServer(settingService) //nolint:staticcheck // SA4023: the !embed stub always errors; embed builds can return nil
+			if err != nil {                                              //nolint:staticcheck // SA4023: see above
+				log.Printf("Warning: Failed to create frontend server with settings injection: %v, using legacy mode", err)
+				r.Use(web.ServeEmbeddedFrontend())
+				settingService.SetOnUpdateCallback(refreshFrameOrigins)
+			} else {
+				// Register combined callback: invalidate HTML cache + refresh frame origins
+				settingService.SetOnUpdateCallback(func() {
+					frontendServer.InvalidateCache()
+					refreshFrameOrigins()
+				})
+				r.Use(frontendServer.Middleware())
+			}
 		} else {
-			// Register combined callback: invalidate HTML cache + refresh frame origins
-			settingService.SetOnUpdateCallback(func() {
-				frontendServer.InvalidateCache()
-				refreshFrameOrigins()
-			})
-			r.Use(frontendServer.Middleware())
+			settingService.SetOnUpdateCallback(refreshFrameOrigins)
 		}
-	} else {
-		settingService.SetOnUpdateCallback(refreshFrameOrigins)
 	}
 
 	// 注册路由
@@ -113,25 +156,32 @@ func registerRoutes(
 	cfg *config.Config,
 	redisClient *redis.Client,
 ) {
-	// 通用路由（健康检查、状态等）
-	routes.RegisterCommonRoutes(r)
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	// Health is available for every role; setup status and client telemetry
+	// follow their respective control/gateway surfaces.
+	routes.RegisterCommonRoutes(r, runtimeHTTPRole(cfg))
 
-	// API v1
-	v1 := r.Group("/api/v1")
+	if servesControlRoutes(cfg) {
+		v1 := r.Group("/api/v1")
 
-	// 面板 API 限流器：认证接口按用户 ID、公开接口按安全客户端 IP，
-	// 防止高频刷管理面接口打爆数据库（阈值可在系统设置中调整）。
-	panelRateLimiter := middleware2.NewPanelRateLimiter(redisClient, settingService)
+		// 面板 API 限流器：认证接口按用户 ID、公开接口按安全客户端 IP，
+		// 防止高频刷管理面接口打爆数据库（阈值可在系统设置中调整）。
+		panelRateLimiter := middleware2.NewPanelRateLimiter(redisClient, settingService)
 
-	// 注册各模块路由
-	routes.RegisterAuthRoutes(v1, h, jwtAuth, auditLog, redisClient, settingService, panelRateLimiter)
-	routes.RegisterUserRoutes(v1, h, jwtAuth, auditLog, settingService, panelRateLimiter)
-	routes.RegisterModelPlazaRoutes(v1, h, optionalJWTAuth, settingService, panelRateLimiter)
-	routes.RegisterAdminRoutes(v1, h, adminAuth, auditLog, stepUpAuth, settingService, panelRateLimiter)
-	routes.RegisterMCPRoutes(v1, h, auditLog, stepUpAuth, settingService, panelRateLimiter, cfg.CORS.AllowedOrigins, redisClient)
-	routes.RegisterMCPOAuthRoutes(r, v1, h, redisClient)
-	routes.RegisterGatewayRoutes(r, h, apiKeyAuth, apiKeyService, subscriptionService, opsService, settingService, compositeResolver, cfg)
-	routes.RegisterPaymentRoutes(v1, h.Payment, h.PaymentWebhook, h.Admin.Payment, jwtAuth, adminAuth, auditLog, settingService, panelRateLimiter, redisClient)
+		routes.RegisterAuthRoutes(v1, h, jwtAuth, auditLog, redisClient, settingService, panelRateLimiter)
+		routes.RegisterUserRoutes(v1, h, jwtAuth, auditLog, settingService, panelRateLimiter)
+		routes.RegisterModelPlazaRoutes(v1, h, optionalJWTAuth, settingService, panelRateLimiter)
+		routes.RegisterAdminRoutes(v1, h, adminAuth, auditLog, stepUpAuth, settingService, panelRateLimiter)
+		routes.RegisterMCPRoutes(v1, h, auditLog, stepUpAuth, settingService, panelRateLimiter, cfg.CORS.AllowedOrigins, redisClient)
+		routes.RegisterMCPOAuthRoutes(r, v1, h, redisClient)
+		routes.RegisterPaymentRoutes(v1, h.Payment, h.PaymentWebhook, h.Admin.Payment, jwtAuth, adminAuth, auditLog, settingService, panelRateLimiter, redisClient)
 
-	handler.RegisterPageRoutes(v1, cfg.Pricing.DataDir, gin.HandlerFunc(jwtAuth), gin.HandlerFunc(adminAuth), settingService)
+		handler.RegisterPageRoutes(v1, cfg.Pricing.DataDir, gin.HandlerFunc(jwtAuth), gin.HandlerFunc(adminAuth), settingService)
+	}
+
+	if servesGatewayRoutes(cfg) {
+		routes.RegisterGatewayRoutes(r, h, apiKeyAuth, apiKeyService, subscriptionService, opsService, settingService, compositeResolver, cfg)
+	}
 }

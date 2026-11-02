@@ -430,6 +430,7 @@ func NewOllamaCloudUsageService(
 }
 
 func ProvideOllamaCloudUsageService(
+	lifecycle *RuntimeLifecycle,
 	accountRepo AccountRepository,
 	httpUpstream HTTPUpstream,
 	settingService *SettingService,
@@ -442,7 +443,7 @@ func ProvideOllamaCloudUsageService(
 	svc := NewOllamaCloudUsageService(accountRepo, httpUpstream, settingService, encryptor, keyConfigured)
 	svc.lockCache = lockCache
 	svc.db = db
-	svc.Start()
+	registerRuntimeService(lifecycle, "OllamaCloudUsageService", RuntimeScopeProcess, svc)
 	return svc
 }
 

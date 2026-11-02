@@ -105,9 +105,9 @@ func ProvideBatchImageModelPricingResolver(resolver *ModelPricingResolver) *Batc
 	return &BatchImageModelPricingResolver{Resolver: resolver}
 }
 
-func ProvideBatchImageCleanupService(repo BatchImageRepository, accountRepo AccountRepository, cfg *config.Config) *BatchImageCleanupService {
+func ProvideBatchImageCleanupService(lifecycle *RuntimeLifecycle, repo BatchImageRepository, accountRepo AccountRepository, cfg *config.Config) *BatchImageCleanupService {
 	svc := NewBatchImageCleanupService(repo, accountRepo, cfg)
-	svc.Start()
+	registerRuntimeService(lifecycle, "BatchImageCleanupService", RuntimeScopeWorker, svc)
 	return svc
 }
 
@@ -124,6 +124,7 @@ func ProvideOpenAIOAuthService(
 
 // ProvideTokenRefreshService creates and starts TokenRefreshService
 func ProvideTokenRefreshService(
+	lifecycle *RuntimeLifecycle,
 	accountRepo AccountRepository,
 	oauthService *OAuthService,
 	openaiOAuthService *OpenAIOAuthService,
@@ -147,7 +148,7 @@ func ProvideTokenRefreshService(
 	// 调用侧显式注入后台刷新策略，避免策略漂移
 	svc.SetRefreshPolicy(DefaultBackgroundRefreshPolicy())
 	svc.SetAccountRuntimeBlocker(runtimeBlocker)
-	svc.Start()
+	registerRuntimeService(lifecycle, "TokenRefreshService", RuntimeScopeWorker, svc)
 	return svc
 }
 
@@ -204,6 +205,7 @@ func ProvideOpenAIQuotaService(
 
 // ProvideOpenAIQuotaAutoResetService 启动账号级自动用卡队列与补偿扫描。
 func ProvideOpenAIQuotaAutoResetService(
+	lifecycle *RuntimeLifecycle,
 	accountRepo AccountRepository,
 	quotaService *OpenAIQuotaService,
 	rateLimitService *RateLimitService,
@@ -221,7 +223,7 @@ func ProvideOpenAIQuotaAutoResetService(
 		settingService,
 		leaderLock,
 	)
-	service.Start()
+	registerRuntimeService(lifecycle, "OpenAIQuotaAutoResetService", RuntimeScopeProcess, service)
 	return service
 }
 
@@ -325,6 +327,7 @@ func ProvideCNProviderBalanceService(
 // （落 extra 快照供调度阈值评估自动停调）。
 // 间隔取自 gateway.cn_providers.balance_check_interval_minutes；<=0 或关闭时不启动。
 func ProvideCNProviderBalanceCheckService(
+	lifecycle *RuntimeLifecycle,
 	accountRepo AccountRepository,
 	balanceService *CNProviderBalanceService,
 	quotaService *CNProviderQuotaService,
@@ -335,7 +338,7 @@ func ProvideCNProviderBalanceCheckService(
 		minutes = cfg.Gateway.CNProviders.BalanceCheckIntervalMinutes
 	}
 	svc := NewCNProviderBalanceCheckService(accountRepo, balanceService, quotaService, cfg, time.Duration(minutes)*time.Minute)
-	svc.Start()
+	registerRuntimeService(lifecycle, "CNProviderBalanceCheckService", RuntimeScopeWorker, svc)
 	return svc
 }
 
@@ -386,66 +389,78 @@ func ProvideGrokTokenProvider(
 }
 
 // ProvideDashboardAggregationService 创建并启动仪表盘聚合服务
-func ProvideDashboardAggregationService(repo DashboardAggregationRepository, timingWheel *TimingWheelService, lockCache LeaderLockCache, db *sql.DB, cfg *config.Config, settingRepo SettingRepository) *DashboardAggregationService {
+func ProvideDashboardAggregationService(lifecycle *RuntimeLifecycle, repo DashboardAggregationRepository, timingWheel *TimingWheelService, lockCache LeaderLockCache, db *sql.DB, cfg *config.Config, settingRepo SettingRepository) *DashboardAggregationService {
 	svc := NewDashboardAggregationService(repo, timingWheel, cfg)
 	svc.settingRepo = settingRepo
 	svc.SetLeaderLock(lockCache, db)
-	svc.Start()
+	lifecycle.Register(RuntimeTask{
+		Name: "DashboardAggregationService", Scope: RuntimeScopeWorker,
+		Start: func(context.Context) error { svc.Start(); return nil },
+		Stop: func(context.Context) error {
+			// The legacy service has no Stop method. Cancel future schedules;
+			// already-running backfills still need a cancellable lifecycle.
+			timingWheel.Cancel("dashboard:aggregation")
+			timingWheel.Cancel("dashboard:retention")
+			return nil
+		},
+	})
 	return svc
 }
 
 // ProvideUsageCleanupService 创建并启动使用记录清理任务服务
-func ProvideUsageCleanupService(repo UsageCleanupRepository, timingWheel *TimingWheelService, dashboardAgg *DashboardAggregationService, cfg *config.Config) *UsageCleanupService {
+func ProvideUsageCleanupService(lifecycle *RuntimeLifecycle, repo UsageCleanupRepository, timingWheel *TimingWheelService, dashboardAgg *DashboardAggregationService, cfg *config.Config) *UsageCleanupService {
 	svc := NewUsageCleanupService(repo, timingWheel, dashboardAgg, cfg)
-	svc.Start()
+	registerRuntimeService(lifecycle, "UsageCleanupService", RuntimeScopeWorker, svc)
 	return svc
 }
 
 // ProvideAccountExpiryService creates and starts AccountExpiryService.
-func ProvideAccountExpiryService(accountRepo AccountRepository) *AccountExpiryService {
+func ProvideAccountExpiryService(lifecycle *RuntimeLifecycle, accountRepo AccountRepository) *AccountExpiryService {
 	svc := NewAccountExpiryService(accountRepo, time.Minute)
-	svc.Start()
+	registerRuntimeService(lifecycle, "AccountExpiryService", RuntimeScopeWorker, svc)
 	return svc
 }
 
 // ProvideOpenAICodexVersionSyncService creates and starts OpenAICodexVersionSyncService.
 // 出站 Codex 身份的版本号靠它跟随官方发布，无需为了跟版本而发新版本；面板可关闭。
 func ProvideOpenAICodexVersionSyncService(
+	lifecycle *RuntimeLifecycle,
 	settingRepo SettingRepository,
 	settingService *SettingService,
 	githubClient GitHubReleaseClient,
 ) *OpenAICodexVersionSyncService {
 	svc := NewOpenAICodexVersionSyncService(settingRepo, settingService, githubClient, openAICodexVersionSyncInterval)
-	svc.Start()
+	registerRuntimeService(lifecycle, "OpenAICodexVersionSyncService", RuntimeScopeWorker, svc)
 	return svc
 }
 
 // ProvideClaudeCodeVersionSyncService creates and starts ClaudeCodeVersionSyncService.
 // 出站 Claude Code 身份的版本号靠它跟随官方发布，无需为了跟版本而发新版本；面板可关闭。
 func ProvideClaudeCodeVersionSyncService(
+	lifecycle *RuntimeLifecycle,
 	settingRepo SettingRepository,
 	settingService *SettingService,
 	githubClient GitHubReleaseClient,
 ) *ClaudeCodeVersionSyncService {
 	svc := NewClaudeCodeVersionSyncService(settingRepo, settingService, githubClient, claudeCodeVersionSyncInterval)
-	svc.Start()
+	registerRuntimeService(lifecycle, "ClaudeCodeVersionSyncService", RuntimeScopeWorker, svc)
 	return svc
 }
 
 // ProvideProxyExpiryService creates and starts ProxyExpiryService.
-func ProvideProxyExpiryService(proxyRepo ProxyRepository) *ProxyExpiryService {
+func ProvideProxyExpiryService(lifecycle *RuntimeLifecycle, proxyRepo ProxyRepository) *ProxyExpiryService {
 	svc := NewProxyExpiryService(proxyRepo, time.Minute)
-	svc.Start()
+	registerRuntimeService(lifecycle, "ProxyExpiryService", RuntimeScopeWorker, svc)
 	return svc
 }
 
 // ProvideSubscriptionExpiryService creates and starts SubscriptionExpiryService.
-func ProvideSubscriptionExpiryService(userSubRepo UserSubscriptionRepository, settingRepo SettingRepository, notificationEmailService *NotificationEmailService, lockCache LeaderLockCache, db *sql.DB) *SubscriptionExpiryService {
+func ProvideSubscriptionExpiryService(lifecycle *RuntimeLifecycle, userSubRepo UserSubscriptionRepository, settingRepo SettingRepository, notificationEmailService *NotificationEmailService, lockCache LeaderLockCache, db *sql.DB) *SubscriptionExpiryService {
 	svc := NewSubscriptionExpiryService(userSubRepo, time.Minute)
 	svc.SetSettingRepository(settingRepo)
 	svc.SetNotificationEmailService(notificationEmailService)
 	svc.SetLeaderLock(lockCache, db)
-	svc.Start()
+	registerRuntimeService(lifecycle, "SubscriptionExpiryService", RuntimeScopeWorker, svc)
 	return svc
 }
 
@@ -455,14 +470,17 @@ func ProvideTimingWheelService() (*TimingWheelService, error) {
 	if err != nil {
 		return nil, err
 	}
+	// go-zero starts the wheel inside its constructor. Keep it on the legacy
+	// eager-resource cleanup path until construction is made explicitly lazy;
+	// otherwise a failure before Lifecycle.Start would leak the running wheel.
 	svc.Start()
 	return svc, nil
 }
 
-// ProvideDeferredService creates and starts DeferredService
-func ProvideDeferredService(accountRepo AccountRepository, timingWheel *TimingWheelService) *DeferredService {
+// ProvideDeferredService constructs DeferredService and registers its local flush lifecycle.
+func ProvideDeferredService(lifecycle *RuntimeLifecycle, accountRepo AccountRepository, timingWheel *TimingWheelService) *DeferredService {
 	svc := NewDeferredService(accountRepo, timingWheel, 10*time.Second)
-	svc.Start()
+	registerRuntimeService(lifecycle, "DeferredService", RuntimeScopeProcess, svc)
 	return svc
 }
 
@@ -490,6 +508,7 @@ func ProvideUserMessageQueueService(cache UserMsgQueueCache, rpmCache RPMCache, 
 
 // ProvideSchedulerSnapshotService creates and starts SchedulerSnapshotService.
 func ProvideSchedulerSnapshotService(
+	lifecycle *RuntimeLifecycle,
 	cache SchedulerCache,
 	outboxRepo SchedulerOutboxRepository,
 	accountRepo AccountRepository,
@@ -497,7 +516,7 @@ func ProvideSchedulerSnapshotService(
 	cfg *config.Config,
 ) *SchedulerSnapshotService {
 	svc := NewSchedulerSnapshotService(cache, outboxRepo, accountRepo, groupRepo, cfg)
-	svc.Start()
+	registerRuntimeService(lifecycle, "SchedulerSnapshotService", RuntimeScopeWorker, svc)
 	return svc
 }
 
@@ -528,6 +547,7 @@ func ProvideRateLimitService(
 
 // ProvideOpsMetricsCollector creates and starts OpsMetricsCollector.
 func ProvideOpsMetricsCollector(
+	lifecycle *RuntimeLifecycle,
 	opsRepo OpsRepository,
 	settingRepo SettingRepository,
 	accountRepo AccountRepository,
@@ -537,12 +557,13 @@ func ProvideOpsMetricsCollector(
 	cfg *config.Config,
 ) *OpsMetricsCollector {
 	collector := NewOpsMetricsCollector(opsRepo, settingRepo, accountRepo, concurrencyService, db, redisClient, cfg)
-	collector.Start()
+	registerRuntimeService(lifecycle, "OpsMetricsCollector", RuntimeScopeProcess, collector)
 	return collector
 }
 
 // ProvideOpsAggregationService creates and starts OpsAggregationService (hourly/daily pre-aggregation).
 func ProvideOpsAggregationService(
+	lifecycle *RuntimeLifecycle,
 	opsRepo OpsRepository,
 	settingRepo SettingRepository,
 	db *sql.DB,
@@ -550,12 +571,13 @@ func ProvideOpsAggregationService(
 	cfg *config.Config,
 ) *OpsAggregationService {
 	svc := NewOpsAggregationService(opsRepo, settingRepo, db, redisClient, cfg)
-	svc.Start()
+	registerRuntimeService(lifecycle, "OpsAggregationService", RuntimeScopeWorker, svc)
 	return svc
 }
 
 // ProvideOpsAlertEvaluatorService creates and starts OpsAlertEvaluatorService.
 func ProvideOpsAlertEvaluatorService(
+	lifecycle *RuntimeLifecycle,
 	opsService *OpsService,
 	opsRepo OpsRepository,
 	emailService *EmailService,
@@ -564,7 +586,7 @@ func ProvideOpsAlertEvaluatorService(
 	proxyRepo ProxyRepository,
 ) *OpsAlertEvaluatorService {
 	svc := NewOpsAlertEvaluatorService(opsService, opsRepo, emailService, redisClient, cfg, proxyRepo)
-	svc.Start()
+	registerRuntimeService(lifecycle, "OpsAlertEvaluatorService", RuntimeScopeWorker, svc)
 	return svc
 }
 
@@ -574,6 +596,7 @@ func ProvideOpsAlertEvaluatorService(
 // settingRepo 让 cleanup service 自己读 ops_advanced_settings.data_retention 覆盖 cfg；
 // opsService 用来反向注入 cleanup hook，以便 UI 改清理设置时能 Reload cron。
 func ProvideOpsCleanupService(
+	lifecycle *RuntimeLifecycle,
 	opsRepo OpsRepository,
 	db *sql.DB,
 	redisClient *redis.Client,
@@ -583,25 +606,25 @@ func ProvideOpsCleanupService(
 	opsService *OpsService,
 ) *OpsCleanupService {
 	svc := NewOpsCleanupService(opsRepo, db, redisClient, cfg, channelMonitorSvc, settingRepo)
-	svc.Start()
+	registerRuntimeService(lifecycle, "OpsCleanupService", RuntimeScopeWorker, svc)
 	if opsService != nil {
 		opsService.SetCleanupReloader(svc)
 	}
 	return svc
 }
 
-func ProvideOpsSystemLogSink(opsRepo OpsRepository) *OpsSystemLogSink {
+func ProvideOpsSystemLogSink(lifecycle *RuntimeLifecycle, opsRepo OpsRepository) *OpsSystemLogSink {
 	sink := NewOpsSystemLogSink(opsRepo)
-	sink.Start()
+	registerRuntimeService(lifecycle, "OpsSystemLogSink", RuntimeScopeProcess, sink)
 	logger.SetSink(sink)
 	return sink
 }
 
 // ProvideAuditLogService 创建操作审计日志服务并启动异步写入与保留期清理协程。
 // 停止逻辑挂在 cmd/server 的 provideCleanup。
-func ProvideAuditLogService(repo AuditLogRepository, settingService *SettingService) *AuditLogService {
+func ProvideAuditLogService(lifecycle *RuntimeLifecycle, repo AuditLogRepository, settingService *SettingService) *AuditLogService {
 	svc := NewAuditLogService(repo, settingService)
-	svc.Start()
+	registerRuntimeService(lifecycle, "AuditLogService", RuntimeScopeProcess, svc)
 	return svc
 }
 
@@ -638,16 +661,16 @@ func ProvideSystemOperationLockService(repo IdempotencyRepository, cfg *config.C
 	return NewSystemOperationLockService(repo, buildIdempotencyConfig(cfg))
 }
 
-func ProvideIdempotencyCleanupService(repo IdempotencyRepository, cfg *config.Config) *IdempotencyCleanupService {
+func ProvideIdempotencyCleanupService(lifecycle *RuntimeLifecycle, repo IdempotencyRepository, cfg *config.Config) *IdempotencyCleanupService {
 	svc := NewIdempotencyCleanupService(repo, cfg)
-	svc.Start()
+	registerRuntimeService(lifecycle, "IdempotencyCleanupService", RuntimeScopeWorker, svc)
 	return svc
 }
 
 // ProvideGeminiCachedContentService creates GeminiCachedContentService and starts its mutation recovery loop.
-func ProvideGeminiCachedContentService(repo GeminiCachedContentRepository, compat *GeminiMessagesCompatService, cfg *config.Config) *GeminiCachedContentService {
+func ProvideGeminiCachedContentService(lifecycle *RuntimeLifecycle, repo GeminiCachedContentRepository, compat *GeminiMessagesCompatService, cfg *config.Config) *GeminiCachedContentService {
 	svc := NewGeminiCachedContentService(repo, compat, cfg)
-	svc.Start()
+	registerRuntimeService(lifecycle, "GeminiCachedContentService", RuntimeScopeWorker, svc)
 	return svc
 }
 
@@ -661,6 +684,7 @@ func ProvideScheduledTestService(
 
 // ProvideScheduledTestRunnerService creates and starts ScheduledTestRunnerService.
 func ProvideScheduledTestRunnerService(
+	lifecycle *RuntimeLifecycle,
 	planRepo ScheduledTestPlanRepository,
 	scheduledSvc *ScheduledTestService,
 	accountTestSvc *AccountTestService,
@@ -668,12 +692,13 @@ func ProvideScheduledTestRunnerService(
 	cfg *config.Config,
 ) *ScheduledTestRunnerService {
 	svc := NewScheduledTestRunnerService(planRepo, scheduledSvc, accountTestSvc, rateLimitSvc, cfg)
-	svc.Start()
+	registerRuntimeService(lifecycle, "ScheduledTestRunnerService", RuntimeScopeWorker, svc)
 	return svc
 }
 
 // ProvideOpsScheduledReportService creates and starts OpsScheduledReportService.
 func ProvideOpsScheduledReportService(
+	lifecycle *RuntimeLifecycle,
 	opsService *OpsService,
 	userService *UserService,
 	emailService *EmailService,
@@ -681,14 +706,17 @@ func ProvideOpsScheduledReportService(
 	cfg *config.Config,
 ) *OpsScheduledReportService {
 	svc := NewOpsScheduledReportService(opsService, userService, emailService, redisClient, cfg)
-	svc.Start()
+	registerRuntimeService(lifecycle, "OpsScheduledReportService", RuntimeScopeWorker, svc)
 	return svc
 }
 
 // ProvideAPIKeyAuthCacheInvalidator 提供 API Key 认证缓存失效能力
-func ProvideAPIKeyAuthCacheInvalidator(apiKeyService *APIKeyService) APIKeyAuthCacheInvalidator {
-	// Start Pub/Sub subscriber for L1 cache invalidation across instances
-	apiKeyService.StartAuthCacheInvalidationSubscriber(context.Background())
+func ProvideAPIKeyAuthCacheInvalidator(lifecycle *RuntimeLifecycle, apiKeyService *APIKeyService) APIKeyAuthCacheInvalidator {
+	lifecycle.Register(RuntimeTask{
+		Name: "AuthCacheInvalidationSubscriber", Scope: RuntimeScopeProcess,
+		Start: func(ctx context.Context) error { apiKeyService.StartAuthCacheInvalidationSubscriber(ctx); return nil },
+		Stop:  func(context.Context) error { apiKeyService.StopAuthCacheInvalidationSubscriber(); return nil },
+	})
 	return apiKeyService
 }
 
@@ -723,6 +751,7 @@ func ProvideImageTaskService(store ImageTaskStore, settings *ImageStorageSetting
 
 // ProvideBackupService creates and starts BackupService
 func ProvideBackupService(
+	lifecycle *RuntimeLifecycle,
 	settingRepo SettingRepository,
 	cfg *config.Config,
 	encryptor SecretEncryptor,
@@ -733,7 +762,7 @@ func ProvideBackupService(
 ) *BackupService {
 	svc := NewBackupService(settingRepo, cfg, encryptor, storeFactory, dumper)
 	svc.SetLeaderLock(lockCache, db)
-	svc.Start()
+	registerRuntimeService(lifecycle, "BackupService", RuntimeScopeWorker, svc)
 	return svc
 }
 
@@ -742,6 +771,7 @@ func ProvideBackupService(
 // hold a *SettingService reference, but wire injects a tiny callback so writes to
 // ops_advanced_settings immediately propagate into the scheduler hot-path cache.
 func ProvideOpsService(
+	lifecycle *RuntimeLifecycle,
 	opsRepo OpsRepository,
 	settingRepo SettingRepository,
 	cfg *config.Config,
@@ -778,19 +808,23 @@ func ProvideOpsService(
 	}
 	svc.authCacheInvalidationWorker = authCacheInvalidationWorker
 	svc.apiKeyService = apiKeyService
-	svc.StartRuntimeSettingsRefresh(context.Background())
+	lifecycle.Register(RuntimeTask{
+		Name: "OpsRuntimeSettingsRefresh", Scope: RuntimeScopeProcess,
+		Start: func(ctx context.Context) error { svc.StartRuntimeSettingsRefresh(ctx); return nil },
+		Stop:  func(context.Context) error { svc.StopRuntimeSettingsRefresh(); return nil },
+	})
 	return svc
 }
 
 // ProvideOpsIngressRejectAggregator starts the bounded security aggregation
 // runtime and attaches it to OpsService, which is the middleware recorder.
-func ProvideOpsIngressRejectAggregator(opsRepo OpsRepository, opsService *OpsService) *OpsIngressRejectAggregator {
+func ProvideOpsIngressRejectAggregator(lifecycle *RuntimeLifecycle, opsRepo OpsRepository, opsService *OpsService) *OpsIngressRejectAggregator {
 	repo, ok := opsRepo.(OpsIngressRejectRepository)
 	if !ok {
 		return nil
 	}
 	aggregator := NewOpsIngressRejectAggregator(repo)
-	aggregator.Start()
+	registerRuntimeService(lifecycle, "OpsIngressRejectAggregator", RuntimeScopeProcess, aggregator)
 	opsService.SetIngressRejectAggregator(aggregator)
 	return aggregator
 }
@@ -861,6 +895,7 @@ func ProvideAPIKeyService(
 
 // ProviderSet is the Wire provider set for all services
 var ProviderSet = wire.NewSet(
+	NewRuntimeLifecycle,
 	// Core services
 	ProvideAuthService,
 	NewPasskeyService,
@@ -996,9 +1031,9 @@ var ProviderSet = wire.NewSet(
 )
 
 // ProvideUserPlatformQuotaUsageFlusher 创建并启动 UserPlatformQuotaUsageFlusher。
-func ProvideUserPlatformQuotaUsageFlusher(cfg *config.Config, cache BillingCache, quotaRepo UserPlatformQuotaRepository, tw *TimingWheelService) *UserPlatformQuotaUsageFlusher {
+func ProvideUserPlatformQuotaUsageFlusher(lifecycle *RuntimeLifecycle, cfg *config.Config, cache BillingCache, quotaRepo UserPlatformQuotaRepository, tw *TimingWheelService) *UserPlatformQuotaUsageFlusher {
 	svc := NewUserPlatformQuotaUsageFlusher(cfg, cache, quotaRepo, tw)
-	svc.Start()
+	registerRuntimeService(lifecycle, "UserPlatformQuotaUsageFlusher", RuntimeScopeWorker, svc)
 	return svc
 }
 
@@ -1023,10 +1058,10 @@ func ProvidePaymentService(entClient *dbent.Client, registry *payment.Registry, 
 }
 
 // ProvidePaymentOrderExpiryService creates and starts PaymentOrderExpiryService.
-func ProvidePaymentOrderExpiryService(paymentSvc *PaymentService, lockCache LeaderLockCache, db *sql.DB) *PaymentOrderExpiryService {
+func ProvidePaymentOrderExpiryService(lifecycle *RuntimeLifecycle, paymentSvc *PaymentService, lockCache LeaderLockCache, db *sql.DB) *PaymentOrderExpiryService {
 	svc := NewPaymentOrderExpiryService(paymentSvc, 60*time.Second)
 	svc.SetLeaderLock(lockCache, db)
-	svc.Start()
+	registerRuntimeService(lifecycle, "PaymentOrderExpiryService", RuntimeScopeWorker, svc)
 	return svc
 }
 
@@ -1050,6 +1085,7 @@ func ProvideChannelMonitorService(
 // quotaFetcher（账号侧用量聚合）也在此注入：accountUsage/CN 服务在 wire 图中
 // 晚于 channelMonitorService 构造，走 setter 注入避免调整既有构造顺序。
 func ProvideChannelMonitorRunner(
+	lifecycle *RuntimeLifecycle,
 	svc *ChannelMonitorService,
 	settingService *SettingService,
 	quotaFetcher *ChannelMonitorQuotaFetcher,
@@ -1062,7 +1098,7 @@ func ProvideChannelMonitorRunner(
 		svc.SetScheduler(r)
 		svc.SetQuotaFetcher(quotaFetcher)
 	}
-	r.Start()
+	registerRuntimeService(lifecycle, "ChannelMonitorRunner", RuntimeScopeWorker, r)
 	return r
 }
 
@@ -1077,12 +1113,12 @@ func ProvideChannelMonitorV2Service(repo ChannelMonitorV2Repository, settingServ
 // ProvideChannelMonitorV2Aggregator starts the passive minute-rollup worker.
 // Aggregation only runs when channel_monitor_enabled=true and mode=v2 (and V2 config enabled).
 // Set CHANNEL_MONITOR_V2_DISABLE_AGGREGATOR=1 to skip Start (local demo with seeded facts).
-func ProvideChannelMonitorV2Aggregator(repo ChannelMonitorV2Repository, db *sql.DB, settingService *SettingService) *ChannelMonitorV2Aggregator {
+func ProvideChannelMonitorV2Aggregator(lifecycle *RuntimeLifecycle, repo ChannelMonitorV2Repository, db *sql.DB, settingService *SettingService) *ChannelMonitorV2Aggregator {
 	aggregator := NewChannelMonitorV2Aggregator(repo, db, settingService)
 	if os.Getenv("CHANNEL_MONITOR_V2_DISABLE_AGGREGATOR") == "1" {
 		return aggregator
 	}
-	aggregator.Start()
+	registerRuntimeService(lifecycle, "ChannelMonitorV2Aggregator", RuntimeScopeWorker, aggregator)
 	return aggregator
 }
 

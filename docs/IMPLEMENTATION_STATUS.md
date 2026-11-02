@@ -27,6 +27,30 @@
 
 以下验证已完成：本地 PostgreSQL 15.19 fresh 300 个非空迁移、重复执行、只读 session、SELECT-only 角色的 InitEnt 初始化、CLI 特殊密码 quoting、真实进程门禁；聚焦测试与两个二进制 build；Terraform init/validate/7 个 mock 测试。PG16/RDS 实际云环境仍待验。
 
+## 第二批：角色路由与显式生命周期
+
+首批基础改造已提交为 `9a450028a`；未 push。第二批继续以下实际代码，不解除独立进程角色门禁：
+
+- 按 all/gateway/control/worker 分离实际 HTTP 路由；all 保持原功能，worker 路由层只暴露 health，gateway 不挂登录/后台/支付/MCP/HTML。
+- `RuntimeLifecycle` 明确任务作用域，构造时登记、图构建完后统一启动、仅逆序停止成功任务；处理重复Start/Stop、无效登记、部分失败和取消。
+- 36 个 provider 启动迁移到 lifecycle（31 个wire.go登记＋5个其他provider）；本地请求闭包不直接搬到远端worker。
+- server 显式启动 lifecycle；listener/startup 错误回到主协程，先执行 defer cleanup 再非0退出，不在后台 goroutine 直接 os.Exit。
+- cleanup 先停插件/PromptAudit生产者、排空usage，再停managed任务和eager资源，最后 TimingWheel/Redis/DB；新登记任务不重复进入旧parallel cleanup。
+- Wire 按源生成，补齐生成工具缺失的两个 go.sum 校验项，不修改 go.mod。
+- 构造器隐式任务、ChannelMonitor本地回调传播、Pricing、Concurrency无Stop等仍阻塞生产角色启动，详见 [CLOUD_RUNTIME_MIGRATION.zh-CN.md](CLOUD_RUNTIME_MIGRATION.zh-CN.md)。
+
+验证说明：首次Wire生成因缺少工具依赖校验项失败，补齐后已重新生成；中间一轮生成代码与cleanup参数编辑不同步导致server编译失败，重新生成后修复。一次路由编译因两组编译并行触发本机OOM，被内核终止，未进入测试断言。后续采用串行、`GOMEMLIMIT=1800MiB GOGC=60` 重跑，以下已通过：
+
+- `go test -p=1 ./internal/server ./internal/server/routes -count=1`。
+- `go test -p=1 -tags=unit ./internal/server ./internal/server/routes -count=1`（包含既有API契约）。
+- `go test -p=1 ./internal/service -run 'TestRuntimeLifecycle|TestProvideTimingWheelService' -count=1`。
+- `go test -p=1 ./cmd/server ./internal/config -count=1`。
+- `go build -p=1 -o bin/server ./cmd/server`。
+
+后续已完成：`go test -p=1 ./internal/service -count=1 -timeout=5m` 通过（147.444s）；`go vet -p=1 ./cmd/server ./internal/service ./internal/server ./internal/server/routes` 通过；再次运行 Wire 后 SHA256 保持 `6e13885e960111786db151bc32f7c47ef4261c8e9bcc76a5ab8b1e39cea153fc`，生成可再现。实际 worker 启动仍明确非0退出，未开放业务。前端/embed、完整 all 进程外部依赖启动、真实拆分角色/跨实例任务和AWS部署未验。
+
+本批按用户要求进行第二个本地阶段提交，不推送。下一批优先处理 eager 构造器和可取消循环，再补持久配置变化传播，不提前解除角色门禁。
+
 ## 尚未实现，禁止按已完成部署
 
 - gateway/control/worker 的真实依赖与后台任务隔离；当前仍只有 legacy all 角色可运行。
