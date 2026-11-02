@@ -69,6 +69,7 @@ const DefaultModelsListReadMaxBytes int64 = 8 * 1024 * 1024
 
 type Config struct {
 	Server                  ServerConfig                  `mapstructure:"server"`
+	Runtime                 RuntimeConfig                 `mapstructure:"runtime"`
 	Log                     LogConfig                     `mapstructure:"log"`
 	CORS                    CORSConfig                    `mapstructure:"cors"`
 	MCP                     MCPConfig                     `mapstructure:"mcp"`
@@ -1607,6 +1608,9 @@ type DatabaseConfig struct {
 	Password string `mapstructure:"password"`
 	DBName   string `mapstructure:"dbname"`
 	SSLMode  string `mapstructure:"sslmode"`
+	// MigrationMode controls startup migrations: auto applies them (legacy default),
+	// while check only verifies the schema. The migrate command applies them separately.
+	MigrationMode string `mapstructure:"migration_mode"`
 	// 连接池配置（性能优化：可配置化连接池参数）
 	// MaxOpenConns: 最大打开连接数，控制数据库连接上限，防止资源耗尽
 	MaxOpenConns int `mapstructure:"max_open_conns"`
@@ -1879,7 +1883,8 @@ func Load() (*Config, error) {
 
 // LoadForBootstrap 读取启动阶段配置。
 //
-// 启动阶段允许 jwt.secret 先留空，后续由数据库初始化流程补齐并再次完整校验。
+// 兼容 auto 模式允许 jwt.secret 先留空，后续由数据库初始化流程补齐并再次完整校验。
+// check 模式必须显式提供共享 JWT/TOTP 密钥，不执行密钥 bootstrap。
 func LoadForBootstrap() (*Config, error) {
 	return load(true)
 }
@@ -2025,8 +2030,15 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 		cfg.Gateway.UserMessageQueue.Mode = ""
 	}
 
-	// Auto-generate TOTP encryption key if not set (32 bytes = 64 hex chars for AES-256)
 	cfg.Totp.EncryptionKey = strings.TrimSpace(cfg.Totp.EncryptionKey)
+	cfg.Totp.EncryptionKeyConfigured = cfg.Totp.EncryptionKey != ""
+	// A check-mode runtime must use pre-provisioned shared secrets. Reject
+	// missing keys before either legacy generation or bootstrap placeholders.
+	if err := cfg.validateCheckModeSharedSecrets(); err != nil {
+		return nil, fmt.Errorf("validate config error: %w", err)
+	}
+
+	// Legacy auto mode generates an ephemeral TOTP key when none is configured.
 	if cfg.Totp.EncryptionKey == "" {
 		key, err := generateJWTSecret(32) // Reuse the same random generation function
 		if err != nil {
@@ -2035,8 +2047,6 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 		cfg.Totp.EncryptionKey = key
 		cfg.Totp.EncryptionKeyConfigured = false
 		slog.Warn("TOTP encryption key auto-generated. Consider setting a fixed key for production.")
-	} else {
-		cfg.Totp.EncryptionKeyConfigured = true
 	}
 
 	originalJWTSecret := cfg.JWT.Secret
@@ -2090,6 +2100,8 @@ func configureConfigSource(setConfigFile, addConfigPath func(string)) {
 }
 
 func setDefaults() {
+	viper.SetDefault("runtime.role", RuntimeRoleAll)
+	viper.SetDefault("runtime.shutdown_timeout_seconds", DefaultRuntimeShutdownTimeoutSeconds)
 	viper.SetDefault("run_mode", RunModeStandard)
 	viper.SetDefault("gateway.min_output_tokens", 128)
 	viper.SetDefault("simple_mode.auto_create_default_groups", true)
@@ -2275,6 +2287,7 @@ func setDefaults() {
 	viper.SetDefault("database.password", "postgres")
 	viper.SetDefault("database.dbname", "sub2api")
 	viper.SetDefault("database.sslmode", "prefer")
+	viper.SetDefault("database.migration_mode", DatabaseMigrationModeAuto)
 	viper.SetDefault("database.max_open_conns", 256)
 	viper.SetDefault("database.max_idle_conns", 128)
 	viper.SetDefault("database.conn_max_lifetime_minutes", 30)
@@ -2766,6 +2779,15 @@ func setEnvReachableDefaults() {
 }
 
 func (c *Config) Validate() error {
+	if err := c.Runtime.Validate(); err != nil {
+		return err
+	}
+	if err := c.Database.validateMigrationMode(); err != nil {
+		return err
+	}
+	if err := c.validateCheckModeSharedSecrets(); err != nil {
+		return err
+	}
 	if c.Gateway.MinOutputTokens < 16 {
 		return fmt.Errorf("gateway.min_output_tokens must be at least 16")
 	}

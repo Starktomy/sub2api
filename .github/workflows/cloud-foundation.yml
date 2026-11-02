@@ -1,0 +1,78 @@
+name: Cloud foundation
+
+on:
+  push:
+    paths:
+      - 'backend/**'
+      - 'infra/aws/**'
+      - '.github/workflows/cloud-foundation.yml'
+  pull_request:
+    paths:
+      - 'backend/**'
+      - 'infra/aws/**'
+      - '.github/workflows/cloud-foundation.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  migration-contract:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: cloud_test_runner
+          POSTGRES_PASSWORD: local-ci-test-only
+          POSTGRES_DB: sub2api_cloud_test
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd 'pg_isready -U cloud_test_runner -d sub2api_cloud_test'
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      # Disposable GitHub service credentials, never production credentials.
+      CLOUD_TEST_DATABASE_DSN: 'host=127.0.0.1 port=5432 user=cloud_test_runner password=local-ci-test-only dbname=sub2api_cloud_test sslmode=disable'
+      DATABASE_DSN: 'host=127.0.0.1 port=5432 user=cloud_test_runner password=local-ci-test-only dbname=sub2api_cloud_test sslmode=disable'
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Build migration CLI and server
+        run: |
+          go build -o bin/migrate ./cmd/migrate
+          go build -o bin/server ./cmd/server
+      - name: Fresh migrations and idempotency
+        run: |
+          ./bin/migrate
+          ./bin/migrate
+          ./bin/migrate -check
+      - name: Configuration, read-only schema and CLI contracts
+        run: |
+          go test ./internal/config
+          go test ./internal/repository -run 'Test(CheckMigrations|InitializeSchema|InitEntCheck|InitEntPostgres)' -count=1
+          go test ./cmd/migrate -count=1
+
+  terraform-offline:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/aws
+    steps:
+      - uses: actions/checkout@v6
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.17.1'
+      - name: Format, validate and mock tests (no AWS credentials)
+        run: |
+          terraform fmt -check -recursive
+          terraform init -backend=false -input=false
+          terraform validate
+          terraform test

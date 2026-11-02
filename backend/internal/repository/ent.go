@@ -14,7 +14,6 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
-	"github.com/Wei-Shaw/sub2api/migrations"
 
 	"entgo.io/ent/dialect"
 	entsql "entgo.io/ent/dialect/sql"
@@ -89,7 +88,7 @@ func isTransientDatabaseInitializationError(err error) bool {
 // 该函数执行以下操作：
 //  1. 初始化全局时区设置，确保时间处理一致性
 //  2. 建立 PostgreSQL 数据库连接
-//  3. 自动执行数据库迁移，确保 schema 与代码同步
+//  3. 按 migration_mode 自动迁移或只读校验 schema
 //  4. 创建并返回 Ent 客户端实例
 //
 // 重要提示：调用者必须负责关闭返回的 ent.Client（关闭时会自动关闭底层的 driver/db）。
@@ -102,6 +101,21 @@ func isTransientDatabaseInitializationError(err error) bool {
 //   - *sql.DB: 底层的 SQL 数据库连接，可用于直接执行原生 SQL
 //   - error: 初始化过程中的错误
 func InitEnt(cfg *config.Config) (*ent.Client, *sql.DB, error) {
+	if cfg == nil {
+		return nil, nil, errors.New("nil config")
+	}
+	migrationMode := cfg.Database.EffectiveMigrationMode()
+	if migrationMode != config.DatabaseMigrationModeAuto && migrationMode != config.DatabaseMigrationModeCheck {
+		return nil, nil, fmt.Errorf("unsupported database migration mode %q", migrationMode)
+	}
+	// Check-only instances must receive complete shared configuration. They may
+	// not generate or persist secrets as a side effect of joining the cluster.
+	if migrationMode == config.DatabaseMigrationModeCheck {
+		if err := cfg.Validate(); err != nil {
+			return nil, nil, fmt.Errorf("validate runtime config (check mode does not bootstrap secrets): %w", err)
+		}
+	}
+
 	// 优先初始化时区设置，确保所有时间操作使用统一的时区。
 	// 这对于跨时区部署和日志时间戳的一致性至关重要。
 	if err := timezone.Init(cfg.Timezone); err != nil {
@@ -130,13 +144,12 @@ func InitEnt(cfg *config.Config) (*ent.Client, *sql.DB, error) {
 	}
 	applyDBPoolSettings(drv.DB(), cfg)
 
-	// 确保数据库 schema 已准备就绪。
-	// SQL 迁移文件是 schema 的权威来源（source of truth）。
-	// 这种方式比 Ent 的自动迁移更可控，支持复杂的迁移场景。
+	// SQL migrations are authoritative. Runtime check mode uses SELECT only;
+	// the separately deployed migrator retains the existing execution path.
 	migrationCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	if err := initializeDatabaseWithRetry(migrationCtx, func(ctx context.Context) error {
-		return applyMigrationsFS(ctx, drv.DB(), migrations.FS)
+		return initializeSchema(ctx, drv.DB(), migrationMode)
 	}); err != nil {
 		_ = drv.Close() // 迁移失败时关闭驱动，避免资源泄露
 		return nil, nil, err
@@ -144,6 +157,12 @@ func InitEnt(cfg *config.Config) (*ent.Client, *sql.DB, error) {
 
 	// 创建 Ent 客户端，绑定到已配置的数据库驱动。
 	client := ent.NewClient(ent.Driver(drv))
+
+	if migrationMode == config.DatabaseMigrationModeCheck {
+		// The caller supplied validated shared secrets. Never write bootstrap or
+		// simple-mode seed data from a check-only runtime instance.
+		return client, drv.DB(), nil
+	}
 
 	// 启动阶段：从配置或数据库中确保系统密钥可用。
 	if err := ensureBootstrapSecrets(migrationCtx, client, cfg); err != nil {

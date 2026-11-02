@@ -66,6 +66,20 @@ func main() {
 		return
 	}
 
+	// Decide setup behavior before any credentials, DI graph, or background
+	// tasks are created. A reserved cloud role must never start the legacy
+	// all-in-one application or its first-run setup server by accident.
+	policy, err := config.LoadStartupPolicy()
+	if err != nil {
+		log.Fatalf("Invalid startup policy: %v", err)
+	}
+	if err := policy.Runtime.ValidateRoleSupport(); err != nil {
+		log.Fatalf("Unsupported runtime role: %v", err)
+	}
+	if *setupMode && policy.Database.MigrationMode == config.DatabaseMigrationModeCheck {
+		log.Fatal("Setup is disabled in database.migration_mode=check; run the separate migrate command and explicit bootstrap instead")
+	}
+
 	// CLI setup mode
 	if *setupMode {
 		if err := setup.RunCLI(); err != nil {
@@ -74,8 +88,9 @@ func main() {
 		return
 	}
 
-	// Check if setup is needed
-	if setup.NeedsSetup() {
+	// Check-only runtimes use externally managed configuration and must not
+	// expose a setup wizard merely because an ephemeral task lacks local files.
+	if policy.Database.MigrationMode != config.DatabaseMigrationModeCheck && setup.NeedsSetup() {
 		// Check if auto-setup is enabled (for Docker deployment)
 		if setup.AutoSetupEnabled() {
 			log.Println("Auto setup mode enabled...")
@@ -136,6 +151,9 @@ func runMainServer() {
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
+	if err := cfg.Runtime.ValidateRoleSupport(); err != nil {
+		log.Fatalf("Unsupported runtime role: %v", err)
+	}
 	if err := logger.Init(logger.OptionsFromConfig(cfg.Log)); err != nil {
 		log.Fatalf("Failed to initialize logger: %v", err)
 	}
@@ -184,7 +202,9 @@ func runMainServer() {
 
 	log.Println("Shutting down server...")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// This is the HTTP shutdown budget, not full long-connection draining.
+	// WebSocket tracking, pre-stop drain and ordered cleanup remain separate work.
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.Runtime.ShutdownTimeout())
 	defer cancel()
 
 	if err := app.Server.Shutdown(ctx); err != nil {

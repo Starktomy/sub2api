@@ -159,6 +159,12 @@ output/
 .codegraph/
 issues/
 
+# Cloud fork architecture and contributor conventions are versioned.
+!AGENTS.md
+!docs/CLOUD_ARCHITECTURE.zh-CN.md
+!docs/IMPLEMENTATION_STATUS.md
+!docs/CLOUD_DEVELOPMENT.zh-CN.md
+
 # Vitest / Vite cache at repo root
 .vite/
 # 本地闭源插件开发目录及构建产物不进入 Sub2API 仓库
