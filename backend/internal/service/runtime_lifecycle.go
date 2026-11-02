@@ -23,16 +23,24 @@ const (
 	RuntimeScopeProcess RuntimeScope = "process-local"
 )
 
-// RuntimeTask is registered while constructing dependencies and started only
-// after the complete graph exists. Start must clean up its own partial work if
-// it returns an error. Stop is called only for a successfully started task.
-// Callbacks must honor context where supported; this registry cannot forcibly
-// cancel legacy Stop methods that ignore it.
+// RuntimeStopPhase orders producers before local consumers and their stores.
+type RuntimeStopPhase int
+
+const (
+	RuntimeStopProducers RuntimeStopPhase = iota
+	RuntimeStopConsumers
+	RuntimeStopStores
+)
+
+// RuntimeTask is registered during construction and started after the graph is
+// complete. Start must clean up its own partial work on error; Stop is called
+// only after a successful Start. Legacy Stop methods may ignore context.
 type RuntimeTask struct {
-	Name  string
-	Scope RuntimeScope
-	Start func(context.Context) error
-	Stop  func(context.Context) error
+	Name      string
+	Scope     RuntimeScope
+	StopPhase RuntimeStopPhase
+	Start     func(context.Context) error
+	Stop      func(context.Context) error
 }
 
 // RuntimeLifecycle makes task ownership explicit without a second scheduler.
@@ -68,6 +76,10 @@ func (l *RuntimeLifecycle) Register(task RuntimeTask) {
 	}
 	if strings.TrimSpace(task.Name) == "" || task.Start == nil || task.Stop == nil {
 		l.configErr = errors.Join(l.configErr, fmt.Errorf("runtime task %q requires a name, Start and Stop", task.Name))
+		return
+	}
+	if task.StopPhase < RuntimeStopProducers || task.StopPhase > RuntimeStopStores {
+		l.configErr = errors.Join(l.configErr, fmt.Errorf("runtime task %q has invalid stop phase", task.Name))
 		return
 	}
 	if !validRuntimeScope(task.Scope) {
@@ -141,13 +153,27 @@ func (l *RuntimeLifecycle) Stop(ctx context.Context) error {
 	l.mu.Unlock()
 
 	var result error
-	for i := len(started) - 1; i >= 0; i-- {
-		if err := started[i].Stop(ctx); err != nil {
-			result = errors.Join(result, fmt.Errorf("stop runtime task %s: %w", started[i].Name, err))
+	// Stop producers/maintenance before local consumers and their stores. Within
+	// each phase preserve reverse dependency order. A shared graph can register
+	// later maintenance after its sinks; reverse order alone is insufficient.
+	for phase := RuntimeStopProducers; phase <= RuntimeStopStores; phase++ {
+		for i := len(started) - 1; i >= 0; i-- {
+			if started[i].StopPhase != phase {
+				continue
+			}
+			if err := started[i].Stop(ctx); err != nil {
+				result = errors.Join(result, fmt.Errorf("stop runtime task %s: %w", started[i].Name, err))
+			}
 		}
 	}
 	l.setState("stopped")
 	return result
+}
+
+// OwnsScope reports role ownership without starting anything. Providers use it
+// to avoid installing local callbacks that could bypass deferred task startup.
+func (l *RuntimeLifecycle) OwnsScope(scope RuntimeScope) bool {
+	return runtimeScopeEnabled(l.role, scope)
 }
 
 // ManagesTask distinguishes deferred tasks from legacy eager resources during
@@ -213,9 +239,13 @@ func runtimeScopeEnabled(role string, scope RuntimeScope) bool {
 func registerRuntimeService(lifecycle *RuntimeLifecycle, name string, scope RuntimeScope, svc interface {
 	Start()
 	Stop()
-}) {
+}, stopPhase ...RuntimeStopPhase) {
+	phase := RuntimeStopProducers
+	if len(stopPhase) > 0 {
+		phase = stopPhase[0]
+	}
 	lifecycle.Register(RuntimeTask{
-		Name: name, Scope: scope,
+		Name: name, Scope: scope, StopPhase: phase,
 		Start: func(context.Context) error { svc.Start(); return nil },
 		Stop:  func(context.Context) error { svc.Stop(); return nil },
 	})

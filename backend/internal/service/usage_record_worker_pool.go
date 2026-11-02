@@ -113,6 +113,9 @@ type UsageRecordWorkerPool struct {
 	autoScaleCancel       context.CancelFunc
 	lifecycleWg           sync.WaitGroup
 	stopOnce              sync.Once
+	lifecycleMu           sync.Mutex
+	started               bool
+	stopped               bool
 }
 
 // NewUsageRecordWorkerPool 从配置构建使用量记录池。
@@ -123,6 +126,16 @@ func NewUsageRecordWorkerPool(cfg *config.Config) *UsageRecordWorkerPool {
 
 // NewUsageRecordWorkerPoolWithOptions 根据给定参数构建使用量记录池。
 func NewUsageRecordWorkerPoolWithOptions(opts UsageRecordWorkerPoolOptions) *UsageRecordWorkerPool {
+	p := newManagedUsageRecordWorkerPool(opts)
+	p.Start()
+	return p
+}
+
+func NewManagedUsageRecordWorkerPool(cfg *config.Config) *UsageRecordWorkerPool {
+	return newManagedUsageRecordWorkerPool(usageRecordPoolOptionsFromConfig(cfg))
+}
+
+func newManagedUsageRecordWorkerPool(opts UsageRecordWorkerPoolOptions) *UsageRecordWorkerPool {
 	opts = normalizeUsageRecordPoolOptions(opts)
 
 	p := &UsageRecordWorkerPool{
@@ -144,10 +157,23 @@ func NewUsageRecordWorkerPoolWithOptions(opts UsageRecordWorkerPoolOptions) *Usa
 		opts.WorkerCount,
 		pond.WithQueueSize(opts.QueueSize),
 	)
+	return p
+}
+
+// Start begins process-local autoscaling only after the graph has been built.
+func (p *UsageRecordWorkerPool) Start() {
+	if p == nil || p.pool == nil {
+		return
+	}
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.started || p.stopped {
+		return
+	}
+	p.started = true
 	if p.autoScaleEnabled {
 		p.startAutoScaler()
 	}
-	return p
 }
 
 // Submit 提交一个使用量记录任务。
@@ -219,9 +245,12 @@ func (p *UsageRecordWorkerPool) Stop() {
 		return
 	}
 	p.stopOnce.Do(func() {
+		p.lifecycleMu.Lock()
+		p.stopped = true
 		if p.autoScaleCancel != nil {
 			p.autoScaleCancel()
 		}
+		p.lifecycleMu.Unlock()
 		p.lifecycleWg.Wait()
 		p.pool.StopAndWait()
 	})

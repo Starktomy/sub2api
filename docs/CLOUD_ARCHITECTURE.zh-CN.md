@@ -1,6 +1,6 @@
 # Sub2API Cloud：AWS ECS 单层网关架构方案
 
-- 状态：已确认的目标架构；不代表所有能力已经实现。
+- 状态：已确认的目标架构；不代表所有能力已经实现。2026-11-03已推进到显式opt-in的本地多角色预生产烟测；AWS部署前置清单见 [AWS_PREPRODUCTION_CHECKLIST.zh-CN.md](AWS_PREPRODUCTION_CHECKLIST.zh-CN.md)。
 - 决策日期：2026-11-02。
 - 唯一产品基座：Sub2API，初始 upstream commit `4a4a83ee5`。
 - 本地开发仓库：`/root/ai/sub2api-cloud`，初始分支 `feat/ecs-cloud-foundation`。

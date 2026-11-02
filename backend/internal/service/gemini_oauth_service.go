@@ -70,13 +70,32 @@ func NewGeminiOAuthService(
 	driveClient geminicli.DriveClient,
 	cfg *config.Config,
 ) *GeminiOAuthService {
+	svc := NewManagedGeminiOAuthService(proxyRepo, oauthClient, codeAssist, driveClient, cfg)
+	svc.Start()
+	return svc
+}
+
+func NewManagedGeminiOAuthService(
+	proxyRepo ProxyRepository,
+	oauthClient GeminiOAuthClient,
+	codeAssist GeminiCliCodeAssistClient,
+	driveClient geminicli.DriveClient,
+	cfg *config.Config,
+) *GeminiOAuthService {
 	return &GeminiOAuthService{
-		sessionStore: geminicli.NewSessionStore(),
+		sessionStore: geminicli.NewManagedSessionStore(),
 		proxyRepo:    proxyRepo,
 		oauthClient:  oauthClient,
 		codeAssist:   codeAssist,
 		driveClient:  driveClient,
 		cfg:          cfg,
+	}
+}
+
+// Start begins only local authorization-session cleanup; token refresh is a separate task.
+func (s *GeminiOAuthService) Start() {
+	if s != nil && s.sessionStore != nil {
+		s.sessionStore.Start()
 	}
 }
 

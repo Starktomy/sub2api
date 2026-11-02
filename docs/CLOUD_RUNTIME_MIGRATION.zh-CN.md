@@ -32,7 +32,7 @@
 - 本地/请求相关：Deferred 本地 last-used 批量刷写、日志 sink、操作审计、入口拒绝聚合、本地 Ops 设置刷新、API Key L1 失效订阅。
 - 过渡 process-local：OpenAI 额度操作队列、Ollama 即时探测。这些仍接受本进程通知，不能仅因为名字像后台任务就移到远端 worker；需要先持久投递或拆开周期与本地分支。
 
-关闭顺序先停止插件/PromptAudit 生产者，再排空本地 usage worker pool，再停止 managed tasks，然后清理尚未迁移的 eager 资源，最后 TimingWheel、Redis、DB。legacy cleanup 对 lifecycle 已管理任务不重复 Stop。
+关闭顺序先停止插件/PromptAudit 生产者，managed tasks按producer→consumer→store分阶段退出（阶段内逆序），最后清理未托管资源和Redis/DB。TimingWheel在维护producer退出后、依赖store关闭前停止并等待callback；legacy cleanup对已托管任务不重复Stop。
 
 限制：某些旧 Stop 不接受 context 或不等待所有在飞操作。Lifecycle 不能强杀这些函数，当前 cleanup timeout 只是传递预算/诊断，不是严格进程关闭上限。
 
@@ -46,19 +46,32 @@
 
 Gateway/worker 不读取 frame-src 页面配置或安装前端失效回调。Worker 不构建 WebSearch 配置。鉴权继续使用现有真实 middleware，不新增旁路。
 
-## 5. 尚未解除的拆分门禁
+## 5. 第三批：默认关闭的预生产 split-role opt-in
 
-`Runtime.ValidateRoleSupport()` **仍只允许 all**。只有完成以下工作并真实验证，才能逐个打开 split role：
+`RUNTIME_ENABLE_SPLIT_ROLES=true` 显式启用 gateway/control/worker；默认 false，仍拒绝独立角色。实验角色必须 `DATABASE_MIGRATION_MODE=check`、标准计费模式、显式 JWT/TOTP；启动前拒绝 auto/安装向导。它用于隔离预生产验证，不是生产可用性或权限最小化保证。
 
-1. **构造器隐式任务**：BillingCache、Subscription、Email、OAuth session store、ContentModeration、部分缓存/仓储仍有 eager pool/janitor/订阅。拆为无副作用构造与显式 Start，并覆盖失败 cleanup。
-2. **TimingWheel**：go-zero New 即 auto-start，Start 仅日志；目前明确走 eager 资源最后清理。需要独立的 lazy/managed 工厂和错误回收，不能当作已消除副作用。
-3. **Concurrency 清理**：已有 StartSlotCleanupWorker 无取消/Stop，需补可等待退出的生命周期；全局扫描与本地租约/缓存职责分开。
-4. **Pricing**：Initialize 同时加载本地价格、远程请求、文件写入、启动更新。需要分离本地可用快照与远程同步，确保每个请求进程有价格，不简单 worker 独占。
-5. **配置传播**：ChannelMonitor CRUD 当前只回调本进程 scheduler，worker 启动仅加载一次；必须加持久版本/outbox/定期重读，才能让 control 修改触达独立 worker。其他本地回调逐项核验。
-6. **停止语义**：Dashboard 聚合取消未来两个 TimingWheel 键，但已启动 backfill 无 wait；V2Aggregator、QuotaFlusher等有在飞任务/禁用Stop副作用，需进一步规范。
-7. **本地写入队列**：邮件、usage、billing、订阅维护、Deferred、moderation 的本地队列不自动跨进程可见；迁移到worker前必须换持久引用/任务，不迁移则明确每实例职责。
-8. **依赖图与权限**：目前仍共享一个 Wire 图，不能仅靠路由判断声称最小依赖或最小 DB/IAM 权限已实现。服务应按角色构造可达依赖、验证启动不访问不必要 Secret/上游。
-9. **状态与多副本**：刷新 CAS、租约恢复、持久账务、配置版本、长连接排空另有架构待办，当前不因此启用 ECS Service。
+已落实：
+
+1. BillingCache、Subscription、Email 新增 managed 构造/Start/Stop，旧 New 自动启动兼容。本地闭包仍本进程消费，避免迁往worker后丢任务。Subscription取消并等待Redis订阅，关闭Ristretto；email在排空预算后取消但等真实worker退出（SMTP可能超预算）。
+2. 五类OAuth session store新增 managed构造、幂等Start、Stop cancel/join；cleanup仅control启动，后台token refresh与授权会话清理分开。XAI Redis会话同时提供managed构造。
+3. TimingWheel构造不再启动go-zero loop，Lifecycle.StartManaged才创建且可报告错误；停止等待已派发callback。本轮保留旧New eager兼容。
+4. Concurrency/UMQ清理可取消和等待，Worker不再执行会删除其他进程前缀的legacy启动扫槽；日常仅按过期清理。加入单元回归及真实Redis槽位烟测。
+5. Pricing.Initialize从provider构造移至每进程显式生命周期，Stop幂等；每个推理进程仍有本地价格/热重载。远端价格目录与本地加载的进一步拆分仍待办，预生产烟测显式关闭远程同步，使用内置快照。
+6. ChannelMonitorRunner新增有界ReconcileOnce与每30秒PG配置重读：新增/更新/禁用/删除收敛，失败保留，unchanged不重复探测；Stop取消poll/在飞检查并等待。本地control不挂worker scheduler callback。**无跨worker leader，预生产维护worker只启一个**。
+7. ContentModeration本地审核队列可显式启动、Stop拒绝入队并排空；旧零值构造路径保留缓冲兼容。审核retention cleanup暂仍随本地请求角色启动，未宣称cluster独占。
+8. Channel/ErrorPassthrough/TLSProfile配置订阅改为managed构造，Redis transport返回可等待stop，回调有关闭屏障。Pub/Sub丢失恢复与启动订阅失败重连仍需进一步强化。
+9. Lifecycle停止按producer→consumer→store阶段，同阶段逆序；先停维护/本地生产者，再排空usage，再停billing/subscription/email/日志等依赖；V2Aggregator Stop开始等待loop退出。
+
+真实烟测已运行两个gateway＋control＋单worker，共用PG和临时密码Redis。四进程健康、鉴权/缺失路由、关键维护scope归属、正常SIGTERM退出通过。没有用户/凭据bootstrap写入；没有调用真实模型或支付服务。完整回归与最终增强烟测结果见状态文件。
+
+### 尚未完成的生产边界
+
+- 仍共享一个Wire图，部分本地缓存janitor/readonly预热仍在构造期；DI中途失败的全资源回收和最小DB/IAM依赖图未交付。
+- 维护worker暂限单副本，所有巡检/版本同步/通知并非均有集群lease；不能允许多维护worker滚动重叠后承诺无重复。
+- OAuth授权会话仅部分provider有Redis后端；Control预生产限单副本，其他provider跨实例/重启授权继续可能失败。无需token刷新cleanup不代表授权状态已持久化。
+- Dashboard后台backfill取消/等待、QuotaFlusher禁用Stop副作用与并发flush、部分旧HTTP/SMTP超时仍需治理，当前非严格ECS停止时间保证。
+- KMS动态凭据加密、全平台token CAS/租约、可恢复账务、资源quota domain和跨供应商统一候选未完成。
+- ECS task definitions/services、ALB/域名/证书、非root deploy role、runtime DB角色/Secrets、remote state、镜像构建和发布/长连接排空仍需下一阶段。
 
 ## 6. 验证要求
 
@@ -68,6 +81,6 @@ Gateway/worker 不读取 frame-src 页面配置或安装前端失效回调。Wor
 - 原 server cleanup 测试和 service/route 回归不得跳过。
 - 构建 service/migrator，运行配置/仓储/迁移回归，确认既有check模式和角色启动门禁不被绕过。
 
-本批实际结果：角色路由/既有unit契约、Lifecycle聚焦、server/config测试、service完整包回归（147.444秒）、相关vet、server构建均通过；Wire重生成哈希一致。完整all进程外部依赖启动、前端/embed、真实split角色及跨进程任务、AWS资源未验。过程中发生过生成文件参数不同步的编译失败、以及并行编译OOM，修复生成接线/改串行后重跑成功，不将失败轮次记为通过。
+第二批结果：角色路由/既有unit契约、Lifecycle聚焦、server/config测试、service完整包回归（147.444秒）、相关vet、server构建均通过。第三批结果：managed/会话/配置/仓储回归、service完整包（148.169秒）、unit监控/停止/定时器、相关vet/build通过；最终二进制2Gateway+Control+Worker真实PG/临时Redis烟测通过，含活跃槽位保留和正常退出。AWS、RDS16/Valkey7.2TLS、前端/embed、真实上游/支付、长流排空/故障恢复及多维护worker未验。失败与修复轮次如实记录于状态文件，不因后续成功而省略。
 
 实际命令和结果见 `IMPLEMENTATION_STATUS.md`，未运行的验证必须明示，不因本文件列出了要求就认定通过。

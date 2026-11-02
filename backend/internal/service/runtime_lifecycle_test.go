@@ -59,6 +59,27 @@ func TestRuntimeLifecycleRoleOwnership(t *testing.T) {
 	}
 }
 
+func TestRuntimeLifecycleStopsProducersBeforeConsumersAndStores(t *testing.T) {
+	lifecycle := NewRuntimeLifecycle(nil)
+	var stopped []string
+	for _, task := range []struct {
+		name  string
+		phase RuntimeStopPhase
+	}{
+		{"store", RuntimeStopStores}, {"consumer", RuntimeStopConsumers},
+		{"producer", RuntimeStopProducers},
+	} {
+		lifecycle.Register(RuntimeTask{
+			Name: task.name, Scope: RuntimeScopeProcess, StopPhase: task.phase,
+			Start: func(context.Context) error { return nil },
+			Stop:  func(context.Context) error { stopped = append(stopped, task.name); return nil },
+		})
+	}
+	require.NoError(t, lifecycle.Start(context.Background()))
+	require.NoError(t, lifecycle.Stop(context.Background()))
+	require.Equal(t, []string{"producer", "consumer", "store"}, stopped)
+}
+
 func TestRuntimeLifecyclePartialStart(t *testing.T) {
 	lifecycle := NewRuntimeLifecycle(nil)
 	var calls []string

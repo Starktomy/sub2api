@@ -26,28 +26,13 @@ func (c *channelCache) NotifyUpdate(ctx context.Context) error {
 
 // SubscribeUpdates subscribes to channel cache invalidation notifications.
 func (c *channelCache) SubscribeUpdates(ctx context.Context, handler func()) {
-	go func() {
-		pubsub := c.rdb.Subscribe(ctx, channelCachePubSubKey)
-		defer func() {
-			if err := pubsub.Close(); err != nil {
-				slog.Warn("failed to close channel cache subscriber", "error", err)
-			}
-		}()
+	if _, err := c.SubscribeUpdatesManaged(ctx, handler); err != nil {
+		slog.Warn("cache update subscription failed", "error", err)
+	}
+}
 
-		messages := pubsub.Channel()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case message, ok := <-messages:
-				if !ok {
-					slog.Warn("channel cache subscriber stopped", "reason", "channel_closed")
-					return
-				}
-				if message != nil {
-					handler()
-				}
-			}
-		}
-	}()
+func (c *channelCache) SubscribeUpdatesManaged(ctx context.Context, handler func()) (func(), error) {
+	return subscribeCacheUpdates(ctx, c.rdb, channelCachePubSubKey, func() {
+		handler()
+	})
 }

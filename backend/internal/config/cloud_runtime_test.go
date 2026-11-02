@@ -27,17 +27,17 @@ func TestRuntimeConfigValidate(t *testing.T) {
 			want: RuntimeConfig{Role: RuntimeRoleAll, ShutdownTimeoutSeconds: 1},
 		},
 		{
-			name: "gateway syntax is reserved",
+			name: "gateway syntax requires explicit opt-in",
 			cfg:  RuntimeConfig{Role: " Gateway "},
 			want: RuntimeConfig{Role: RuntimeRoleGateway, ShutdownTimeoutSeconds: 90},
 		},
 		{
-			name: "control syntax is reserved",
+			name: "control syntax requires explicit opt-in",
 			cfg:  RuntimeConfig{Role: RuntimeRoleControl},
 			want: RuntimeConfig{Role: RuntimeRoleControl, ShutdownTimeoutSeconds: 90},
 		},
 		{
-			name: "worker syntax is reserved",
+			name: "worker syntax requires explicit opt-in",
 			cfg:  RuntimeConfig{Role: RuntimeRoleWorker},
 			want: RuntimeConfig{Role: RuntimeRoleWorker, ShutdownTimeoutSeconds: 90},
 		},
@@ -70,15 +70,39 @@ func TestRuntimeConfigValidateRoleSupport(t *testing.T) {
 		})
 	}
 	for _, role := range []string{RuntimeRoleGateway, RuntimeRoleControl, RuntimeRoleWorker, " WORKER "} {
-		t.Run("not_implemented_"+role, func(t *testing.T) {
+		t.Run("disabled_by_default_"+role, func(t *testing.T) {
 			// This check must fail even if the caller has not run Validate yet.
 			cfg := RuntimeConfig{Role: role}
-			require.ErrorContains(t, cfg.ValidateRoleSupport(), "not implemented")
+			require.ErrorContains(t, cfg.ValidateRoleSupport(), "not enabled")
 			require.NoError(t, cfg.Validate(), "reserved roles remain parseable")
 			require.ErrorContains(t, cfg.ValidateRoleSupport(), "background task isolation")
 		})
 	}
 	require.ErrorContains(t, (RuntimeConfig{Role: "typo"}).ValidateRoleSupport(), "runtime.role")
+}
+
+func TestRuntimeExperimentalSplitRolesRequireReadOnlyStartup(t *testing.T) {
+	for _, role := range []string{RuntimeRoleGateway, RuntimeRoleControl, RuntimeRoleWorker} {
+		runtime := RuntimeConfig{Role: role, EnableSplitRoles: true}
+		require.NoError(t, runtime.ValidateRoleSupport())
+		require.ErrorContains(t, runtime.ValidateMigrationPolicy(DatabaseMigrationModeAuto), "require database.migration_mode=check")
+		require.NoError(t, runtime.ValidateMigrationPolicy(DatabaseMigrationModeCheck))
+	}
+}
+
+func TestLoadExperimentalRolesRequireStandardMode(t *testing.T) {
+	resetCloudRuntimeConfig(t)
+	t.Setenv("RUNTIME_ROLE", RuntimeRoleGateway)
+	t.Setenv("RUNTIME_ENABLE_SPLIT_ROLES", "true")
+	t.Setenv("DATABASE_MIGRATION_MODE", DatabaseMigrationModeCheck)
+	t.Setenv("TOTP_ENCRYPTION_KEY", strings.Repeat("a", 64))
+	t.Setenv("RUN_MODE", RunModeSimple)
+	_, err := Load()
+	require.ErrorContains(t, err, "standard run mode")
+	t.Setenv("RUN_MODE", RunModeStandard)
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.NoError(t, cfg.Runtime.ValidateRoleSupport())
 }
 
 func TestRuntimeConfigShutdownTimeout(t *testing.T) {
@@ -133,6 +157,7 @@ func resetCloudRuntimeConfig(t *testing.T) {
 	t.Helper()
 	resetViperWithJWTSecret(t)
 	t.Setenv("RUNTIME_ROLE", "")
+	t.Setenv("RUNTIME_ENABLE_SPLIT_ROLES", "false")
 	t.Setenv("RUNTIME_SHUTDOWN_TIMEOUT_SECONDS", "")
 	t.Setenv("DATABASE_MIGRATION_MODE", "")
 	t.Setenv("TOTP_ENCRYPTION_KEY", "")
@@ -175,7 +200,7 @@ func TestLoadCloudRuntimeFromEnv(t *testing.T) {
 			if role == RuntimeRoleAll {
 				require.NoError(t, cfg.Runtime.ValidateRoleSupport())
 			} else {
-				require.ErrorContains(t, cfg.Runtime.ValidateRoleSupport(), "not implemented")
+				require.ErrorContains(t, cfg.Runtime.ValidateRoleSupport(), "not enabled")
 			}
 		})
 	}
@@ -193,7 +218,7 @@ func TestLoadCloudRuntimeFromFileAndEnvOverride(t *testing.T) {
 	require.Equal(t, RuntimeRoleControl, cfg.Runtime.Role)
 	require.Equal(t, 75, cfg.Runtime.ShutdownTimeoutSeconds)
 	require.Equal(t, DatabaseMigrationModeCheck, cfg.Database.MigrationMode)
-	require.ErrorContains(t, cfg.Runtime.ValidateRoleSupport(), "not implemented")
+	require.ErrorContains(t, cfg.Runtime.ValidateRoleSupport(), "not enabled")
 
 	t.Setenv("RUNTIME_ROLE", "all")
 	t.Setenv("RUNTIME_SHUTDOWN_TIMEOUT_SECONDS", "80")

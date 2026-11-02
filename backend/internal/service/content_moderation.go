@@ -523,6 +523,14 @@ type ContentModerationService struct {
 	moderationProxyCache     atomic.Pointer[moderationProxyURLCacheEntry]
 	asyncQueue               chan contentModerationTask
 	workerCount              int
+	lifecycleMu              sync.Mutex // Serializes startup, queue admission and closure.
+	started                  bool
+	stopped                  bool
+	managed                  bool // New managed instances reject admission before Start; zero-valued legacy fixtures retain buffering.
+	lifecycleCtx             context.Context
+	lifecycleCancel          context.CancelFunc
+	lifecycleDone            chan struct{}
+	lifecycleWG              sync.WaitGroup
 	apiKeyCursor             atomic.Uint64
 	asyncActive              atomic.Int64
 	asyncEnqueued            atomic.Int64
@@ -584,6 +592,7 @@ type contentModerationKeyHealth struct {
 	SyncLatencyMS  int64
 }
 
+// NewContentModerationService preserves the legacy, automatically started service.
 func NewContentModerationService(
 	settingRepo SettingRepository,
 	repo ContentModerationRepository,
@@ -594,7 +603,24 @@ func NewContentModerationService(
 	authCacheInvalidator APIKeyAuthCacheInvalidator,
 	emailService *EmailService,
 ) *ContentModerationService {
-	svc := &ContentModerationService{
+	svc := NewManagedContentModerationService(settingRepo, repo, hashCache, groupRepo, userRepo, proxyRepo, authCacheInvalidator, emailService)
+	svc.Start()
+	return svc
+}
+
+// NewManagedContentModerationService constructs a service without starting workers
+// or cleanup. Call Start in the process that produces its local async queue.
+func NewManagedContentModerationService(
+	settingRepo SettingRepository,
+	repo ContentModerationRepository,
+	hashCache ContentModerationHashCache,
+	groupRepo GroupRepository,
+	userRepo UserRepository,
+	proxyRepo ProxyRepository,
+	authCacheInvalidator APIKeyAuthCacheInvalidator,
+	emailService *EmailService,
+) *ContentModerationService {
+	return &ContentModerationService{
 		settingRepo:          settingRepo,
 		repo:                 repo,
 		hashCache:            hashCache,
@@ -605,16 +631,76 @@ func NewContentModerationService(
 		emailService:         emailService,
 		httpClient:           servertiming.InstrumentClient(nil),
 		workerCount:          maxContentModerationWorkerCount,
+		managed:              true,
 		asyncQueue:           make(chan contentModerationTask, maxContentModerationQueueSize),
 		keyHealth:            make(map[string]*contentModerationKeyHealth),
 	}
-	if settingRepo != nil && repo != nil {
-		for i := 0; i < svc.workerCount; i++ {
-			go svc.worker(i)
-		}
-		go svc.cleanupWorker()
+}
+
+// Start starts process-local queue consumers and retention cleanup once. It is a
+// no-op after Stop or when dependencies are unavailable. Queue consumers cannot
+// move to a remote worker: Check produces tasks in this process. Cluster-scoped
+// retention cleanup still needs a separate lifecycle in a future change.
+func (s *ContentModerationService) Start() {
+	if s == nil {
+		return
 	}
-	return svc
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.started || s.stopped || s.settingRepo == nil || s.repo == nil || s.asyncQueue == nil || s.workerCount <= 0 {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.started = true
+	s.lifecycleCtx = ctx
+	s.lifecycleCancel = cancel
+	s.lifecycleDone = make(chan struct{})
+	s.lifecycleWG.Add(s.workerCount + 1)
+	for i := 0; i < s.workerCount; i++ {
+		go func(id int) {
+			defer s.lifecycleWG.Done()
+			s.worker(ctx, id)
+		}(i)
+	}
+	go func() {
+		defer s.lifecycleWG.Done()
+		s.cleanupWorker(ctx)
+	}()
+}
+
+// Stop permanently closes async admission, drains accepted tasks using their
+// normal per-task deadlines, and cancels and waits for retention cleanup. It is
+// safe before Start and all concurrent callers wait for the same shutdown.
+// Synchronous pre-block checks remain request-scoped and are not canceled.
+// There is no overall drain deadline; callers must stop request producers first
+// and keep repositories/caches available until Stop returns.
+func (s *ContentModerationService) Stop() {
+	if s == nil {
+		return
+	}
+	s.lifecycleMu.Lock()
+	if s.stopped {
+		done := s.lifecycleDone
+		s.lifecycleMu.Unlock()
+		if done != nil {
+			<-done
+		}
+		return
+	}
+	s.stopped = true
+	if s.asyncQueue != nil {
+		close(s.asyncQueue)
+	}
+	if s.lifecycleCancel != nil {
+		s.lifecycleCancel()
+	}
+	done := s.lifecycleDone
+	s.lifecycleMu.Unlock()
+
+	s.lifecycleWG.Wait()
+	if done != nil {
+		close(done)
+	}
 }
 
 func (s *ContentModerationService) GetConfig(ctx context.Context) (*ContentModerationConfigView, error) {
@@ -1187,52 +1273,20 @@ func (s *ContentModerationService) recordPreBlockSyncMetric(latencyMS int, actio
 	}
 }
 
-func (s *ContentModerationService) enqueueAsync(input ContentModerationCheckInput, cfg *ContentModerationConfig, content ContentModerationInput, hashText string) {
-	if s == nil || s.asyncQueue == nil {
-		return
-	}
-	queueSize := defaultContentModerationQueueSize
-	if cfg != nil && cfg.QueueSize > 0 {
-		queueSize = cfg.QueueSize
-	}
-	if len(s.asyncQueue) >= queueSize {
-		slog.Warn("content_moderation.async_queue_full", "user_id", input.UserID, "endpoint", input.Endpoint, "queue_size", queueSize)
-		s.asyncDropped.Add(1)
-		return
-	}
-	task := contentModerationTask{
+func (s *ContentModerationService) enqueueAsync(input ContentModerationCheckInput, cfg *ContentModerationConfig, content ContentModerationInput, hashText string) bool {
+	return s.enqueueTask(contentModerationTask{
 		input:      input,
 		content:    content,
 		inputHash:  hashText,
 		enqueuedAt: time.Now(),
-	}
-	select {
-	case s.asyncQueue <- task:
-		s.asyncEnqueued.Add(1)
-	default:
-		slog.Warn("content_moderation.async_queue_full", "user_id", input.UserID, "endpoint", input.Endpoint)
-		s.asyncDropped.Add(1)
-	}
+	}, cfg)
 }
 
-func (s *ContentModerationService) enqueueRecord(input ContentModerationCheckInput, cfg *ContentModerationConfig, log *ContentModerationLog, inputHash string, recordHash bool, applySideEffects bool) {
-	if s == nil || s.asyncQueue == nil || log == nil {
-		return
+func (s *ContentModerationService) enqueueRecord(input ContentModerationCheckInput, cfg *ContentModerationConfig, log *ContentModerationLog, inputHash string, recordHash bool, applySideEffects bool) bool {
+	if log == nil {
+		return false
 	}
-	queueSize := defaultContentModerationQueueSize
-	if cfg != nil && cfg.QueueSize > 0 {
-		queueSize = cfg.QueueSize
-	}
-	if len(s.asyncQueue) >= queueSize {
-		slog.Warn("content_moderation.record_queue_full",
-			"user_id", input.UserID,
-			"endpoint", input.Endpoint,
-			"action", log.Action,
-			"queue_size", queueSize)
-		s.asyncDropped.Add(1)
-		return
-	}
-	task := contentModerationTask{
+	return s.enqueueTask(contentModerationTask{
 		input:            input,
 		inputHash:        inputHash,
 		log:              log,
@@ -1240,70 +1294,120 @@ func (s *ContentModerationService) enqueueRecord(input ContentModerationCheckInp
 		recordHash:       recordHash,
 		applySideEffects: applySideEffects,
 		enqueuedAt:       time.Now(),
-	}
-	select {
-	case s.asyncQueue <- task:
-		s.asyncEnqueued.Add(1)
-	default:
-		slog.Warn("content_moderation.record_queue_full",
-			"user_id", input.UserID,
-			"endpoint", input.Endpoint,
-			"action", log.Action)
-		s.asyncDropped.Add(1)
-	}
+	}, cfg)
 }
 
-func (s *ContentModerationService) worker(id int) {
-	for {
-		ctx, cancel := context.WithTimeout(context.Background(), maxContentModerationTimeoutMS*time.Millisecond+10*time.Second)
+func (s *ContentModerationService) enqueueTask(task contentModerationTask, cfg *ContentModerationConfig) bool {
+	if s == nil || s.asyncQueue == nil {
+		return false
+	}
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if (s.managed && !s.started) || s.stopped {
+		slog.Warn("content_moderation.async_queue_not_running", "user_id", task.input.UserID, "endpoint", task.input.Endpoint)
+		s.asyncDropped.Add(1)
+		return false
+	}
+	queueSize := defaultContentModerationQueueSize
+	if cfg != nil && cfg.QueueSize > 0 {
+		queueSize = cfg.QueueSize
+	}
+	if len(s.asyncQueue) < queueSize {
+		select {
+		case s.asyncQueue <- task:
+			s.asyncEnqueued.Add(1)
+			return true
+		default:
+		}
+	}
+	event := "content_moderation.async_queue_full"
+	action := ""
+	if task.log != nil {
+		event = "content_moderation.record_queue_full"
+		action = task.log.Action
+	}
+	slog.Warn(event, "user_id", task.input.UserID, "endpoint", task.input.Endpoint, "action", action, "queue_size", queueSize)
+	s.asyncDropped.Add(1)
+	return false
+}
+
+func (s *ContentModerationService) worker(lifecycleCtx context.Context, id int) {
+	for lifecycleCtx.Err() == nil {
+		ctx, cancel := context.WithTimeout(lifecycleCtx, maxContentModerationTimeoutMS*time.Millisecond+10*time.Second)
 		runtimeSnapshot, err := s.loadRuntimeSnapshot(ctx)
 		if err != nil || runtimeSnapshot == nil || runtimeSnapshot.config == nil || id >= runtimeSnapshot.config.WorkerCount {
 			cancel()
-			time.Sleep(time.Second)
+			timer := time.NewTimer(time.Second)
+			select {
+			case <-lifecycleCtx.Done():
+			case <-timer.C:
+			}
+			timer.Stop()
 			continue
 		}
-		cfg := runtimeSnapshot.config
 		task, ok := s.dequeueAsyncTask(ctx, time.Second)
-		if !ok {
-			cancel()
-			continue
+		cancel()
+		if ok {
+			s.processAsyncTask(id, task, runtimeSnapshot.config)
 		}
-		func() {
-			defer cancel()
-			defer func() {
-				if r := recover(); r != nil {
-					slog.Error("content_moderation.worker_panic", "worker_id", id, "recover", r)
-				}
-			}()
-			if task.log != nil {
-				s.asyncActive.Add(1)
-				defer s.asyncActive.Add(-1)
-				queueDelay := int(time.Since(task.enqueuedAt).Milliseconds())
-				task.log.QueueDelayMS = &queueDelay
-				taskCfg := task.config
-				if taskCfg == nil {
-					taskCfg = cfg
-				}
-				s.persistContentModerationLog(ctx, taskCfg, task.log, task.inputHash, task.recordHash, task.applySideEffects)
-				s.asyncProcessed.Add(1)
-				return
-			}
-			if !cfg.Enabled || cfg.Mode == ContentModerationModeOff || len(cfg.apiKeys()) == 0 {
-				return
-			}
-			if !cfg.includesGroup(task.input.GroupID) {
-				return
-			}
-			if !cfg.includesModel(task.input.Model) {
-				return
-			}
-			s.asyncActive.Add(1)
-			defer s.asyncActive.Add(-1)
-			queueDelay := int(time.Since(task.enqueuedAt).Milliseconds())
-			_ = s.checkSync(ctx, task.input, cfg, task.content, task.inputHash, &queueDelay, false)
-			s.asyncProcessed.Add(1)
-		}()
 	}
+	// One consumer finishes the closed queue, including when configuration could
+	// not be loaded during normal polling. Other workers finish in-flight tasks.
+	if id == 0 {
+		for task := range s.asyncQueue {
+			s.processAsyncTask(id, task, nil)
+		}
+	}
+}
+
+func (s *ContentModerationService) processAsyncTask(id int, task contentModerationTask, cfg *ContentModerationConfig) {
+	// Stop cancels polling and cleanup, not an accepted audit or its side effects.
+	// HTTP requests retain both this task deadline and the configured API timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), maxContentModerationTimeoutMS*time.Millisecond+10*time.Second)
+	defer cancel()
+	defer func() {
+		if r := recover(); r != nil {
+			s.asyncErrors.Add(1)
+			slog.Error("content_moderation.worker_panic", "worker_id", id, "recover", r)
+		}
+	}()
+	if task.log != nil && task.config != nil {
+		cfg = task.config
+	}
+	if cfg == nil {
+		snapshot, err := s.loadRuntimeSnapshot(ctx)
+		if err != nil || snapshot == nil || snapshot.config == nil {
+			// Do not strand the closed queue or silently discard accepted work if
+			// settings remain unavailable during shutdown. Record the cancellation.
+			s.asyncErrors.Add(1)
+			slog.Error("content_moderation.async_task_canceled", "user_id", task.input.UserID, "endpoint", task.input.Endpoint, "reason", "runtime_config_unavailable", "error", err)
+			return
+		}
+		cfg = snapshot.config
+	}
+	if task.log != nil {
+		s.asyncActive.Add(1)
+		defer s.asyncActive.Add(-1)
+		queueDelay := int(time.Since(task.enqueuedAt).Milliseconds())
+		task.log.QueueDelayMS = &queueDelay
+		s.persistContentModerationLog(ctx, cfg, task.log, task.inputHash, task.recordHash, task.applySideEffects)
+		s.asyncProcessed.Add(1)
+		return
+	}
+	if !cfg.Enabled || cfg.Mode == ContentModerationModeOff || len(cfg.apiKeys()) == 0 {
+		return
+	}
+	if !cfg.includesGroup(task.input.GroupID) {
+		return
+	}
+	if !cfg.includesModel(task.input.Model) {
+		return
+	}
+	s.asyncActive.Add(1)
+	defer s.asyncActive.Add(-1)
+	queueDelay := int(time.Since(task.enqueuedAt).Milliseconds())
+	_ = s.checkSync(ctx, task.input, cfg, task.content, task.inputHash, &queueDelay, false)
+	s.asyncProcessed.Add(1)
 }
 
 func (s *ContentModerationService) dequeueAsyncTask(ctx context.Context, idleWait time.Duration) (contentModerationTask, bool) {
@@ -1481,21 +1585,31 @@ func (s *ContentModerationService) GetStatus(ctx context.Context) (*ContentModer
 	}, nil
 }
 
-func (s *ContentModerationService) cleanupWorker() {
-	timer := time.NewTimer(contentModerationCleanupDelay)
+func (s *ContentModerationService) cleanupWorker(ctx context.Context) {
+	s.cleanupLoop(ctx, time.NewTimer(contentModerationCleanupDelay))
+}
+
+func (s *ContentModerationService) cleanupLoop(ctx context.Context, timer *time.Timer) {
 	defer timer.Stop()
 	for {
-		<-timer.C
-		s.runCleanupOnce()
-		timer.Reset(contentModerationCleanupInterval)
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			if ctx.Err() != nil {
+				return
+			}
+			s.runCleanupOnce(ctx)
+			timer.Reset(contentModerationCleanupInterval)
+		}
 	}
 }
 
-func (s *ContentModerationService) runCleanupOnce() {
+func (s *ContentModerationService) runCleanupOnce(parent context.Context) {
 	if s == nil || s.repo == nil || s.settingRepo == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), contentModerationCleanupTimeout)
+	ctx, cancel := context.WithTimeout(parent, contentModerationCleanupTimeout)
 	defer cancel()
 	cfg, err := s.loadConfig(ctx)
 	if err != nil {

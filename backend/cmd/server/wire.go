@@ -451,13 +451,18 @@ func provideCleanup(
 				log.Printf("[Cleanup] PromptAuditService failed: %v", err)
 			}
 		}
-		if usageRecordWorkerPool != nil {
+		if usageRecordWorkerPool != nil && (lifecycle == nil || !lifecycle.ManagesTask("UsageRecordWorkerPool")) {
 			usageRecordWorkerPool.Stop()
 		}
 		if lifecycle != nil {
 			if err := lifecycle.Stop(ctx); err != nil {
 				log.Printf("[Cleanup] RuntimeLifecycle failed: %v", err)
 			}
+		}
+		// Ristretto is allocated during managed construction. Close it even if
+		// startup failed before SubscriptionService.Start was reached.
+		if subscriptionService != nil {
+			subscriptionService.Stop()
 		}
 		runParallel(parallelSteps)
 		runSequential(infraSteps)

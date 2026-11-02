@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -17,10 +18,15 @@ type stubMonitorSvc struct {
 	runCalled  chan int64 // 每次 RunCheck 触发时 push 一次（缓冲足够大避免阻塞）
 	runErr     error
 	listErr    error
+	list       func(context.Context) ([]*ChannelMonitor, error)
+	run        func(context.Context, int64) ([]*CheckResult, error)
 	runHoldFor time.Duration // RunCheck 内额外阻塞的时长，用来测试 Stop 等待行为
 }
 
-func (s *stubMonitorSvc) ListEnabledMonitors(_ context.Context) ([]*ChannelMonitor, error) {
+func (s *stubMonitorSvc) ListEnabledMonitors(ctx context.Context) ([]*ChannelMonitor, error) {
+	if s.list != nil {
+		return s.list(ctx)
+	}
 	if s.listErr != nil {
 		return nil, s.listErr
 	}
@@ -35,6 +41,9 @@ func (s *stubMonitorSvc) RunCheck(ctx context.Context, id int64) ([]*CheckResult
 		default:
 		}
 	}
+	if s.run != nil {
+		return s.run(ctx, id)
+	}
 	if s.runHoldFor > 0 {
 		select {
 		case <-time.After(s.runHoldFor):
@@ -45,7 +54,10 @@ func (s *stubMonitorSvc) RunCheck(ctx context.Context, id int64) ([]*CheckResult
 }
 
 func newRunnerForTest(svc monitorRunnerSvc) *ChannelMonitorRunner {
-	return newChannelMonitorRunner(svc, nil)
+	r := newChannelMonitorRunner(svc, nil)
+	// 测试通过手动 ReconcileOnce 或显式 tick 驱动，不等待生产 30 秒轮询。
+	r.reconcileTicks = make(chan time.Time)
+	return r
 }
 
 // 等待 condition 在 timeout 内变 true，否则 t.Fatalf。轮询 5ms 一次。
@@ -298,29 +310,42 @@ func TestStop_DrainsAllGoroutines(t *testing.T) {
 	stoppedWithin(t, r, 3*time.Second)
 }
 
-// TestStop_WaitsForInFlightCheck 验证 Stop 会等待正在执行的 RunCheck 退出（pool.StopAndWait）。
+// TestStop_WaitsForInFlightCheck 验证取消传播，且所有并发 Stop 都等在飞任务退出。
 func TestStop_WaitsForInFlightCheck(t *testing.T) {
-	svc := &stubMonitorSvc{
-		runCalled:  make(chan int64, 1),
-		runHoldFor: 200 * time.Millisecond,
-	}
+	entered := make(chan struct{})
+	cancelled := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseCheck := func() { releaseOnce.Do(func() { close(release) }) }
+	svc := &stubMonitorSvc{run: func(ctx context.Context, _ int64) ([]*CheckResult, error) {
+		close(entered)
+		<-ctx.Done()
+		close(cancelled)
+		<-release
+		return nil, ctx.Err()
+	}}
 	r := newRunnerForTest(svc)
+	t.Cleanup(r.Stop)
+	t.Cleanup(releaseCheck)
 	r.Start()
 	r.Schedule(&ChannelMonitor{ID: 1, Enabled: true, IntervalSeconds: 60})
+	awaitMonitorSignal(t, entered, "check entered")
 
-	select {
-	case <-svc.runCalled:
-	case <-time.After(2 * time.Second):
-		t.Fatal("first fire never happened")
+	firstDone := make(chan struct{})
+	go func() { r.Stop(); close(firstDone) }()
+	awaitMonitorSignal(t, cancelled, "check received cancellation")
+	secondDone := make(chan struct{})
+	go func() { r.Stop(); close(secondDone) }()
+	for _, done := range []<-chan struct{}{firstDone, secondDone} {
+		select {
+		case <-done:
+			t.Fatal("Stop returned before in-flight check exited")
+		default:
+		}
 	}
-
-	start := time.Now()
-	stoppedWithin(t, r, 3*time.Second)
-	elapsed := time.Since(start)
-	// Stop 必须等待 in-flight check 跑完（runHoldFor=200ms），耗时下界约 100ms。
-	if elapsed < 100*time.Millisecond {
-		t.Fatalf("Stop returned too fast (%v); did not wait for in-flight check", elapsed)
-	}
+	releaseCheck()
+	awaitMonitorSignal(t, firstDone, "first Stop drained")
+	awaitMonitorSignal(t, secondDone, "second Stop drained")
 }
 
 // TestInFlight_PoolFullReleasesSlot 直接驱动 fire 路径，模拟 pool.TrySubmit 失败时 inFlight 必须释放。
@@ -341,6 +366,415 @@ func TestInFlight_AcquireReleaseSymmetric(t *testing.T) {
 		t.Fatal("acquire after release should succeed")
 	}
 	r.releaseInFlight(42)
+	r.Stop()
+}
+
+// monitorPersistentState 模拟两个独立实例共用的 PG 持久化状态，不持有 scheduler/callback。
+// 每次 list/get 都返回新快照，避免靠共享 ChannelMonitor 指针实现“传播”。
+type monitorPersistentState struct {
+	mu       sync.Mutex
+	monitors map[int64]ChannelMonitor
+	listErr  error
+}
+
+func (s *monitorPersistentState) put(m ChannelMonitor) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.monitors == nil {
+		s.monitors = make(map[int64]ChannelMonitor)
+	}
+	s.monitors[m.ID] = m
+}
+
+func (s *monitorPersistentState) remove(id int64) {
+	s.mu.Lock()
+	delete(s.monitors, id)
+	s.mu.Unlock()
+}
+
+func (s *monitorPersistentState) snapshot(ctx context.Context) ([]*ChannelMonitor, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
+	var result []*ChannelMonitor
+	for _, m := range s.monitors {
+		if m.Enabled {
+			copy := m
+			result = append(result, &copy)
+		}
+	}
+	return result, nil
+}
+
+func (s *monitorPersistentState) get(ctx context.Context, id int64) (*ChannelMonitor, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, ok := s.monitors[id]
+	if !ok {
+		return nil, errors.New("monitor deleted")
+	}
+	return &m, nil
+}
+
+func awaitMonitorSignal(t *testing.T, ch <-chan struct{}, message string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timeout: %s", message)
+	}
+}
+
+func reconcileMonitorRunner(t *testing.T, r *ChannelMonitorRunner) {
+	t.Helper()
+	if err := r.ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+}
+
+func TestReconcileOnce_IndependentRunnersReadPersistentState(t *testing.T) {
+	state := &monitorPersistentState{}
+	// 这两个 service/runner 不共用回调，只有持久化状态共享。
+	firstSvc := &stubMonitorSvc{list: state.snapshot}
+	secondSvc := &stubMonitorSvc{list: state.snapshot}
+	first := newRunnerForTest(firstSvc)
+	second := newRunnerForTest(secondSvc)
+	t.Cleanup(first.Stop)
+	t.Cleanup(second.Stop)
+	first.Start()
+	second.Start()
+
+	m := ChannelMonitor{ID: 1, Name: "one", Enabled: true, IntervalSeconds: 60}
+	state.put(m)
+	reconcileMonitorRunner(t, first)
+	if runnerTaskCount(second) != 0 {
+		t.Fatal("independent runner changed without reading persistence")
+	}
+	reconcileMonitorRunner(t, second)
+	for _, r := range []*ChannelMonitorRunner{first, second} {
+		if task := runnerTaskPtr(r, 1); task == nil || task.interval != time.Minute {
+			t.Fatal("persisted create did not schedule monitor")
+		}
+	}
+	original := runnerTaskPtr(second, 1)
+	reconcileMonitorRunner(t, second)
+	if runnerTaskPtr(second, 1) != original {
+		t.Fatal("unchanged snapshot restarted task")
+	}
+
+	m.IntervalSeconds = 120
+	state.put(m)
+	reconcileMonitorRunner(t, second)
+	intervalTask := runnerTaskPtr(second, 1)
+	if intervalTask == original || intervalTask.interval != 2*time.Minute {
+		t.Fatal("interval update did not replace task")
+	}
+	if runnerTaskPtr(first, 1).interval != time.Minute {
+		t.Fatal("first runner changed through a shared callback or pointer")
+	}
+	m.JitterSeconds = 10
+	state.put(m)
+	reconcileMonitorRunner(t, second)
+	jitterTask := runnerTaskPtr(second, 1)
+	if jitterTask == intervalTask || jitterTask.jitter != 10*time.Second {
+		t.Fatal("jitter update did not replace task")
+	}
+	m.Name = "renamed"
+	state.put(m)
+	reconcileMonitorRunner(t, second)
+	if task := runnerTaskPtr(second, 1); task == jitterTask || task.name != "renamed" {
+		t.Fatal("name update did not converge")
+	}
+
+	m.Enabled = false
+	state.put(m)
+	reconcileMonitorRunner(t, first)
+	reconcileMonitorRunner(t, second)
+	if runnerTaskCount(first) != 0 || runnerTaskCount(second) != 0 {
+		t.Fatal("disable did not remove tasks")
+	}
+	m.Enabled = true
+	state.put(m)
+	reconcileMonitorRunner(t, first)
+	reconcileMonitorRunner(t, second)
+	if runnerTaskCount(first) != 1 || runnerTaskCount(second) != 1 {
+		t.Fatal("re-enable did not restore tasks")
+	}
+	state.remove(1)
+	reconcileMonitorRunner(t, first)
+	reconcileMonitorRunner(t, second)
+	if runnerTaskCount(first) != 0 || runnerTaskCount(second) != 0 {
+		t.Fatal("delete did not remove tasks")
+	}
+}
+
+func TestReconcileOnce_ErrorPreservesTasksAndSuccessfulEmptyRemoves(t *testing.T) {
+	state := &monitorPersistentState{}
+	state.put(ChannelMonitor{ID: 1, Enabled: true, IntervalSeconds: 60})
+	r := newRunnerForTest(&stubMonitorSvc{list: state.snapshot})
+	t.Cleanup(r.Stop)
+	r.Start()
+	original := runnerTaskPtr(r, 1)
+	state.remove(1)
+	snapshotErr := errors.New("PG unavailable")
+	state.mu.Lock()
+	state.listErr = snapshotErr
+	state.mu.Unlock()
+	if err := r.ReconcileOnce(context.Background()); !errors.Is(err, snapshotErr) {
+		t.Fatalf("expected snapshot error, got %v", err)
+	}
+	if original == nil || runnerTaskPtr(r, 1) != original {
+		t.Fatal("failed snapshot deleted or replaced existing task")
+	}
+	state.mu.Lock()
+	state.listErr = nil
+	state.mu.Unlock()
+	reconcileMonitorRunner(t, r)
+	if runnerTaskCount(r) != 0 {
+		t.Fatal("successful empty snapshot did not remove task")
+	}
+}
+
+func TestReconcileOnce_FailedAndRepairedKey(t *testing.T) {
+	state := &monitorPersistentState{}
+	m := ChannelMonitor{ID: 1, Enabled: true, IntervalSeconds: 60}
+	state.put(m)
+	r := newRunnerForTest(&stubMonitorSvc{list: state.snapshot})
+	t.Cleanup(r.Stop)
+	r.Start()
+	m.APIKeyDecryptFailed = true
+	state.put(m)
+	reconcileMonitorRunner(t, r)
+	if runnerTaskCount(r) != 0 {
+		t.Fatal("decrypt-failed monitor remained scheduled")
+	}
+	m.APIKeyDecryptFailed = false
+	m.APIKey = "replacement-key"
+	state.put(m)
+	reconcileMonitorRunner(t, r)
+	if runnerTaskPtr(r, 1) == nil {
+		t.Fatal("repaired key did not restore task")
+	}
+}
+
+func TestReconcileOnce_UnchangedAndProbeUpdatesDoNotFire(t *testing.T) {
+	state := &monitorPersistentState{}
+	m := ChannelMonitor{ID: 1, Enabled: true, IntervalSeconds: 3600, Endpoint: "https://before.invalid"}
+	state.put(m)
+	observed := make(chan string, 4)
+	svc := &stubMonitorSvc{list: state.snapshot, run: func(ctx context.Context, id int64) ([]*CheckResult, error) {
+		current, err := state.get(ctx, id)
+		if err == nil {
+			observed <- current.Endpoint
+		}
+		return nil, err
+	}}
+	r := newRunnerForTest(svc)
+	t.Cleanup(r.Stop)
+	r.Start()
+	select {
+	case endpoint := <-observed:
+		if endpoint != m.Endpoint {
+			t.Fatalf("unexpected initial endpoint %q", endpoint)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("initial check did not run")
+	}
+	original := runnerTaskPtr(r, 1)
+	reconcileMonitorRunner(t, r)
+	m.Endpoint = "https://after.invalid"
+	m.UpdatedAt = time.Now()
+	m.LastCheckedAt = &m.UpdatedAt
+	state.put(m)
+	reconcileMonitorRunner(t, r)
+	if runnerTaskPtr(r, 1) != original {
+		t.Fatal("probe configuration/timestamps restarted unchanged schedule")
+	}
+	// 等待调度 goroutine 和 pool 完全退出后计数，避免基于 sleep 的负断言。
+	stoppedWithin(t, r, 2*time.Second)
+	if original == nil || svc.runCount.Load() != 1 {
+		t.Fatalf("unchanged/probe-only updates caused extra checks: %d", svc.runCount.Load())
+	}
+	// 非调度配置不需要重建：每次 RunCheck 都按 ID 获取最新持久化值。
+	if _, err := svc.RunCheck(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if endpoint := <-observed; endpoint != m.Endpoint {
+		t.Fatalf("RunCheck did not see updated endpoint: %q", endpoint)
+	}
+}
+
+func TestStart_PollRetriesFailedInitialSnapshot(t *testing.T) {
+	var calls atomic.Int64
+	listed := make(chan struct{}, 1)
+	svc := &stubMonitorSvc{
+		list: func(ctx context.Context) ([]*ChannelMonitor, error) {
+			if calls.Add(1) == 1 {
+				if _, ok := ctx.Deadline(); !ok {
+					t.Error("initial snapshot has no deadline")
+				}
+				return nil, errors.New("transient PG error")
+			}
+			listed <- struct{}{}
+			return []*ChannelMonitor{{ID: 1, Enabled: true, IntervalSeconds: 60}}, nil
+		},
+		runCalled: make(chan int64, 1),
+	}
+	r := newRunnerForTest(svc)
+	t.Cleanup(r.Stop)
+	ticks := make(chan time.Time, 1)
+	r.reconcileTicks = ticks
+	r.Start()
+	r.Start() // 幂等，不做额外初次读取。
+	if calls.Load() != 1 {
+		t.Fatal("Start performed duplicate initial reads")
+	}
+	ticks <- time.Now()
+	awaitMonitorSignal(t, listed, "poll retried snapshot")
+	select {
+	case <-svc.runCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("successful retry did not schedule check")
+	}
+	stoppedWithin(t, r, 2*time.Second)
+	ticks <- time.Now()
+	reconcileMonitorRunner(t, r) // Stop 后不再读取。
+	if calls.Load() != 2 || runnerTaskCount(r) != 0 {
+		t.Fatal("stopped runner continued polling or retained tasks")
+	}
+}
+
+func TestStop_CancelsInitialAndPollingSnapshots(t *testing.T) {
+	for _, phase := range []string{"initial", "poll"} {
+		t.Run(phase, func(t *testing.T) {
+			entered := make(chan struct{})
+			cancelled := make(chan struct{})
+			var calls atomic.Int64
+			svc := &stubMonitorSvc{list: func(ctx context.Context) ([]*ChannelMonitor, error) {
+				if calls.Add(1) == 1 && phase == "poll" {
+					return nil, nil
+				}
+				if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > monitorStartupLoadTimeout {
+					t.Error("snapshot must have bounded deadline")
+				}
+				close(entered)
+				<-ctx.Done()
+				close(cancelled)
+				return nil, ctx.Err()
+			}}
+			r := newRunnerForTest(svc)
+			t.Cleanup(r.Stop)
+			ticks := make(chan time.Time, 1)
+			r.reconcileTicks = ticks
+			startDone := make(chan struct{})
+			go func() { r.Start(); close(startDone) }()
+			if phase == "poll" {
+				awaitMonitorSignal(t, startDone, "Start completed")
+				ticks <- time.Now()
+			}
+			awaitMonitorSignal(t, entered, "snapshot started")
+			stoppedWithin(t, r, 2*time.Second)
+			awaitMonitorSignal(t, cancelled, "snapshot cancelled")
+			awaitMonitorSignal(t, startDone, "Start exited")
+		})
+	}
+}
+
+func TestStop_BeforeStartAndRepeated(t *testing.T) {
+	svc := &stubMonitorSvc{list: func(context.Context) ([]*ChannelMonitor, error) {
+		t.Error("stopped runner read persistence")
+		return nil, nil
+	}}
+	r := newRunnerForTest(svc)
+	stoppedWithin(t, r, 2*time.Second)
+	stoppedWithin(t, r, 2*time.Second)
+	r.Start()
+	reconcileMonitorRunner(t, r)
+	r.Schedule(&ChannelMonitor{ID: 1, Enabled: true, IntervalSeconds: 60})
+	if runnerTaskCount(r) != 0 {
+		t.Fatal("Stop-before-Start allowed tasks to start")
+	}
+}
+
+func TestReconcileOnce_CancelledSnapshotKeepsTask(t *testing.T) {
+	var calls atomic.Int64
+	entered := make(chan struct{})
+	svc := &stubMonitorSvc{list: func(ctx context.Context) ([]*ChannelMonitor, error) {
+		if calls.Add(1) == 1 {
+			return []*ChannelMonitor{{ID: 1, Enabled: true, IntervalSeconds: 60}}, nil
+		}
+		close(entered)
+		<-ctx.Done()
+		// 即使底层错误地在取消后返回“成功空快照”，也不能删除现有任务。
+		return nil, nil
+	}}
+	r := newRunnerForTest(svc)
+	t.Cleanup(r.Stop)
+	r.Start()
+	original := runnerTaskPtr(r, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() { result <- r.ReconcileOnce(ctx) }()
+	awaitMonitorSignal(t, entered, "snapshot entered")
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected cancellation, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancelled reconcile did not exit")
+	}
+	if original == nil || runnerTaskPtr(r, 1) != original {
+		t.Fatal("cancelled snapshot removed task")
+	}
+}
+
+func TestReconcileOnce_LocalCallbackWinsOverInProgressSnapshot(t *testing.T) {
+	var calls atomic.Int64
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	svc := &stubMonitorSvc{list: func(ctx context.Context) ([]*ChannelMonitor, error) {
+		if calls.Add(1) == 1 {
+			return nil, nil
+		}
+		close(entered)
+		select {
+		case <-release:
+			return []*ChannelMonitor{{ID: 1, Enabled: true, IntervalSeconds: 60}}, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}}
+	r := newRunnerForTest(svc)
+	t.Cleanup(r.Stop)
+	r.Start()
+	result := make(chan error, 1)
+	go func() { result <- r.ReconcileOnce(context.Background()) }()
+	awaitMonitorSignal(t, entered, "snapshot entered")
+	r.Schedule(&ChannelMonitor{ID: 1, Enabled: true, IntervalSeconds: 120})
+	updated := runnerTaskPtr(r, 1)
+	close(release)
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reconcile did not complete")
+	}
+	if updated == nil || runnerTaskPtr(r, 1) != updated || updated.interval != 2*time.Minute {
+		t.Fatal("in-progress snapshot overwrote newer CRUD callback")
+	}
 }
 
 // stoppedWithin 在 timeout 内并行调用 Stop，超时则 Fatal。验证 Stop 不会阻塞。

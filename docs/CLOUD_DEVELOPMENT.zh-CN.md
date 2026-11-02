@@ -59,11 +59,21 @@ manifest 校验允许数据库额外存在后续迁移，以便 expand/contract 
 
 ## Runtime 角色
 
-`RUNTIME_ROLE` 接受 `all/gateway/control/worker` 配置语法，默认 `all`。**当前 gateway/control/worker 尚未完成真实 DI 与任务隔离，server 会在安装向导、DI 和后台任务前拒绝启动。** 这是安全门禁，不是已交付的角色拆分。
+`RUNTIME_ROLE` 接受 `all/gateway/control/worker`，默认 `all`。独立角色默认被拒绝；仅隔离预生产可以显式设 `RUNTIME_ENABLE_SPLIT_ROLES=true`，同时必须 `DATABASE_MIGRATION_MODE=check`、`RUN_MODE=standard` 及显式共享JWT/TOTP。已验证角色实际启动和后台scope，但仍是共享Wire图，不是生产最小权限/高可用验收。
 
 `RUNTIME_SHUTDOWN_TIMEOUT_SECONDS` 控制真实 HTTP Shutdown 的等待预算，默认 90 秒，上限 110 秒。它不实现 SIGTERM 前排空，不迁移 WebSocket，也不保证全部 cleanup 在 ECS 120 秒停止阶段内完成。生产长连接生命周期仍为待办。
 
-第二批已在路由层和 provider 生命周期中接线角色归属，但进程启动门禁仍保持关闭。真实迁移范围、eager构造器和本地队列阻碍见 [CLOUD_RUNTIME_MIGRATION.zh-CN.md](CLOUD_RUNTIME_MIGRATION.zh-CN.md)。可单独验证路由矩阵与显式生命周期，不要把这些单元契约当成独立角色可上线的证据。
+真实迁移范围与剩余边界见 [CLOUD_RUNTIME_MIGRATION.zh-CN.md](CLOUD_RUNTIME_MIGRATION.zh-CN.md)。预生产限定单Control、单维护Worker；Gateway可用两实例验证共享状态。尚未给维护Worker或Control实现全能力跨实例状态与lease，不能任意扩容。
+
+### 真实角色进程烟测
+
+先完成local test数据库迁移并通过私有环境提供 `CLOUD_TEST_DATABASE_DSN`（loopback、dbname以`_test`结尾，不得传生产库），安装本地redis-server/redis-tools后：
+
+```sh
+python3 -I ../tools/smoke_cloud_roles.py --binary bin/server
+```
+
+脚本启动双Gateway、单Control、单Worker，创建密码保护的临时Redis和临时配置，验证健康/鉴权/路由边界、日志中的任务归属及Worker不误删其他Gateway槽位，然后SIGTERM等待退出。脚本会执行维护逻辑，故只接受显式本地测试库，不调用AWS、不发真实模型/支付请求。`--keep-logs`仅写入新建目录，凭据先脱敏。
 
 ## 聚焦测试
 
@@ -97,3 +107,4 @@ GOMAXPROCS=2 go test -p=1 ./cmd/migrate -count=1
 - `infra/aws` 的 init/validate/mock tests 不需要创建资源。
 - 不默认启动尚未拆分的应用角色，不发布占位镜像。
 - ECS services、域名/ACM、runtime DB 账户、加密 Secret、远端 state backend、发布和排空机制仍需后续实现与批准。
+- 分阶段实机启动条件见 [AWS_PREPRODUCTION_CHECKLIST.zh-CN.md](AWS_PREPRODUCTION_CHECKLIST.zh-CN.md)，不要把本地多角色启动通过当作AWS部署已完成。

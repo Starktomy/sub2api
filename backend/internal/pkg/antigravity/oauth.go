@@ -285,16 +285,40 @@ type OAuthSession struct {
 type SessionStore struct {
 	mu       sync.RWMutex
 	sessions map[string]*OAuthSession
-	stopCh   chan struct{}
+
+	lifecycleMu sync.Mutex
+	started     bool
+	closed      bool
+	stopCh      chan struct{}
+	cleanupWG   sync.WaitGroup
 }
 
-func NewSessionStore() *SessionStore {
-	store := &SessionStore{
+// NewManagedSessionStore creates a session store without starting background work.
+func NewManagedSessionStore() *SessionStore {
+	return &SessionStore{
 		sessions: make(map[string]*OAuthSession),
 		stopCh:   make(chan struct{}),
 	}
-	go store.cleanup()
+}
+
+// NewSessionStore creates a session store and starts cleanup for legacy callers.
+func NewSessionStore() *SessionStore {
+	store := NewManagedSessionStore()
+	store.Start()
 	return store
+}
+
+// Start starts cleanup at most once. A stopped store cannot be restarted.
+func (s *SessionStore) Start() {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.started || s.closed {
+		return
+	}
+	s.started = true
+	// Register and launch cleanup before Stop can close the channel or wait.
+	s.cleanupWG.Add(1)
+	go s.cleanup()
 }
 
 func (s *SessionStore) Set(sessionID string, session *OAuthSession) {
@@ -322,16 +346,19 @@ func (s *SessionStore) Delete(sessionID string) {
 	delete(s.sessions, sessionID)
 }
 
+// Stop permanently stops cleanup and waits for it to exit, even on repeated calls.
 func (s *SessionStore) Stop() {
-	select {
-	case <-s.stopCh:
-		return
-	default:
+	s.lifecycleMu.Lock()
+	if !s.closed {
+		s.closed = true
 		close(s.stopCh)
 	}
+	s.lifecycleMu.Unlock()
+	s.cleanupWG.Wait()
 }
 
 func (s *SessionStore) cleanup() {
+	defer s.cleanupWG.Done()
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 	for {

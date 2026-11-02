@@ -2102,6 +2102,7 @@ func configureConfigSource(setConfigFile, addConfigPath func(string)) {
 func setDefaults() {
 	viper.SetDefault("runtime.role", RuntimeRoleAll)
 	viper.SetDefault("runtime.shutdown_timeout_seconds", DefaultRuntimeShutdownTimeoutSeconds)
+	viper.SetDefault("runtime.enable_split_roles", false)
 	viper.SetDefault("run_mode", RunModeStandard)
 	viper.SetDefault("gateway.min_output_tokens", 128)
 	viper.SetDefault("simple_mode.auto_create_default_groups", true)
@@ -2784,6 +2785,12 @@ func (c *Config) Validate() error {
 	}
 	if err := c.Database.validateMigrationMode(); err != nil {
 		return err
+	}
+	if err := c.Runtime.ValidateMigrationPolicy(c.Database.EffectiveMigrationMode()); err != nil {
+		return err
+	}
+	if c.Runtime.EnableSplitRoles && c.Runtime.Role != RuntimeRoleAll && NormalizeRunMode(c.RunMode) != RunModeStandard {
+		return fmt.Errorf("experimental split roles require standard run mode; billing must not be disabled")
 	}
 	if err := c.validateCheckModeSharedSecrets(); err != nil {
 		return err

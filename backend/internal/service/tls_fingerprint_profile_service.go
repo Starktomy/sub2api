@@ -31,8 +31,9 @@ type TLSFingerprintProfileCache interface {
 
 // TLSFingerprintProfileService TLS 指纹模板管理服务
 type TLSFingerprintProfileService struct {
-	repo  TLSFingerprintProfileRepository
-	cache TLSFingerprintProfileCache
+	updates cacheUpdateLifecycle
+	repo    TLSFingerprintProfileRepository
+	cache   TLSFingerprintProfileCache
 
 	// 本地 ID→Profile 映射缓存，用于 DoWithTLS 热路径快速查找
 	localCache map[int64]*model.TLSFingerprintProfile
@@ -44,29 +45,42 @@ func NewTLSFingerprintProfileService(
 	repo TLSFingerprintProfileRepository,
 	cache TLSFingerprintProfileCache,
 ) *TLSFingerprintProfileService {
+	svc := NewManagedTLSFingerprintProfileService(repo, cache)
+	svc.Start()
+	return svc
+}
+
+func NewManagedTLSFingerprintProfileService(
+	repo TLSFingerprintProfileRepository,
+	cache TLSFingerprintProfileCache,
+) *TLSFingerprintProfileService {
 	svc := &TLSFingerprintProfileService{
 		repo:       repo,
 		cache:      cache,
 		localCache: make(map[int64]*model.TLSFingerprintProfile),
 	}
-
-	ctx := context.Background()
-	if err := svc.reloadFromDB(ctx); err != nil {
-		logger.LegacyPrintf("service.tls_fp_profile", "[TLSFPProfileService] Failed to load profiles from DB on startup: %v", err)
-		if fallbackErr := svc.refreshLocalCache(ctx); fallbackErr != nil {
-			logger.LegacyPrintf("service.tls_fp_profile", "[TLSFPProfileService] Failed to load profiles from cache fallback on startup: %v", fallbackErr)
-		}
-	}
-
-	if cache != nil {
-		cache.SubscribeUpdates(ctx, func() {
-			if err := svc.refreshLocalCache(context.Background()); err != nil {
-				logger.LegacyPrintf("service.tls_fp_profile", "[TLSFPProfileService] Failed to refresh cache on notification: %v", err)
-			}
-		})
-	}
-
 	return svc
+}
+
+func (s *TLSFingerprintProfileService) Start() {
+	ctx, ok := s.updates.begin()
+	if !ok {
+		return
+	}
+	defer s.updates.starting.Done()
+	if err := s.reloadFromDB(ctx); err != nil {
+		logger.LegacyPrintf("service.tls_fp_profile", "Initial DB load failed: %v", err)
+		_ = s.refreshLocalCache(ctx)
+	}
+	if err := s.updates.subscribe(ctx, s.cache, func() { _ = s.refreshLocalCache(ctx) }); err != nil {
+		logger.LegacyPrintf("service.tls_fp_profile", "Cache subscription failed: %v", err)
+	}
+}
+
+func (s *TLSFingerprintProfileService) Stop() {
+	if s != nil {
+		s.updates.close()
+	}
 }
 
 // --- CRUD ---

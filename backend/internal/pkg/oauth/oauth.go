@@ -48,25 +48,51 @@ type OAuthSession struct {
 type SessionStore struct {
 	mu       sync.RWMutex
 	sessions map[string]*OAuthSession
-	stopOnce sync.Once
-	stopCh   chan struct{}
+
+	lifecycleMu sync.Mutex
+	started     bool
+	closed      bool
+	stopCh      chan struct{}
+	cleanupWG   sync.WaitGroup
 }
 
-// NewSessionStore creates a new session store
-func NewSessionStore() *SessionStore {
-	store := &SessionStore{
+// NewManagedSessionStore creates a session store without starting background work.
+func NewManagedSessionStore() *SessionStore {
+	return &SessionStore{
 		sessions: make(map[string]*OAuthSession),
 		stopCh:   make(chan struct{}),
 	}
-	go store.cleanup()
+}
+
+// NewSessionStore creates a session store and starts cleanup for legacy callers.
+func NewSessionStore() *SessionStore {
+	store := NewManagedSessionStore()
+	store.Start()
 	return store
 }
 
-// Stop stops the cleanup goroutine
+// Start starts cleanup at most once. A stopped store cannot be restarted.
+func (s *SessionStore) Start() {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.started || s.closed {
+		return
+	}
+	s.started = true
+	// Register and launch cleanup before Stop can close the channel or wait.
+	s.cleanupWG.Add(1)
+	go s.cleanup()
+}
+
+// Stop permanently stops cleanup and waits for it to exit, even on repeated calls.
 func (s *SessionStore) Stop() {
-	s.stopOnce.Do(func() {
+	s.lifecycleMu.Lock()
+	if !s.closed {
+		s.closed = true
 		close(s.stopCh)
-	})
+	}
+	s.lifecycleMu.Unlock()
+	s.cleanupWG.Wait()
 }
 
 // Set stores a session
@@ -99,6 +125,7 @@ func (s *SessionStore) Delete(sessionID string) {
 
 // cleanup removes expired sessions periodically
 func (s *SessionStore) cleanup() {
+	defer s.cleanupWG.Done()
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 	for {

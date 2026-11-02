@@ -235,6 +235,11 @@ type ConcurrencyService struct {
 	accountLoadCacheMu  sync.RWMutex
 	accountLoadCache    map[string]cachedAccountLoadBatch
 	accountLoadGroup    singleflight.Group
+
+	cleanupMu      sync.Mutex
+	cleanupCancel  context.CancelFunc
+	cleanupDone    chan struct{}
+	cleanupStopped bool
 }
 
 type cachedAccountLoadBatch struct {
@@ -725,26 +730,57 @@ func (s *ConcurrencyService) StartSlotCleanupWorker(_ AccountRepository, interva
 	if s == nil || s.cache == nil || interval <= 0 {
 		return
 	}
+	s.cleanupMu.Lock()
+	if s.cleanupStopped || s.cleanupCancel != nil {
+		s.cleanupMu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	s.cleanupCancel, s.cleanupDone = cancel, done
+	s.cleanupMu.Unlock()
 
 	runCleanup := func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		err := s.cache.CleanupExpiredAccountSlotKeys(cleanupCtx)
-		cancel()
-		if err != nil {
+		cleanupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		if err := s.cache.CleanupExpiredAccountSlotKeys(cleanupCtx); err != nil && ctx.Err() == nil {
 			logger.LegacyPrintf("service.concurrency", "Warning: cleanup expired account slots failed: %v", err)
-			return
 		}
 	}
-
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
-
-		runCleanup()
-		for range ticker.C {
+		if ctx.Err() == nil {
 			runCleanup()
 		}
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				runCleanup()
+			}
+		}
 	}()
+}
+
+// StopSlotCleanupWorker cancels an in-flight cleanup and waits for its loop.
+// It never releases active request leases and is safe before Start or repeated.
+func (s *ConcurrencyService) StopSlotCleanupWorker() {
+	if s == nil {
+		return
+	}
+	s.cleanupMu.Lock()
+	s.cleanupStopped = true
+	cancel, done := s.cleanupCancel, s.cleanupDone
+	s.cleanupMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if done != nil {
+		<-done
+	}
 }
 
 // GetAccountConcurrencyBatch gets current concurrency counts for multiple accounts.

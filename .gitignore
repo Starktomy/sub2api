@@ -165,6 +165,7 @@ issues/
 !docs/IMPLEMENTATION_STATUS.md
 !docs/CLOUD_DEVELOPMENT.zh-CN.md
 !docs/CLOUD_RUNTIME_MIGRATION.zh-CN.md
+!docs/AWS_PREPRODUCTION_CHECKLIST.zh-CN.md
 
 # Vitest / Vite cache at repo root
 .vite/

@@ -160,6 +160,7 @@ type ChannelCachePubSub interface {
 
 // ChannelService 渠道管理服务
 type ChannelService struct {
+	updates              cacheUpdateLifecycle
 	repo                 ChannelRepository
 	groupRepo            GroupRepository
 	authCacheInvalidator APIKeyAuthCacheInvalidator
@@ -174,6 +175,12 @@ type ChannelService struct {
 // pricingService 仅供 ListAvailable 在渠道未配置定价时回落到全局 LiteLLM 数据；
 // 计费热路径走独立的 ModelPricingResolver，与此参数无关。可传 nil。
 func NewChannelService(repo ChannelRepository, groupRepo GroupRepository, authCacheInvalidator APIKeyAuthCacheInvalidator, pricingService *PricingService, cachePubSub ChannelCachePubSub) *ChannelService {
+	s := NewManagedChannelService(repo, groupRepo, authCacheInvalidator, pricingService, cachePubSub)
+	s.Start()
+	return s
+}
+
+func NewManagedChannelService(repo ChannelRepository, groupRepo GroupRepository, authCacheInvalidator APIKeyAuthCacheInvalidator, pricingService *PricingService, cachePubSub ChannelCachePubSub) *ChannelService {
 	s := &ChannelService{
 		repo:                 repo,
 		groupRepo:            groupRepo,
@@ -181,7 +188,6 @@ func NewChannelService(repo ChannelRepository, groupRepo GroupRepository, authCa
 		pricingService:       pricingService,
 		cachePubSub:          cachePubSub,
 	}
-	s.subscribeCacheUpdates(context.Background())
 	return s
 }
 
@@ -1251,4 +1257,21 @@ type UpdateChannelInput struct {
 	FeaturesConfig             map[string]any
 	ApplyPricingToAccountStats *bool
 	AccountStatsPricingRules   *[]AccountStatsPricingRule
+}
+
+func (s *ChannelService) Start() {
+	ctx, ok := s.updates.begin()
+	if !ok {
+		return
+	}
+	defer s.updates.starting.Done()
+	if err := s.updates.subscribe(ctx, s.cachePubSub, s.clearCache); err != nil {
+		slog.Warn("channel cache subscription failed", "error", err)
+	}
+}
+
+func (s *ChannelService) Stop() {
+	if s != nil {
+		s.updates.close()
+	}
 }

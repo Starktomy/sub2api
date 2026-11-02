@@ -18,12 +18,13 @@ import (
 	"go.uber.org/zap"
 )
 
-func ProvideGrokOAuthService(proxyRepo ProxyRepository, oauthClient GrokOAuthClient, cfg *config.Config, redisClient *redis.Client) *GrokOAuthService {
-	svc := NewGrokOAuthService(proxyRepo, oauthClient, cfg)
+func ProvideGrokOAuthService(lifecycle *RuntimeLifecycle, proxyRepo ProxyRepository, oauthClient GrokOAuthClient, cfg *config.Config, redisClient *redis.Client) *GrokOAuthService {
+	svc := NewManagedGrokOAuthService(proxyRepo, oauthClient, cfg)
 	// wire.go is depguard-exempt for redis; construct the Redis session store here.
 	if redisClient != nil {
-		svc = svc.WithSessionStore(xai.NewRedisSessionStore(redisClient))
+		svc = svc.WithSessionStore(xai.NewManagedRedisSessionStore(redisClient))
 	}
+	registerRuntimeService(lifecycle, "GrokOAuthService", RuntimeScopeControl, svc)
 	return svc
 }
 
@@ -34,12 +35,19 @@ type BuildInfo struct {
 }
 
 // ProvidePricingService creates and initializes PricingService
-func ProvidePricingService(cfg *config.Config, remoteClient PricingRemoteClient) (*PricingService, error) {
+func ProvidePricingService(lifecycle *RuntimeLifecycle, cfg *config.Config, remoteClient PricingRemoteClient) (*PricingService, error) {
 	svc := NewPricingService(cfg, remoteClient)
-	if err := svc.Initialize(); err != nil {
-		// Pricing service initialization failure should not block startup, use fallback prices
-		println("[Service] Warning: Pricing service initialization failed:", err.Error())
-	}
+	lifecycle.Register(RuntimeTask{
+		Name: "PricingService", Scope: RuntimeScopeProcess, StopPhase: RuntimeStopStores,
+		Start: func(context.Context) error {
+			if err := svc.Initialize(); err != nil {
+				// Preserve legacy startup behavior; built-in prices remain available.
+				logger.LegacyPrintf("service.pricing", "Pricing initialization failed: %v", err)
+			}
+			return nil
+		},
+		Stop: func(context.Context) error { svc.Stop(); return nil },
+	})
 	return svc, nil
 }
 
@@ -49,8 +57,12 @@ func ProvideUpdateService(cache UpdateCache, githubClient GitHubReleaseClient, b
 }
 
 // ProvideEmailQueueService creates EmailQueueService with default worker count
-func ProvideEmailQueueService(emailService *EmailService) *EmailQueueService {
-	return NewEmailQueueService(emailService, 3)
+func ProvideEmailQueueService(lifecycle *RuntimeLifecycle, emailService *EmailService) *EmailQueueService {
+	svc := NewManagedEmailQueueService(emailService, 3)
+	// Worker notifications and control requests enqueue local closures; the
+	// sender stays local until these messages have durable cross-process IDs.
+	registerRuntimeService(lifecycle, "EmailQueueService", RuntimeScopeProcess, svc, RuntimeStopStores)
+	return svc
 }
 
 // ProvideAuthService wires the optional captcha providers into AuthService while
@@ -113,12 +125,14 @@ func ProvideBatchImageCleanupService(lifecycle *RuntimeLifecycle, repo BatchImag
 
 // ProvideOpenAIOAuthService creates OpenAIOAuthService with privacy/account enrichment support.
 func ProvideOpenAIOAuthService(
+	lifecycle *RuntimeLifecycle,
 	proxyRepo ProxyRepository,
 	oauthClient OpenAIOAuthClient,
 	privacyClientFactory PrivacyClientFactory,
 ) *OpenAIOAuthService {
-	svc := NewOpenAIOAuthService(proxyRepo, oauthClient)
+	svc := NewManagedOpenAIOAuthService(proxyRepo, oauthClient)
 	svc.SetPrivacyClientFactory(privacyClientFactory)
+	registerRuntimeService(lifecycle, "OpenAIOAuthService", RuntimeScopeControl, svc)
 	return svc
 }
 
@@ -465,15 +479,13 @@ func ProvideSubscriptionExpiryService(lifecycle *RuntimeLifecycle, userSubRepo U
 }
 
 // ProvideTimingWheelService creates and starts TimingWheelService
-func ProvideTimingWheelService() (*TimingWheelService, error) {
-	svc, err := NewTimingWheelService()
-	if err != nil {
-		return nil, err
-	}
-	// go-zero starts the wheel inside its constructor. Keep it on the legacy
-	// eager-resource cleanup path until construction is made explicitly lazy;
-	// otherwise a failure before Lifecycle.Start would leak the running wheel.
-	svc.Start()
+func ProvideTimingWheelService(lifecycle *RuntimeLifecycle) (*TimingWheelService, error) {
+	svc := NewManagedTimingWheelService()
+	lifecycle.Register(RuntimeTask{
+		Name: "TimingWheelService", Scope: RuntimeScopeProcess, StopPhase: RuntimeStopProducers,
+		Start: func(context.Context) error { return svc.StartManaged() },
+		Stop:  func(context.Context) error { svc.Stop(); return nil },
+	})
 	return svc, nil
 }
 
@@ -485,24 +497,45 @@ func ProvideDeferredService(lifecycle *RuntimeLifecycle, accountRepo AccountRepo
 }
 
 // ProvideConcurrencyService creates ConcurrencyService and starts slot cleanup worker.
-func ProvideConcurrencyService(cache ConcurrencyCache, accountRepo AccountRepository, cfg *config.Config) *ConcurrencyService {
+func ProvideConcurrencyService(lifecycle *RuntimeLifecycle, cache ConcurrencyCache, accountRepo AccountRepository, cfg *config.Config) *ConcurrencyService {
 	svc := NewConcurrencyService(cache)
-	if err := svc.CleanupStaleProcessSlots(context.Background()); err != nil {
-		logger.LegacyPrintf("service.concurrency", "Warning: startup cleanup stale process slots failed: %v", err)
-	}
 	if cfg != nil {
 		svc.SetAccountLoadBatchCacheTTL(time.Duration(cfg.Gateway.Scheduling.LoadBatchCacheTTLMS) * time.Millisecond)
-		svc.StartSlotCleanupWorker(accountRepo, cfg.Gateway.Scheduling.SlotCleanupInterval)
 	}
+	lifecycle.Register(RuntimeTask{
+		Name: "ConcurrencySlotCleanup", Scope: RuntimeScopeWorker,
+		Start: func(ctx context.Context) error {
+			// The legacy startup sweep assumes all other request prefixes belong
+			// to dead processes. That is false in a shared ECS resource pool: a
+			// worker restart must never remove a live gateway's slots/wait counts.
+			if cfg == nil || cfg.Runtime.Role == "" || cfg.Runtime.Role == config.RuntimeRoleAll {
+				if err := svc.CleanupStaleProcessSlots(ctx); err != nil {
+					logger.LegacyPrintf("service.concurrency", "Warning: startup slot cleanup failed: %v", err)
+				}
+			}
+			if cfg != nil {
+				svc.StartSlotCleanupWorker(accountRepo, cfg.Gateway.Scheduling.SlotCleanupInterval)
+			}
+			return nil
+		},
+		Stop: func(context.Context) error { svc.StopSlotCleanupWorker(); return nil },
+	})
 	return svc
 }
 
 // ProvideUserMessageQueueService 创建用户消息串行队列服务并启动清理 worker
-func ProvideUserMessageQueueService(cache UserMsgQueueCache, rpmCache RPMCache, cfg *config.Config) *UserMessageQueueService {
+func ProvideUserMessageQueueService(lifecycle *RuntimeLifecycle, cache UserMsgQueueCache, rpmCache RPMCache, cfg *config.Config) *UserMessageQueueService {
 	svc := NewUserMessageQueueService(cache, rpmCache, &cfg.Gateway.UserMessageQueue)
-	if cfg.Gateway.UserMessageQueue.CleanupIntervalSeconds > 0 {
-		svc.StartCleanupWorker(time.Duration(cfg.Gateway.UserMessageQueue.CleanupIntervalSeconds) * time.Second)
-	}
+	lifecycle.Register(RuntimeTask{
+		Name: "UserMessageQueueCleanup", Scope: RuntimeScopeWorker,
+		Start: func(context.Context) error {
+			if cfg.Gateway.UserMessageQueue.CleanupIntervalSeconds > 0 {
+				svc.StartCleanupWorker(time.Duration(cfg.Gateway.UserMessageQueue.CleanupIntervalSeconds) * time.Second)
+			}
+			return nil
+		},
+		Stop: func(context.Context) error { svc.Stop(); return nil },
+	})
 	return svc
 }
 
@@ -615,7 +648,7 @@ func ProvideOpsCleanupService(
 
 func ProvideOpsSystemLogSink(lifecycle *RuntimeLifecycle, opsRepo OpsRepository) *OpsSystemLogSink {
 	sink := NewOpsSystemLogSink(opsRepo)
-	registerRuntimeService(lifecycle, "OpsSystemLogSink", RuntimeScopeProcess, sink)
+	registerRuntimeService(lifecycle, "OpsSystemLogSink", RuntimeScopeProcess, sink, RuntimeStopStores)
 	logger.SetSink(sink)
 	return sink
 }
@@ -624,7 +657,7 @@ func ProvideOpsSystemLogSink(lifecycle *RuntimeLifecycle, opsRepo OpsRepository)
 // 停止逻辑挂在 cmd/server 的 provideCleanup。
 func ProvideAuditLogService(lifecycle *RuntimeLifecycle, repo AuditLogRepository, settingService *SettingService) *AuditLogService {
 	svc := NewAuditLogService(repo, settingService)
-	registerRuntimeService(lifecycle, "AuditLogService", RuntimeScopeProcess, svc)
+	registerRuntimeService(lifecycle, "AuditLogService", RuntimeScopeProcess, svc, RuntimeStopStores)
 	return svc
 }
 
@@ -838,14 +871,18 @@ func ProvideSettingService(scopedKeys ScopedAdminKeyRepository, settingRepo Sett
 	if err := svc.LoadForwardedClientIPSettings(context.Background()); err != nil {
 		logger.LegacyPrintf("service.setting", "Warning: load forwarded client IP settings failed: %v", err)
 	}
-	if err := svc.MigrateOpenAIAllowClaudeCodeCodexPluginSetting(context.Background()); err != nil {
-		logger.LegacyPrintf("service.setting", "Warning: migrate openai allow Claude Code Codex plugin setting failed: %v", err)
-	}
-	if err := svc.MigrateCodexBodyFingerprintToSignals(context.Background()); err != nil {
-		logger.LegacyPrintf("service.setting", "Warning: migrate codex body fingerprint to signals failed: %v", err)
-	}
-	if err := svc.MigrateGrokDefaultTextModel(context.Background()); err != nil {
-		logger.LegacyPrintf("service.setting", "Warning: migrate Grok default text model failed: %v", err)
+	if cfg.Database.EffectiveMigrationMode() == config.DatabaseMigrationModeAuto {
+		// Legacy data normalization is a bootstrap operation, not work every
+		// check-only gateway should repeat while joining an ECS service.
+		if err := svc.MigrateOpenAIAllowClaudeCodeCodexPluginSetting(context.Background()); err != nil {
+			logger.LegacyPrintf("service.setting", "Warning: migrate openai allow Claude Code Codex plugin setting failed: %v", err)
+		}
+		if err := svc.MigrateCodexBodyFingerprintToSignals(context.Background()); err != nil {
+			logger.LegacyPrintf("service.setting", "Warning: migrate codex body fingerprint to signals failed: %v", err)
+		}
+		if err := svc.MigrateGrokDefaultTextModel(context.Background()); err != nil {
+			logger.LegacyPrintf("service.setting", "Warning: migrate Grok default text model failed: %v", err)
+		}
 	}
 	antigravity.SetUserAgentVersionResolver(svc.GetAntigravityUserAgentVersion)
 	// enforceCodexIdentityHeaders 是所有 Codex 出站路径共用的纯函数收口点，拿不到 ctx，
@@ -863,6 +900,7 @@ func ProvideSettingService(scopedKeys ScopedAdminKeyRepository, settingRepo Sett
 
 // ProvideBillingCacheService wires BillingCacheService with its RPM dependencies.
 func ProvideBillingCacheService(
+	lifecycle *RuntimeLifecycle,
 	cache BillingCache,
 	userRepo UserRepository,
 	subRepo UserSubscriptionRepository,
@@ -872,7 +910,9 @@ func ProvideBillingCacheService(
 	cfg *config.Config,
 	userPlatformQuotaRepo UserPlatformQuotaRepository,
 ) *BillingCacheService {
-	return NewBillingCacheService(cache, userRepo, subRepo, apiKeyRepo, rpmCache, rateRepo, cfg, userPlatformQuotaRepo)
+	svc := NewManagedBillingCacheService(cache, userRepo, subRepo, apiKeyRepo, rpmCache, rateRepo, cfg, userPlatformQuotaRepo)
+	registerRuntimeService(lifecycle, "BillingCacheService", RuntimeScopeProcess, svc, RuntimeStopStores)
+	return svc
 }
 
 // ProvideAPIKeyService wires APIKeyService and connects rate-limit cache invalidation.
@@ -927,17 +967,17 @@ var ProviderSet = wire.NewSet(
 	ProvideBatchImageCleanupService,
 	ProvideBatchImageWorkerRuntime,
 	wire.Bind(new(AccountRuntimeBlocker), new(*OpenAIGatewayService)),
-	NewOAuthService,
+	ProvideOAuthService,
 	ProvideClaudeResetCreditService,
 	ProvideOpenAIOAuthService,
 	ProvideGrokOAuthService,
 	wire.Bind(new(GrokOAuthTokenService), new(*GrokOAuthService)),
-	NewGeminiOAuthService,
+	ProvideGeminiOAuthService,
 	ProvideGeminiCachedContentService,
 	NewGeminiQuotaService,
 	NewCompositeTokenCacheInvalidator,
 	wire.Bind(new(TokenCacheInvalidator), new(*CompositeTokenCacheInvalidator)),
-	NewAntigravityOAuthService,
+	ProvideAntigravityOAuthService,
 	ProvideOAuthRefreshAPI,
 	ProvideGeminiTokenProvider,
 	NewGeminiMessagesCompatService,
@@ -976,11 +1016,11 @@ var ProviderSet = wire.NewSet(
 	NewTurnstileService,
 	NewTencentCaptchaService,
 	NewAliyunCaptchaService,
-	NewSubscriptionService,
+	ProvideSubscriptionService,
 	wire.Bind(new(DefaultSubscriptionAssigner), new(*SubscriptionService)),
 	ProvideConcurrencyService,
 	ProvideUserMessageQueueService,
-	NewUsageRecordWorkerPool,
+	ProvideUsageRecordWorkerPool,
 	ProvideSchedulerSnapshotService,
 	NewIdentityService,
 	NewCRSSyncService,
@@ -1001,8 +1041,8 @@ var ProviderSet = wire.NewSet(
 	NewUserAttributeService,
 	NewUsageCache,
 	NewTotpService,
-	NewErrorPassthroughService,
-	NewTLSFingerprintProfileService,
+	ProvideErrorPassthroughService,
+	ProvideTLSFingerprintProfileService,
 	ProvidePluginManager,
 	NewDigestSessionStore,
 	ProvideIdempotencyCoordinator,
@@ -1011,11 +1051,11 @@ var ProviderSet = wire.NewSet(
 	ProvideScheduledTestService,
 	ProvideScheduledTestRunnerService,
 	NewGroupCapacityService,
-	NewChannelService,
+	ProvideChannelService,
 	wire.Bind(new(ChannelCacheInvalidator), new(*ChannelService)),
 	NewModelPricingResolver,
 	NewModelPlazaService,
-	NewContentModerationService,
+	ProvideContentModerationService,
 	NewAffiliateService,
 	ProvidePaymentConfigService,
 	ProvidePaymentService,
@@ -1095,7 +1135,9 @@ func ProvideChannelMonitorRunner(
 		// Ensure runtime reader is set even if ProvideChannelMonitorService
 		// was constructed without settings (tests / alternate providers).
 		svc.SetRuntimeReader(settingService)
-		svc.SetScheduler(r)
+		if lifecycle.OwnsScope(RuntimeScopeWorker) {
+			svc.SetScheduler(r)
+		}
 		svc.SetQuotaFetcher(quotaFetcher)
 	}
 	registerRuntimeService(lifecycle, "ChannelMonitorRunner", RuntimeScopeWorker, r)

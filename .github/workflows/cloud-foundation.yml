@@ -6,11 +6,13 @@ on:
       - 'backend/**'
       - 'infra/aws/**'
       - '.github/workflows/cloud-foundation.yml'
+      - 'tools/smoke_cloud_roles.py'
   pull_request:
     paths:
       - 'backend/**'
       - 'infra/aws/**'
       - '.github/workflows/cloud-foundation.yml'
+      - 'tools/smoke_cloud_roles.py'
 
 permissions:
   contents: read
@@ -59,8 +61,16 @@ jobs:
           go test ./internal/config
           go test ./internal/repository -run 'Test(CheckMigrations|InitializeSchema|InitEntCheck|InitEntPostgres)' -count=1
           go test ./cmd/migrate ./cmd/server -count=1
-          go test ./internal/service -run 'TestRuntimeLifecycle|TestProvideTimingWheelService' -count=1
+          go test ./internal/service -run 'TestRuntime|TestManaged|TestConcurrencyCleanup|TestProvideTimingWheelService|TestTimingWheel' -count=1
+          go test -tags=unit ./internal/service -run 'TestReconcileOnce|TestChannelMonitorRunner|TestStart_Poll|TestStop_' -count=1
+          go test ./internal/pkg/oauth ./internal/pkg/openai ./internal/pkg/geminicli ./internal/pkg/antigravity ./internal/pkg/xai -run 'Test.*Session' -count=1
+          go test ./internal/repository -run 'TestManaged.*Subscription' -count=1
           go test ./internal/server ./internal/server/routes -count=1
+      - name: Real split-role process smoke (two gateways, control, one worker)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends redis-server redis-tools postgresql-client
+          python3 -I ../tools/smoke_cloud_roles.py --binary bin/server
 
   terraform-offline:
     runs-on: ubuntu-latest

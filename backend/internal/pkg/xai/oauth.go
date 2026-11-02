@@ -86,9 +86,13 @@ type SessionStore struct {
 	mu        sync.RWMutex
 	sessions  map[string]*OAuthSession
 	localOnly map[string]struct{}
-	stopOnce  sync.Once
-	stopCh    chan struct{}
 	remote    *redissession.Store
+
+	lifecycleMu sync.Mutex
+	started     bool
+	closed      bool
+	stopCh      chan struct{}
+	cleanupWG   sync.WaitGroup
 }
 
 type oauthSessionDTO struct {
@@ -102,21 +106,48 @@ type oauthSessionDTO struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
-func NewSessionStore() *SessionStore {
-	store := &SessionStore{
+// NewManagedSessionStore creates a session store without starting background work.
+func NewManagedSessionStore() *SessionStore {
+	return &SessionStore{
 		sessions:  make(map[string]*OAuthSession),
 		localOnly: make(map[string]struct{}),
 		stopCh:    make(chan struct{}),
 	}
-	go store.cleanup()
+}
+
+// NewSessionStore creates a session store and starts cleanup for legacy callers.
+func NewSessionStore() *SessionStore {
+	store := NewManagedSessionStore()
+	store.Start()
 	return store
 }
 
-func NewRedisSessionStore(rdb *redis.Client) *SessionStore {
-	store := NewSessionStore()
+// Start starts cleanup at most once. A stopped store cannot be restarted.
+func (s *SessionStore) Start() {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.started || s.closed {
+		return
+	}
+	s.started = true
+	// Register and launch cleanup before Stop can close the channel or wait.
+	s.cleanupWG.Add(1)
+	go s.cleanup()
+}
+
+// NewManagedRedisSessionStore configures Redis without starting background work.
+func NewManagedRedisSessionStore(rdb *redis.Client) *SessionStore {
+	store := NewManagedSessionStore()
 	if rdb != nil {
 		store.remote = redissession.New(rdb, "oauth:session:xai", SessionTTL)
 	}
+	return store
+}
+
+// NewRedisSessionStore creates a Redis-backed store and starts cleanup for legacy callers.
+func NewRedisSessionStore(rdb *redis.Client) *SessionStore {
+	store := NewManagedRedisSessionStore(rdb)
+	store.Start()
 	return store
 }
 
@@ -215,13 +246,19 @@ func (s *SessionStore) tryConsumeMemory(sessionID string) bool {
 	return ok && session.TryConsume()
 }
 
+// Stop permanently stops cleanup and waits for it to exit, even on repeated calls.
 func (s *SessionStore) Stop() {
-	s.stopOnce.Do(func() {
+	s.lifecycleMu.Lock()
+	if !s.closed {
+		s.closed = true
 		close(s.stopCh)
-	})
+	}
+	s.lifecycleMu.Unlock()
+	s.cleanupWG.Wait()
 }
 
 func (s *SessionStore) cleanup() {
+	defer s.cleanupWG.Done()
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 	for {

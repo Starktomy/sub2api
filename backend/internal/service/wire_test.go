@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -16,22 +17,30 @@ func TestProvideTimingWheelService_ReturnsError(t *testing.T) {
 		return nil, errors.New("boom")
 	}
 
-	svc, err := ProvideTimingWheelService()
-	if err == nil {
-		t.Fatalf("期望返回 error，但得到 nil")
+	lifecycle := NewRuntimeLifecycle(nil)
+	svc, err := ProvideTimingWheelService(lifecycle)
+	if err != nil || svc == nil {
+		t.Fatalf("managed construction should succeed before startup: %v", err)
 	}
-	if svc != nil {
-		t.Fatalf("期望返回 nil svc，但得到非空")
+	if err := lifecycle.Start(context.Background()); err == nil {
+		t.Fatal("expected wheel creation failure during lifecycle startup")
 	}
+	_ = lifecycle.Stop(context.Background())
 }
 
 func TestProvideTimingWheelService_Success(t *testing.T) {
-	svc, err := ProvideTimingWheelService()
+	lifecycle := NewRuntimeLifecycle(nil)
+	svc, err := ProvideTimingWheelService(lifecycle)
 	if err != nil {
 		t.Fatalf("期望 err 为 nil，但得到: %v", err)
 	}
 	if svc == nil {
 		t.Fatalf("期望 svc 非空，但得到 nil")
 	}
-	svc.Stop()
+	if err := lifecycle.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := lifecycle.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 }

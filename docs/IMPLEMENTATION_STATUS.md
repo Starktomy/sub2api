@@ -1,6 +1,6 @@
 # 实施状态与验证记录
 
-更新时间：2026-11-02。此文件记录当前仓库真实能力，不把目标方案当作已交付。
+更新时间：2026-11-03。此文件记录当前仓库真实能力，不把目标方案当作已交付。
 
 完整目标方案：[CLOUD_ARCHITECTURE.zh-CN.md](CLOUD_ARCHITECTURE.zh-CN.md)。
 
@@ -51,9 +51,25 @@
 
 本批按用户要求进行第二个本地阶段提交，不推送。下一批优先处理 eager 构造器和可取消循环，再补持久配置变化传播，不提前解除角色门禁。
 
-## 尚未实现，禁止按已完成部署
+## 第三批：managed构造、配置收敛与预生产实进程验证
 
-- gateway/control/worker 的真实依赖与后台任务隔离；当前仍只有 legacy all 角色可运行。
+前两批本地提交：`9a450028a`、`1976b4282`。本批目标是把默认关闭的独立角色推进到可显式opt-in的预生产验证，不是完整生产上线。
+
+- BillingCache/Subscription/Email、五种OAuth session、ContentModeration、TimingWheel、UsageRecord autoscaler及三类本地配置订阅实现managed构造和显式Start/Stop；旧New保持兼容。
+- Concurrency/UMQ后台清理可cancel/join；worker启用时禁用legacy跨进程前缀启动扫槽，避免误删活跃gateway租约/等待计数。
+- ChannelMonitorRunner每30秒从PG配置收敛，支持有界ReconcileOnce、变更/删除、错误保留、无变化不重启、Stop等待poll和在飞检测；暂限单维护worker，没有leader租约。
+- 生命周期按producer→consumer→store停止，同阶段逆序，防止store先关；V2Aggregator Stop等待循环退出。
+- `RUNTIME_ENABLE_SPLIT_ROLES=true`才允许gateway/control/worker，且必须check模式、标准计费和共享JWT/TOTP；默认继续拒绝。只有gateway启PromptAudit，worker不启动插件进程。
+- `tools/smoke_cloud_roles.py`启动2 gateway+control+worker，真实PG＋临时密码Redis，验证路由/鉴权、维护scope、正常SIGTERM退出和活跃槽位保留。最终二进制增强烟测通过：Gateway各19个本地启动项、Control24、Worker47；TokenRefresh/SchedulerSnapshot/ChannelMonitor仅Worker，启动后其他Gateway槽位与等待计数保留。脚本只接受loopback且以_test结尾、无账号/monitor/payment provider的已迁移测试库；日志脱敏。
+- 新增managed队列/会话/订阅/审核/定时器/分阶段stop测试、配置门禁测试；CI接入真实进程烟测，尚未在GitHub执行。
+- 恢复后五pkg session测试通过、聚焦managed/监控测试通过；曾发现runner半接线签名及仓储slog导入编译错误并修复。完整service回归发现旧白名单审计零值队列路径被新门禁拦截，已区分managed/legacy并重测通过。最终service完整包148.169秒、config0.632秒、repository7.098秒、cmd/server0.036秒、migrate0.017秒、server0.107秒、routes10.657秒通过；unit监控/定时器/Stop回归0.558秒通过；相关go vet和server build通过。
+- 真实PG只读session/受限InitEnt在最终代码通过（0.052秒），users/security_secrets仍为0。订阅Stop新增测试曾因假设远端Redis立即观察TCP关闭而失败：改为验证callback已join/晚消息不再执行，不将网络关闭传播当同步承诺；`go test ./internal/repository -run TestManaged -count=10` 通过（0.030秒），仓储/config/server再回归通过（7.062/0.630/0.019秒）。Wire重生成可再现，SHA256 `666106f3e2f44003881873a3655d4d3c7c4fa80914477c85485466e5ad393e05`。
+
+本批本地实现和上述验证已完成；没有创建AWS资源、没有推送。AWS预生产部署仍需专用role/state/费用批准、runtime DB/Secrets、镜像/migrator入口、ECS services与ALB接线，不具备一键生产上线条件。
+
+## 尚未实现，禁止按已完成生产部署
+
+- 独立角色仅实验opt-in：共享Wire图/权限最小化、DI失败全资源回收、部分缓存janitor、Control OAuth多副本、维护worker多副本lease仍未完成。AWS下一步见 [AWS_PREPRODUCTION_CHECKLIST.zh-CN.md](AWS_PREPRODUCTION_CHECKLIST.zh-CN.md)。
 - 跨供应商统一候选调度、quota domain、持久请求/attempt/价格快照模型。
 - 全平台刷新 CAS/租约强化、KMS 动态凭据加密。
 - 完整持久预留、结算终态、账务 outbox/SQS 和补偿。

@@ -38,11 +38,15 @@ type QueueLockResult struct {
 // UserMessageQueueService 用户消息串行队列服务
 // 对真实用户消息实施账号级串行化 + RPM 自适应延迟
 type UserMessageQueueService struct {
-	cache    UserMsgQueueCache
-	rpmCache RPMCache
-	cfg      *config.UserMessageQueueConfig
-	stopCh   chan struct{} // graceful shutdown
-	stopOnce sync.Once     // 确保 Stop() 并发安全
+	cache          UserMsgQueueCache
+	rpmCache       RPMCache
+	cfg            *config.UserMessageQueueConfig
+	stopCh         chan struct{} // graceful shutdown
+	stopOnce       sync.Once     // 确保 Stop() 并发安全
+	cleanupMu      sync.Mutex
+	cleanupCancel  context.CancelFunc
+	cleanupDone    chan struct{}
+	cleanupStopped bool
 }
 
 // NewUserMessageQueueService 创建用户消息串行队列服务
@@ -250,9 +254,18 @@ func (s *UserMessageQueueService) StartCleanupWorker(interval time.Duration) {
 	if s == nil || s.cache == nil || interval <= 0 {
 		return
 	}
+	s.cleanupMu.Lock()
+	if s.cleanupStopped || s.cleanupCancel != nil {
+		s.cleanupMu.Unlock()
+		return
+	}
+	workerCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	s.cleanupCancel, s.cleanupDone = cancel, done
+	s.cleanupMu.Unlock()
 
 	runCleanup := func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(workerCtx, 10*time.Second)
 		defer cancel()
 
 		// 每轮限制处理数量，避免清理任务在大量过期候选时长时间占用 Redis。
@@ -268,11 +281,12 @@ func (s *UserMessageQueueService) StartCleanupWorker(interval time.Duration) {
 	}
 
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-s.stopCh:
+			case <-workerCtx.Done():
 				return
 			case <-ticker.C:
 				runCleanup()
@@ -283,10 +297,21 @@ func (s *UserMessageQueueService) StartCleanupWorker(interval time.Duration) {
 
 // Stop 停止后台 cleanup worker
 func (s *UserMessageQueueService) Stop() {
-	if s != nil && s.stopCh != nil {
-		s.stopOnce.Do(func() {
-			close(s.stopCh)
-		})
+	if s == nil {
+		return
+	}
+	s.cleanupMu.Lock()
+	s.cleanupStopped = true
+	cancel, done := s.cleanupCancel, s.cleanupDone
+	s.cleanupMu.Unlock()
+	if s.stopCh != nil {
+		s.stopOnce.Do(func() { close(s.stopCh) })
+	}
+	if cancel != nil {
+		cancel()
+	}
+	if done != nil {
+		<-done
 	}
 }
 

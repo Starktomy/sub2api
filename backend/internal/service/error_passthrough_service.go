@@ -41,8 +41,9 @@ type ErrorPassthroughCache interface {
 
 // ErrorPassthroughService 错误透传规则服务
 type ErrorPassthroughService struct {
-	repo  ErrorPassthroughRepository
-	cache ErrorPassthroughCache
+	updates cacheUpdateLifecycle
+	repo    ErrorPassthroughRepository
+	cache   ErrorPassthroughCache
 
 	// 本地内存缓存，用于快速匹配
 	localCache   []*cachedPassthroughRule
@@ -64,30 +65,41 @@ func NewErrorPassthroughService(
 	repo ErrorPassthroughRepository,
 	cache ErrorPassthroughCache,
 ) *ErrorPassthroughService {
+	svc := NewManagedErrorPassthroughService(repo, cache)
+	svc.Start()
+	return svc
+}
+
+func NewManagedErrorPassthroughService(
+	repo ErrorPassthroughRepository,
+	cache ErrorPassthroughCache,
+) *ErrorPassthroughService {
 	svc := &ErrorPassthroughService{
 		repo:  repo,
 		cache: cache,
 	}
-
-	// 启动时加载规则到本地缓存
-	ctx := context.Background()
-	if err := svc.reloadRulesFromDB(ctx); err != nil {
-		logger.LegacyPrintf("service.error_passthrough", "[ErrorPassthroughService] Failed to load rules from DB on startup: %v", err)
-		if fallbackErr := svc.refreshLocalCache(ctx); fallbackErr != nil {
-			logger.LegacyPrintf("service.error_passthrough", "[ErrorPassthroughService] Failed to load rules from cache fallback on startup: %v", fallbackErr)
-		}
-	}
-
-	// 订阅缓存更新通知
-	if cache != nil {
-		cache.SubscribeUpdates(ctx, func() {
-			if err := svc.refreshLocalCache(context.Background()); err != nil {
-				logger.LegacyPrintf("service.error_passthrough", "[ErrorPassthroughService] Failed to refresh cache on notification: %v", err)
-			}
-		})
-	}
-
 	return svc
+}
+
+func (s *ErrorPassthroughService) Start() {
+	ctx, ok := s.updates.begin()
+	if !ok {
+		return
+	}
+	defer s.updates.starting.Done()
+	if err := s.reloadRulesFromDB(ctx); err != nil {
+		logger.LegacyPrintf("service.error_passthrough", "Initial DB load failed: %v", err)
+		_ = s.refreshLocalCache(ctx)
+	}
+	if err := s.updates.subscribe(ctx, s.cache, func() { _ = s.refreshLocalCache(ctx) }); err != nil {
+		logger.LegacyPrintf("service.error_passthrough", "Cache subscription failed: %v", err)
+	}
+}
+
+func (s *ErrorPassthroughService) Stop() {
+	if s != nil {
+		s.updates.close()
+	}
 }
 
 // List 获取所有规则

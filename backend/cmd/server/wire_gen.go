@@ -62,7 +62,8 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	tencentCaptchaService := service.NewTencentCaptchaService(settingService, tencentCaptchaVerifier)
 	aliyunCaptchaVerifier := repository.NewAliyunCaptchaVerifier()
 	aliyunCaptchaService := service.NewAliyunCaptchaService(settingService, aliyunCaptchaVerifier)
-	emailQueueService := service.ProvideEmailQueueService(emailService)
+	runtimeLifecycle := service.NewRuntimeLifecycle(configConfig)
+	emailQueueService := service.ProvideEmailQueueService(runtimeLifecycle, emailService)
 	promoCodeRepository := repository.NewPromoCodeRepository(client)
 	billingCache := repository.NewBillingCache(redisClient)
 	userSubscriptionRepository := repository.NewUserSubscriptionRepository(client)
@@ -71,17 +72,16 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	userGroupRateRepository := repository.NewUserGroupRateRepository(db)
 	userPlatformQuotaRepository := repository.NewUserPlatformQuotaRepository(client)
 	serviceUserPlatformQuotaRepository := repository.NewUserPlatformQuotaServiceAdapter(userPlatformQuotaRepository)
-	billingCacheService := service.ProvideBillingCacheService(billingCache, userRepository, userSubscriptionRepository, apiKeyRepository, userRPMCache, userGroupRateRepository, configConfig, serviceUserPlatformQuotaRepository)
-	runtimeLifecycle := service.NewRuntimeLifecycle(configConfig)
+	billingCacheService := service.ProvideBillingCacheService(runtimeLifecycle, billingCache, userRepository, userSubscriptionRepository, apiKeyRepository, userRPMCache, userGroupRateRepository, configConfig, serviceUserPlatformQuotaRepository)
 	apiKeyCache := repository.NewAPIKeyCache(redisClient)
 	concurrencyCache := repository.ProvideConcurrencyCache(redisClient, configConfig)
 	schedulerCache := repository.ProvideSchedulerCache(redisClient, configConfig)
 	accountRepository := repository.NewAccountRepository(client, db, schedulerCache)
-	concurrencyService := service.ProvideConcurrencyService(concurrencyCache, accountRepository, configConfig)
+	concurrencyService := service.ProvideConcurrencyService(runtimeLifecycle, concurrencyCache, accountRepository, configConfig)
 	apiKeyService := service.ProvideAPIKeyService(apiKeyRepository, userRepository, groupRepository, userSubscriptionRepository, userGroupRateRepository, apiKeyCache, configConfig, billingCacheService, concurrencyService)
 	apiKeyAuthCacheInvalidator := service.ProvideAPIKeyAuthCacheInvalidator(runtimeLifecycle, apiKeyService)
 	promoService := service.NewPromoService(promoCodeRepository, userRepository, billingCacheService, client, apiKeyAuthCacheInvalidator)
-	subscriptionService := service.NewSubscriptionService(groupRepository, userSubscriptionRepository, billingCacheService, client, configConfig)
+	subscriptionService := service.ProvideSubscriptionService(runtimeLifecycle, groupRepository, userSubscriptionRepository, billingCacheService, client, configConfig)
 	affiliateRepository := repository.NewAffiliateRepository(client, db)
 	affiliateService := service.NewAffiliateService(affiliateRepository, settingService, apiKeyAuthCacheInvalidator, billingCacheService)
 	mcpoAuthRepository := repository.NewMCPOAuthRepository(client, db)
@@ -111,7 +111,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	schedulerOutboxRepository := repository.NewSchedulerOutboxRepository(db)
 	schedulerSnapshotService := service.ProvideSchedulerSnapshotService(runtimeLifecycle, schedulerCache, schedulerOutboxRepository, accountRepository, groupRepository, configConfig)
 	pricingRemoteClient := repository.ProvidePricingRemoteClient(configConfig)
-	pricingService, err := service.ProvidePricingService(configConfig, pricingRemoteClient)
+	pricingService, err := service.ProvidePricingService(runtimeLifecycle, configConfig, pricingRemoteClient)
 	if err != nil {
 		return nil, err
 	}
@@ -128,13 +128,13 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	rateLimitService := service.ProvideRateLimitService(accountRepository, usageLogRepository, configConfig, geminiQuotaService, tempUnschedCache, timeoutCounterCache, openAI403CounterCache, settingService, compositeTokenCacheInvalidator, ollamaCloudUsageService)
 	identityCache := repository.NewIdentityCache(redisClient)
 	identityService := service.NewIdentityService(identityCache)
-	timingWheelService, err := service.ProvideTimingWheelService()
+	timingWheelService, err := service.ProvideTimingWheelService(runtimeLifecycle)
 	if err != nil {
 		return nil, err
 	}
 	deferredService := service.ProvideDeferredService(runtimeLifecycle, accountRepository, timingWheelService)
 	claudeOAuthClient := repository.NewClaudeOAuthClient()
-	oAuthService := service.NewOAuthService(proxyRepository, claudeOAuthClient)
+	oAuthService := service.ProvideOAuthService(runtimeLifecycle, proxyRepository, claudeOAuthClient)
 	oAuthRefreshAPI := service.ProvideOAuthRefreshAPI(accountRepository, geminiTokenCache)
 	claudeTokenProvider := service.ProvideClaudeTokenProvider(accountRepository, geminiTokenCache, oAuthService, oAuthRefreshAPI)
 	sessionLimitCache := repository.ProvideSessionLimitCache(redisClient, configConfig)
@@ -142,10 +142,10 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	digestSessionStore := service.NewDigestSessionStore()
 	tlsFingerprintProfileRepository := repository.NewTLSFingerprintProfileRepository(client)
 	tlsFingerprintProfileCache := repository.NewTLSFingerprintProfileCache(redisClient)
-	tlsFingerprintProfileService := service.NewTLSFingerprintProfileService(tlsFingerprintProfileRepository, tlsFingerprintProfileCache)
+	tlsFingerprintProfileService := service.ProvideTLSFingerprintProfileService(runtimeLifecycle, tlsFingerprintProfileRepository, tlsFingerprintProfileCache)
 	channelRepository := repository.NewChannelRepository(db)
 	channelCachePubSub := repository.NewChannelCache(redisClient)
-	channelService := service.NewChannelService(channelRepository, groupRepository, apiKeyAuthCacheInvalidator, pricingService, channelCachePubSub)
+	channelService := service.ProvideChannelService(runtimeLifecycle, channelRepository, groupRepository, apiKeyAuthCacheInvalidator, pricingService, channelCachePubSub)
 	modelPricingResolver := service.NewModelPricingResolver(channelService, billingService)
 	compositeModelRouteRepository := repository.NewCompositeModelRouteRepository(client)
 	compositeRouteResolver := service.NewCompositeRouteResolver(compositeModelRouteRepository)
@@ -154,18 +154,18 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	gatewayService := service.NewGatewayService(accountRepository, groupRepository, usageLogRepository, usageBillingRepository, userRepository, userSubscriptionRepository, userGroupRateRepository, gatewayCache, configConfig, schedulerSnapshotService, concurrencyService, billingService, rateLimitService, billingCacheService, identityService, httpUpstream, deferredService, claudeTokenProvider, sessionLimitCache, rpmCache, digestSessionStore, settingService, tlsFingerprintProfileService, channelService, modelPricingResolver, compositeRouteResolver, balanceNotifyService, serviceUserPlatformQuotaRepository)
 	openAIOAuthClient := repository.NewOpenAIOAuthClient()
 	privacyClientFactory := providePrivacyClientFactory()
-	openAIOAuthService := service.ProvideOpenAIOAuthService(proxyRepository, openAIOAuthClient, privacyClientFactory)
+	openAIOAuthService := service.ProvideOpenAIOAuthService(runtimeLifecycle, proxyRepository, openAIOAuthClient, privacyClientFactory)
 	openAITokenProvider := service.ProvideOpenAITokenProvider(accountRepository, geminiTokenCache, openAIOAuthService, oAuthRefreshAPI)
 	grokOAuthClient := repository.NewGrokOAuthClient()
-	grokOAuthService := service.ProvideGrokOAuthService(proxyRepository, grokOAuthClient, configConfig, redisClient)
+	grokOAuthService := service.ProvideGrokOAuthService(runtimeLifecycle, proxyRepository, grokOAuthClient, configConfig, redisClient)
 	grokTokenProvider := service.ProvideGrokTokenProvider(accountRepository, geminiTokenCache, grokOAuthService, oAuthRefreshAPI, tempUnschedCache)
 	openAIGatewayService := service.NewOpenAIGatewayService(accountRepository, usageLogRepository, usageBillingRepository, userRepository, userSubscriptionRepository, userGroupRateRepository, gatewayCache, configConfig, schedulerSnapshotService, concurrencyService, billingService, rateLimitService, billingCacheService, httpUpstream, deferredService, openAITokenProvider, grokTokenProvider, modelPricingResolver, channelService, balanceNotifyService, settingService, serviceUserPlatformQuotaRepository)
 	geminiOAuthClient := repository.NewGeminiOAuthClient(configConfig)
 	geminiCliCodeAssistClient := repository.NewGeminiCliCodeAssistClient()
 	driveClient := repository.NewGeminiDriveClient()
-	geminiOAuthService := service.NewGeminiOAuthService(proxyRepository, geminiOAuthClient, geminiCliCodeAssistClient, driveClient, configConfig)
+	geminiOAuthService := service.ProvideGeminiOAuthService(runtimeLifecycle, proxyRepository, geminiOAuthClient, geminiCliCodeAssistClient, driveClient, configConfig)
 	geminiTokenProvider := service.ProvideGeminiTokenProvider(accountRepository, geminiTokenCache, geminiOAuthService, oAuthRefreshAPI)
-	antigravityOAuthService := service.NewAntigravityOAuthService(proxyRepository)
+	antigravityOAuthService := service.ProvideAntigravityOAuthService(runtimeLifecycle, proxyRepository)
 	antigravityTokenProvider := service.ProvideAntigravityTokenProvider(accountRepository, geminiTokenCache, antigravityOAuthService, oAuthRefreshAPI, tempUnschedCache)
 	internal500CounterCache := repository.NewInternal500CounterCache(redisClient)
 	antigravityGatewayService := service.NewAntigravityGatewayService(accountRepository, gatewayCache, schedulerSnapshotService, antigravityTokenProvider, rateLimitService, httpUpstream, settingService, internal500CounterCache)
@@ -260,7 +260,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	userAttributeHandler := admin.NewUserAttributeHandler(userAttributeService)
 	errorPassthroughRepository := repository.NewErrorPassthroughRepository(client)
 	errorPassthroughCache := repository.NewErrorPassthroughCache(redisClient)
-	errorPassthroughService := service.NewErrorPassthroughService(errorPassthroughRepository, errorPassthroughCache)
+	errorPassthroughService := service.ProvideErrorPassthroughService(runtimeLifecycle, errorPassthroughRepository, errorPassthroughCache)
 	errorPassthroughHandler := admin.NewErrorPassthroughHandler(errorPassthroughService)
 	tlsFingerprintProfileHandler := admin.NewTLSFingerprintProfileHandler(tlsFingerprintProfileService)
 	pluginHandler := admin.NewPluginHandler(pluginManager)
@@ -276,7 +276,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	channelMonitorRequestTemplateHandler := admin.NewChannelMonitorRequestTemplateHandler(channelMonitorRequestTemplateService)
 	contentModerationRepository := repository.NewContentModerationRepository(db)
 	contentModerationHashCache := repository.NewContentModerationHashCache(redisClient)
-	contentModerationService := service.NewContentModerationService(settingRepository, contentModerationRepository, contentModerationHashCache, groupRepository, userRepository, proxyRepository, apiKeyAuthCacheInvalidator, emailService)
+	contentModerationService := service.ProvideContentModerationService(runtimeLifecycle, settingRepository, contentModerationRepository, contentModerationHashCache, groupRepository, userRepository, proxyRepository, apiKeyAuthCacheInvalidator, emailService)
 	contentModerationHandler := admin.NewContentModerationHandler(contentModerationService)
 	configManager := securityaudit.NewConfigManager(db, settingRepository, redisClient, secretEncryptor, configConfig)
 	postgreSQLRepository := securityaudit.NewPostgreSQLRepository(db)
@@ -296,9 +296,9 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	idempotencyCoordinator := service.ProvideIdempotencyCoordinator(idempotencyRepository, configConfig)
 	claudeResetCreditService := service.ProvideClaudeResetCreditService(accountRepository, claudeTokenProvider, proxyRepository, settingService, idempotencyCoordinator, leaderLockCache)
 	adminHandlers := handler.ProvideAdminHandlers(dashboardHandler, adminUserHandler, groupHandler, accountHandler, adminAnnouncementHandler, dataManagementHandler, backupHandler, oAuthHandler, openAIOAuthHandler, geminiOAuthHandler, antigravityOAuthHandler, grokOAuthHandler, cnProviderHandler, proxyHandler, adminRedeemHandler, promoHandler, settingHandler, opsHandler, systemHandler, adminSubscriptionHandler, adminUsageHandler, userAttributeHandler, errorPassthroughHandler, tlsFingerprintProfileHandler, pluginHandler, adminAPIKeyHandler, scheduledTestHandler, channelHandler, channelMonitorHandler, channelMonitorRequestTemplateHandler, contentModerationHandler, promptAdminHandler, paymentHandler, affiliateHandler, complianceHandler, auditLogHandler, upstreamBillingProbeService, ollamaCloudUsageService, openCodeGoUsageService, claudeResetCreditService)
-	usageRecordWorkerPool := service.NewUsageRecordWorkerPool(configConfig)
+	usageRecordWorkerPool := service.ProvideUsageRecordWorkerPool(runtimeLifecycle, configConfig)
 	userMsgQueueCache := repository.NewUserMsgQueueCache(redisClient)
-	userMessageQueueService := service.ProvideUserMessageQueueService(userMsgQueueCache, rpmCache, configConfig)
+	userMessageQueueService := service.ProvideUserMessageQueueService(runtimeLifecycle, userMsgQueueCache, rpmCache, configConfig)
 	legacyEngine := securityaudit.NewLegacyModerationAdapter(contentModerationService)
 	coordinator := securityaudit.NewCoordinator(legacyEngine, promptService)
 	geminiCachedContentRepository := repository.NewGeminiCachedContentRepository(db)
@@ -762,13 +762,17 @@ func provideCleanup(
 				log.Printf("[Cleanup] PromptAuditService failed: %v", err)
 			}
 		}
-		if usageRecordWorkerPool != nil {
+		if usageRecordWorkerPool != nil && (lifecycle == nil || !lifecycle.ManagesTask("UsageRecordWorkerPool")) {
 			usageRecordWorkerPool.Stop()
 		}
 		if lifecycle != nil {
 			if err := lifecycle.Stop(ctx); err != nil {
 				log.Printf("[Cleanup] RuntimeLifecycle failed: %v", err)
 			}
+		}
+
+		if subscriptionService != nil {
+			subscriptionService.Stop()
 		}
 		runParallel(parallelSteps)
 		runSequential(infraSteps)

@@ -48,10 +48,13 @@ type ChannelMonitorV2Aggregator struct {
 	instanceID string
 	stopCh     chan struct{}
 	// kickCh wakes the loop early after a settings change (buffered 1).
-	kickCh    chan struct{}
-	startOnce sync.Once
-	stopOnce  sync.Once
-	mu        sync.Mutex
+	kickCh      chan struct{}
+	startOnce   sync.Once
+	stopOnce    sync.Once
+	mu          sync.Mutex
+	lifecycleMu sync.Mutex
+	stopped     bool
+	wg          sync.WaitGroup
 	// backfillAt is the earliest minute already recomputed (mirrors DB cursor).
 	// Zero means "not yet loaded from durable watermark this process".
 	backfillAt       time.Time
@@ -84,6 +87,11 @@ func (s *ChannelMonitorV2Aggregator) Start() {
 	if s == nil || s.repo == nil {
 		return
 	}
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.stopped {
+		return
+	}
 	s.startOnce.Do(func() {
 		s.mu.Lock()
 		s.ctx, s.cancel = context.WithCancel(context.Background())
@@ -109,7 +117,8 @@ func (s *ChannelMonitorV2Aggregator) Start() {
 				unsub()
 			}
 		}
-		go s.loop()
+		s.wg.Add(1)
+		go func() { defer s.wg.Done(); s.loop() }()
 	})
 }
 
@@ -118,6 +127,8 @@ func (s *ChannelMonitorV2Aggregator) Stop() {
 		return
 	}
 	s.stopOnce.Do(func() {
+		s.lifecycleMu.Lock()
+		s.stopped = true
 		s.mu.Lock()
 		cancel := s.cancel
 		unsub := s.unsub
@@ -131,6 +142,8 @@ func (s *ChannelMonitorV2Aggregator) Stop() {
 			unsub()
 		}
 		close(s.stopCh)
+		s.lifecycleMu.Unlock()
+		s.wg.Wait()
 	})
 }
 
@@ -148,8 +161,14 @@ func (s *ChannelMonitorV2Aggregator) kick() {
 
 func (s *ChannelMonitorV2Aggregator) loop() {
 	for {
+		s.mu.Lock()
+		parent := s.ctx
+		s.mu.Unlock()
+		if parent == nil || parent.Err() != nil {
+			return
+		}
 		interval := time.Minute
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		ctx, cancel := context.WithTimeout(parent, 3*time.Second)
 		if !s.passiveAggregationAllowed(ctx) {
 			cancel()
 			if !s.wait(interval) {

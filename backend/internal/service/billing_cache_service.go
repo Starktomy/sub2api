@@ -102,6 +102,12 @@ type subscriptionCacheInvalidationPubSub interface {
 	SubscribeSubscriptionCacheInvalidation(ctx context.Context, handler func(cacheKey string)) error
 }
 
+// A managed subscriber owns its connection and joins its receive loop on stop.
+// Keep this optional so existing cache implementations remain compatible.
+type managedSubscriptionCacheInvalidationSubscriber interface {
+	SubscribeSubscriptionCacheInvalidationManaged(ctx context.Context, handler func(cacheKey string)) (func(), error)
+}
+
 // BillingCacheService 计费缓存服务
 // 负责余额和订阅数据的缓存管理，提供高性能的计费资格检查
 type BillingCacheService struct {
@@ -140,6 +146,25 @@ func NewBillingCacheService(
 	cfg *config.Config,
 	userPlatformQuotaRepo UserPlatformQuotaRepository,
 ) *BillingCacheService {
+	svc := NewManagedBillingCacheService(cache, userRepo, subRepo, apiKeyRepo, userRPMCache, userGroupRateRepo, cfg, userPlatformQuotaRepo)
+	svc.Start()
+	return svc
+}
+
+// NewManagedBillingCacheService constructs the request-local billing cache
+// without starting its write pool. Start it in every process that produces local
+// writes (all/gateway/control/worker as selected by the runtime), not only in a
+// remote worker process. Queued closures are not durable or cross-process work.
+func NewManagedBillingCacheService(
+	cache BillingCache,
+	userRepo UserRepository,
+	subRepo UserSubscriptionRepository,
+	apiKeyRepo APIKeyRepository,
+	userRPMCache UserRPMCache,
+	userGroupRateRepo UserGroupRateRepository,
+	cfg *config.Config,
+	userPlatformQuotaRepo UserPlatformQuotaRepository,
+) *BillingCacheService {
 	svc := &BillingCacheService{
 		cache:                 cache,
 		userRepo:              userRepo,
@@ -150,17 +175,36 @@ func NewBillingCacheService(
 		cfg:                   cfg,
 		userPlatformQuotaRepo: userPlatformQuotaRepo,
 	}
-	svc.circuitBreaker = newBillingCircuitBreaker(cfg.Billing.CircuitBreaker)
-	svc.startCacheWriteWorkers()
+	if cfg != nil {
+		svc.circuitBreaker = newBillingCircuitBreaker(cfg.Billing.CircuitBreaker)
+	}
 	return svc
 }
 
-// Stop 关闭缓存写入工作池
-func (s *BillingCacheService) Stop() {
-	s.cacheWriteStopOnce.Do(func() {
-		s.stopped.Store(true)
+// Start starts the local write pool once. It is safe to call concurrently with
+// Stop; a stopped service cannot restart. Before Start, critical write methods
+// retain their existing synchronous fallback and cache reads remain usable.
+func (s *BillingCacheService) Start() {
+	if s == nil {
+		return
+	}
+	s.cacheWriteMu.Lock()
+	defer s.cacheWriteMu.Unlock()
+	if s.stopped.Load() || s.cacheWriteChan != nil {
+		return
+	}
+	s.startCacheWriteWorkers()
+}
 
+// Stop rejects new queued writes, drains accepted writes and joins the pool.
+// Synchronous request/fallback methods are deliberately not disabled by Stop.
+func (s *BillingCacheService) Stop() {
+	if s == nil {
+		return
+	}
+	s.cacheWriteStopOnce.Do(func() {
 		s.cacheWriteMu.Lock()
+		s.stopped.Store(true)
 		ch := s.cacheWriteChan
 		if ch != nil {
 			close(ch)
@@ -199,7 +243,7 @@ func (s *BillingCacheService) enqueueCacheWrite(task cacheWriteTask) (enqueued b
 	s.cacheWriteMu.RLock()
 	defer s.cacheWriteMu.RUnlock()
 
-	if s.cacheWriteChan == nil {
+	if s.stopped.Load() || s.cacheWriteChan == nil {
 		s.logCacheWriteDrop(task, "closed")
 		return false
 	}
@@ -543,14 +587,50 @@ func (s *BillingCacheService) PublishSubscriptionCacheInvalidation(ctx context.C
 }
 
 func (s *BillingCacheService) SubscribeSubscriptionCacheInvalidation(ctx context.Context, handler func(cacheKey string)) error {
-	if s.cache == nil {
-		return nil
+	_, err := s.SubscribeSubscriptionCacheInvalidationManaged(ctx, handler)
+	return err
+}
+
+// SubscribeSubscriptionCacheInvalidationManaged returns an idempotent stop
+// function. Managed cache implementations also join the Redis receive loop;
+// legacy implementations get cancellation and an in-flight callback barrier.
+func (s *BillingCacheService) SubscribeSubscriptionCacheInvalidationManaged(ctx context.Context, handler func(cacheKey string)) (func(), error) {
+	if s == nil || s.cache == nil || handler == nil {
+		return func() {}, nil
 	}
-	pubsub, ok := s.cache.(subscriptionCacheInvalidationPubSub)
-	if !ok {
-		return nil
+	subCtx, cancel := context.WithCancel(ctx)
+	var callbackMu sync.Mutex
+	guardedHandler := func(cacheKey string) {
+		callbackMu.Lock()
+		defer callbackMu.Unlock()
+		if subCtx.Err() == nil {
+			handler(cacheKey)
+		}
 	}
-	return pubsub.SubscribeSubscriptionCacheInvalidation(ctx, handler)
+
+	var stopSubscription func()
+	var err error
+	if managed, ok := s.cache.(managedSubscriptionCacheInvalidationSubscriber); ok {
+		stopSubscription, err = managed.SubscribeSubscriptionCacheInvalidationManaged(subCtx, guardedHandler)
+	} else if pubsub, ok := s.cache.(subscriptionCacheInvalidationPubSub); ok {
+		err = pubsub.SubscribeSubscriptionCacheInvalidation(subCtx, guardedHandler)
+	}
+	var stopOnce sync.Once
+	stop := func() {
+		stopOnce.Do(func() {
+			cancel()
+			if stopSubscription != nil {
+				stopSubscription()
+			}
+			callbackMu.Lock()
+			callbackMu.Unlock()
+		})
+	}
+	if err != nil {
+		stop()
+		return nil, err
+	}
+	return stop, nil
 }
 
 // InvalidateAPIKeyRateLimit invalidates the Redis rate-limit usage cache for an API key.

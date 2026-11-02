@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -55,12 +56,32 @@ type SubscriptionService struct {
 	subCacheTTL    time.Duration
 	subCacheJitter int // 抖动百分比
 
-	maintenanceQueue *SubscriptionMaintenanceQueue
-	now              func() time.Time
+	maintenanceQueue       *SubscriptionMaintenanceQueue
+	maintenanceWorkerCount int
+	maintenanceQueueSize   int
+	now                    func() time.Time
+
+	lifecycleMu      sync.Mutex
+	started          bool
+	stopped          bool
+	stopOnce         sync.Once
+	subCacheMu       sync.RWMutex // serializes local cache use with Close
+	subscriberCancel context.CancelFunc
+	subscriberStop   func()
+	subscriberWg     sync.WaitGroup // includes subscription setup racing with Stop
 }
 
-// NewSubscriptionService 创建订阅服务
+// NewSubscriptionService 创建订阅服务，保留自动启动的兼容行为。
 func NewSubscriptionService(groupRepo GroupRepository, userSubRepo UserSubscriptionRepository, billingCacheService *BillingCacheService, entClient *dbent.Client, cfg *config.Config) *SubscriptionService {
+	svc := NewManagedSubscriptionService(groupRepo, userSubRepo, billingCacheService, entClient, cfg)
+	svc.Start()
+	return svc
+}
+
+// NewManagedSubscriptionService creates local cache resources, but no maintenance
+// workers or Redis subscriber. Ristretto owns local bookkeeping goroutines even
+// before Start; Stop must therefore also be called for an unstarted service.
+func NewManagedSubscriptionService(groupRepo GroupRepository, userSubRepo UserSubscriptionRepository, billingCacheService *BillingCacheService, entClient *dbent.Client, cfg *config.Config) *SubscriptionService {
 	svc := &SubscriptionService{
 		groupRepo:           groupRepo,
 		userSubRepo:         userSubRepo,
@@ -69,30 +90,64 @@ func NewSubscriptionService(groupRepo GroupRepository, userSubRepo UserSubscript
 		now:                 time.Now,
 	}
 	svc.initSubCache(cfg)
-	svc.initMaintenanceQueue(cfg)
-	svc.StartSubCacheInvalidationSubscriber(context.Background())
+	if cfg != nil {
+		svc.maintenanceWorkerCount = cfg.SubscriptionMaintenance.WorkerCount
+		svc.maintenanceQueueSize = cfg.SubscriptionMaintenance.QueueSize
+	}
 	return svc
 }
 
-func (s *SubscriptionService) initMaintenanceQueue(cfg *config.Config) {
-	if cfg == nil {
+// Start starts process-local maintenance and cache invalidation once. Every
+// process using this L1 cache needs its own invalidation subscriber; these local
+// closures must not be moved to a remote worker without durable delivery.
+func (s *SubscriptionService) Start() {
+	if s == nil {
 		return
 	}
-	mc := cfg.SubscriptionMaintenance
-	if mc.WorkerCount <= 0 || mc.QueueSize <= 0 {
+	s.lifecycleMu.Lock()
+	if s.started || s.stopped {
+		s.lifecycleMu.Unlock()
 		return
 	}
-	s.maintenanceQueue = NewSubscriptionMaintenanceQueue(mc.WorkerCount, mc.QueueSize)
+	s.started = true
+	if s.maintenanceWorkerCount > 0 && s.maintenanceQueueSize > 0 {
+		s.maintenanceQueue = NewSubscriptionMaintenanceQueue(s.maintenanceWorkerCount, s.maintenanceQueueSize)
+	}
+	s.lifecycleMu.Unlock()
+	s.StartSubCacheInvalidationSubscriber(context.Background())
 }
 
-// Stop stops the maintenance worker pool.
+// Stop cancels and joins invalidation before closing local caches. It drains the
+// accepted maintenance work, waits for workers and is safe before Start or when
+// called repeatedly/concurrently. A stopped service cannot restart.
 func (s *SubscriptionService) Stop() {
 	if s == nil {
 		return
 	}
-	if s.maintenanceQueue != nil {
-		s.maintenanceQueue.Stop()
-	}
+	s.stopOnce.Do(func() {
+		s.lifecycleMu.Lock()
+		s.stopped = true
+		cancel, stop := s.subscriberCancel, s.subscriberStop
+		queue := s.maintenanceQueue
+		s.lifecycleMu.Unlock()
+
+		if cancel != nil {
+			cancel()
+		}
+		if stop != nil {
+			stop()
+		}
+		s.subscriberWg.Wait()
+		if queue != nil {
+			queue.Stop()
+		}
+		s.subCacheMu.Lock()
+		if s.subCacheL1 != nil {
+			s.subCacheL1.Close()
+			s.subCacheL1 = nil
+		}
+		s.subCacheMu.Unlock()
+	})
 }
 
 // initSubCache 初始化订阅 L1 缓存
@@ -142,6 +197,8 @@ func (s *SubscriptionService) jitteredTTL(ttl time.Duration) time.Duration {
 
 // InvalidateSubCache 失效指定用户+分组的订阅 L1 缓存
 func (s *SubscriptionService) InvalidateSubCache(userID, groupID int64) {
+	s.subCacheMu.RLock()
+	defer s.subCacheMu.RUnlock()
 	if s.subCacheL1 == nil {
 		return
 	}
@@ -154,6 +211,8 @@ func (s *SubscriptionService) InvalidateSubCacheSync(userID, groupID int64) {
 }
 
 func (s *SubscriptionService) invalidateSubCacheKeySync(key string) {
+	s.subCacheMu.RLock()
+	defer s.subCacheMu.RUnlock()
 	if s.subCacheL1 == nil {
 		return
 	}
@@ -161,14 +220,44 @@ func (s *SubscriptionService) invalidateSubCacheKeySync(key string) {
 	s.subCacheL1.Wait()
 }
 
-// StartSubCacheInvalidationSubscriber 启动跨实例订阅 L1 缓存失效订阅。
+// StartSubCacheInvalidationSubscriber retains the explicit legacy entry point,
+// but shares the single subscriber and shutdown ownership with Start/Stop.
 func (s *SubscriptionService) StartSubCacheInvalidationSubscriber(ctx context.Context) {
-	if s.billingCacheService == nil || s.subCacheL1 == nil {
+	if s == nil {
 		return
 	}
-	if err := s.billingCacheService.SubscribeSubscriptionCacheInvalidation(ctx, func(cacheKey string) {
-		s.invalidateSubCacheKeySync(cacheKey)
-	}); err != nil {
+	s.lifecycleMu.Lock()
+	if s.stopped || s.subscriberCancel != nil || s.billingCacheService == nil {
+		s.lifecycleMu.Unlock()
+		return
+	}
+	s.subCacheMu.RLock()
+	hasCache := s.subCacheL1 != nil
+	s.subCacheMu.RUnlock()
+	if !hasCache {
+		s.lifecycleMu.Unlock()
+		return
+	}
+	subCtx, cancel := context.WithCancel(ctx)
+	s.subscriberCancel = cancel
+	s.subscriberWg.Add(1)
+	s.lifecycleMu.Unlock()
+	defer s.subscriberWg.Done()
+
+	stop, err := s.billingCacheService.SubscribeSubscriptionCacheInvalidationManaged(subCtx, s.invalidateSubCacheKeySync)
+	s.lifecycleMu.Lock()
+	stopped := s.stopped
+	if err == nil && !stopped {
+		s.subscriberStop = stop
+	}
+	s.lifecycleMu.Unlock()
+	if err != nil || stopped {
+		cancel()
+		if stop != nil {
+			stop()
+		}
+	}
+	if err != nil {
 		log.Printf("Warning: failed to start subscription cache invalidation subscriber: %v", err)
 	}
 }
@@ -745,15 +834,18 @@ func (s *SubscriptionService) GetByID(ctx context.Context, id int64) (*UserSubsc
 func (s *SubscriptionService) GetActiveSubscription(ctx context.Context, userID, groupID int64) (*UserSubscription, error) {
 	key := subCacheKey(userID, groupID)
 
-	// L1 缓存命中：返回浅拷贝
+	// L1 缓存命中：返回浅拷贝。Close cannot race with cache access.
+	s.subCacheMu.RLock()
 	if s.subCacheL1 != nil {
 		if v, ok := s.subCacheL1.Get(key); ok {
 			if sub, ok := v.(*UserSubscription); ok {
 				cp := *sub
+				s.subCacheMu.RUnlock()
 				return &cp, nil
 			}
 		}
 	}
+	s.subCacheMu.RUnlock()
 
 	// singleflight 防止并发击穿
 	value, err, _ := s.subCacheGroup.Do(key, func() (any, error) {
@@ -762,9 +854,11 @@ func (s *SubscriptionService) GetActiveSubscription(ctx context.Context, userID,
 			return nil, err // 直接透传 repo 已翻译的错误（NotFound → ErrSubscriptionNotFound，其他错误原样返回）
 		}
 		// 写入 L1 缓存
+		s.subCacheMu.RLock()
 		if s.subCacheL1 != nil {
 			_ = s.subCacheL1.SetWithTTL(key, sub, 1, s.jitteredTTL(s.subCacheTTL))
 		}
+		s.subCacheMu.RUnlock()
 		return sub, nil
 	})
 	if err != nil {
@@ -1056,8 +1150,11 @@ func (s *SubscriptionService) DoWindowMaintenance(sub *UserSubscription) {
 	if s == nil {
 		return
 	}
-	if s.maintenanceQueue != nil {
-		err := s.maintenanceQueue.TryEnqueue(func() {
+	s.lifecycleMu.Lock()
+	queue := s.maintenanceQueue
+	s.lifecycleMu.Unlock()
+	if queue != nil {
+		err := queue.TryEnqueue(func() {
 			s.doWindowMaintenance(sub)
 		})
 		if err != nil {
@@ -1066,6 +1163,8 @@ func (s *SubscriptionService) DoWindowMaintenance(sub *UserSubscription) {
 		return
 	}
 
+	// An unstarted/unconfigured pool does not disable request maintenance.
+	// Preserve the original synchronous path rather than silently losing work.
 	s.doWindowMaintenance(sub)
 }
 

@@ -22,10 +22,23 @@ type OpenAIOAuthService struct {
 
 // NewOpenAIOAuthService creates a new OpenAI OAuth service
 func NewOpenAIOAuthService(proxyRepo ProxyRepository, oauthClient OpenAIOAuthClient) *OpenAIOAuthService {
+	svc := NewManagedOpenAIOAuthService(proxyRepo, oauthClient)
+	svc.Start()
+	return svc
+}
+
+func NewManagedOpenAIOAuthService(proxyRepo ProxyRepository, oauthClient OpenAIOAuthClient) *OpenAIOAuthService {
 	return &OpenAIOAuthService{
-		sessionStore: openai.NewSessionStore(),
+		sessionStore: openai.NewManagedSessionStore(),
 		proxyRepo:    proxyRepo,
 		oauthClient:  oauthClient,
+	}
+}
+
+// Start begins only local authorization-session cleanup; token refresh is a separate task.
+func (s *OpenAIOAuthService) Start() {
+	if s != nil && s.sessionStore != nil {
+		s.sessionStore.Start()
 	}
 }
 

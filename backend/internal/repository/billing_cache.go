@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -262,38 +263,52 @@ func (c *billingCache) PublishSubscriptionCacheInvalidation(ctx context.Context,
 }
 
 func (c *billingCache) SubscribeSubscriptionCacheInvalidation(ctx context.Context, handler func(cacheKey string)) error {
-	pubsub := c.rdb.Subscribe(ctx, subCacheInvalidateChannel)
+	_, err := c.SubscribeSubscriptionCacheInvalidationManaged(ctx, handler)
+	return err
+}
 
-	_, err := pubsub.Receive(ctx)
-	if err != nil {
-		_ = pubsub.Close()
-		return fmt.Errorf("subscribe to subscription cache invalidation: %w", err)
+// SubscribeSubscriptionCacheInvalidationManaged returns an idempotent stop
+// function that cancels the subscription, closes Pub/Sub and waits for its
+// callback loop. It must not be called from inside handler itself.
+func (c *billingCache) SubscribeSubscriptionCacheInvalidationManaged(ctx context.Context, handler func(string)) (func(), error) {
+	if handler == nil {
+		return nil, errors.New("subscription cache invalidation handler is required")
 	}
-
+	workerCtx, cancel := context.WithCancel(ctx)
+	pubsub := c.rdb.Subscribe(workerCtx, subCacheInvalidateChannel)
+	if _, err := pubsub.Receive(workerCtx); err != nil {
+		cancel()
+		_ = pubsub.Close()
+		return nil, fmt.Errorf("subscribe to subscription cache invalidation: %w", err)
+	}
+	done := make(chan struct{})
+	var stopOnce sync.Once
 	go func() {
-		defer func() {
-			if err := pubsub.Close(); err != nil {
-				log.Printf("Warning: failed to close subscription cache invalidation pubsub: %v", err)
-			}
-		}()
-
+		defer close(done)
+		defer func() { _ = pubsub.Close() }()
 		ch := pubsub.Channel()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-workerCtx.Done():
 				return
 			case msg, ok := <-ch:
 				if !ok {
 					return
 				}
-				if msg != nil {
+				if msg != nil && workerCtx.Err() == nil {
 					handler(msg.Payload)
 				}
 			}
 		}
 	}()
-
-	return nil
+	stop := func() {
+		stopOnce.Do(func() {
+			cancel()
+			_ = pubsub.Close()
+		})
+		<-done
+	}
+	return stop, nil
 }
 
 func (c *billingCache) GetAPIKeyRateLimit(ctx context.Context, keyID int64) (*service.APIKeyRateLimitCacheData, error) {

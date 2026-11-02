@@ -27,6 +27,7 @@ func LoadStartupPolicy() (StartupPolicy, error) {
 	v.AutomaticEnv()
 	v.SetDefault("runtime.role", RuntimeRoleAll)
 	v.SetDefault("runtime.shutdown_timeout_seconds", DefaultRuntimeShutdownTimeoutSeconds)
+	v.SetDefault("runtime.enable_split_roles", false)
 	v.SetDefault("database.migration_mode", DatabaseMigrationModeAuto)
 	if err := v.ReadInConfig(); err != nil {
 		var notFound viper.ConfigFileNotFoundError
@@ -46,5 +47,8 @@ func LoadStartupPolicy() (StartupPolicy, error) {
 		return StartupPolicy{}, err
 	}
 	policy.Database.MigrationMode = database.MigrationMode
+	if err := policy.Runtime.ValidateMigrationPolicy(database.MigrationMode); err != nil {
+		return StartupPolicy{}, err
+	}
 	return policy, nil
 }

@@ -23,8 +23,14 @@ type GrokOAuthService struct {
 }
 
 func NewGrokOAuthService(proxyRepo ProxyRepository, oauthClient GrokOAuthClient, configs ...*config.Config) *GrokOAuthService {
+	svc := NewManagedGrokOAuthService(proxyRepo, oauthClient, configs...)
+	svc.Start()
+	return svc
+}
+
+func NewManagedGrokOAuthService(proxyRepo ProxyRepository, oauthClient GrokOAuthClient, configs ...*config.Config) *GrokOAuthService {
 	service := &GrokOAuthService{
-		sessionStore: xai.NewSessionStore(),
+		sessionStore: xai.NewManagedSessionStore(),
 		proxyRepo:    proxyRepo,
 		oauthClient:  oauthClient,
 	}
@@ -32,6 +38,13 @@ func NewGrokOAuthService(proxyRepo ProxyRepository, oauthClient GrokOAuthClient,
 		service.config = configs[0]
 	}
 	return service
+}
+
+// Start begins only local authorization-session cleanup; token refresh is a separate task.
+func (s *GrokOAuthService) Start() {
+	if s != nil && s.sessionStore != nil {
+		s.sessionStore.Start()
+	}
 }
 
 // WithSessionStore replaces the in-memory OAuth session store (e.g. Redis-backed

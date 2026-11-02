@@ -16,9 +16,22 @@ type AntigravityOAuthService struct {
 }
 
 func NewAntigravityOAuthService(proxyRepo ProxyRepository) *AntigravityOAuthService {
+	svc := NewManagedAntigravityOAuthService(proxyRepo)
+	svc.Start()
+	return svc
+}
+
+func NewManagedAntigravityOAuthService(proxyRepo ProxyRepository) *AntigravityOAuthService {
 	return &AntigravityOAuthService{
-		sessionStore: antigravity.NewSessionStore(),
+		sessionStore: antigravity.NewManagedSessionStore(),
 		proxyRepo:    proxyRepo,
+	}
+}
+
+// Start begins only local authorization-session cleanup; token refresh is a separate task.
+func (s *AntigravityOAuthService) Start() {
+	if s != nil && s.sessionStore != nil {
+		s.sessionStore.Start()
 	}
 }
 

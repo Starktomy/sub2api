@@ -22,12 +22,14 @@ const (
 	MaxRuntimeShutdownTimeoutSeconds = 110
 )
 
-// RuntimeConfig selects the process role and HTTP shutdown budget. Only the
-// legacy all-in-one role is implemented; other role names are reserved until
-// their dependency wiring and background tasks are actually isolated.
+// RuntimeConfig selects the process role and HTTP shutdown budget. Split roles
+// require an explicit experimental opt-in and check-only database startup.
 type RuntimeConfig struct {
 	Role                   string `mapstructure:"role"`
 	ShutdownTimeoutSeconds int    `mapstructure:"shutdown_timeout_seconds"`
+	// EnableSplitRoles is an explicit preproduction opt-in. The shared Wire
+	// graph and legacy external-side-effect contracts are not production ready.
+	EnableSplitRoles bool `mapstructure:"enable_split_roles"`
 }
 
 // Validate normalizes defaults and validates configuration syntax. Executables
@@ -48,15 +50,28 @@ func (c *RuntimeConfig) Validate() error {
 	return nil
 }
 
-// ValidateRoleSupport fails closed for roles whose isolation is not implemented.
+// ValidateRoleSupport keeps experimental split roles disabled by default.
 // It also accepts a zero-valued RuntimeConfig so legacy callers remain all-in-one.
 func (c RuntimeConfig) ValidateRoleSupport() error {
 	role, err := normalizeRuntimeRole(c.Role)
 	if err != nil {
 		return err
 	}
-	if role != RuntimeRoleAll {
-		return fmt.Errorf("runtime.role=%q is not implemented: role-specific dependency wiring and background task isolation are unavailable; use %q", role, RuntimeRoleAll)
+	if role != RuntimeRoleAll && !c.EnableSplitRoles {
+		return fmt.Errorf("runtime.role=%q is not enabled: set runtime.enable_split_roles=true only for isolated preproduction validation; background task isolation still has documented limits; use %q by default", role, RuntimeRoleAll)
+	}
+	return nil
+}
+
+// ValidateMigrationPolicy prevents experimental split processes from exposing
+// setup or modifying schema/bootstrapping shared secrets on every task launch.
+func (c RuntimeConfig) ValidateMigrationPolicy(mode string) error {
+	role, err := normalizeRuntimeRole(c.Role)
+	if err != nil {
+		return err
+	}
+	if role != RuntimeRoleAll && c.EnableSplitRoles && mode != DatabaseMigrationModeCheck {
+		return fmt.Errorf("experimental split roles require database.migration_mode=check and a separately provisioned schema and shared secrets")
 	}
 	return nil
 }

@@ -302,8 +302,11 @@ type PricingService struct {
 	customFilesHash string
 
 	// 停止信号
-	stopCh chan struct{}
-	wg     sync.WaitGroup
+	stopCh      chan struct{}
+	wg          sync.WaitGroup
+	lifecycleMu sync.Mutex
+	initialized bool
+	stopped     bool
 }
 
 // NewPricingService 创建价格服务
@@ -319,6 +322,14 @@ func NewPricingService(cfg *config.Config, remoteClient PricingRemoteClient) *Pr
 
 // Initialize 初始化价格服务
 func (s *PricingService) Initialize() error {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.stopped {
+		return fmt.Errorf("pricing service is stopped")
+	}
+	if s.initialized {
+		return nil
+	}
 	// 确保数据目录存在
 	if err := os.MkdirAll(s.cfg.Pricing.DataDir, 0755); err != nil {
 		logger.LegacyPrintf("service.pricing", "[Pricing] Failed to create data directory: %v", err)
@@ -335,13 +346,22 @@ func (s *PricingService) Initialize() error {
 	// 启动定时更新
 	s.startUpdateScheduler()
 
+	s.initialized = true
 	logger.LegacyPrintf("service.pricing", "[Pricing] Service initialized with %d models", len(s.pricingData))
 	return nil
 }
 
 // Stop 停止价格服务
 func (s *PricingService) Stop() {
-	close(s.stopCh)
+	if s == nil {
+		return
+	}
+	s.lifecycleMu.Lock()
+	if !s.stopped {
+		s.stopped = true
+		close(s.stopCh)
+	}
+	s.lifecycleMu.Unlock()
 	s.wg.Wait()
 	logger.LegacyPrintf("service.pricing", "%s", "[Pricing] Service stopped")
 }

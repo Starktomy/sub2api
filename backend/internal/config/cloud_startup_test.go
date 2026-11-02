@@ -12,9 +12,10 @@ func TestLoadStartupPolicyBeforeSetup(t *testing.T) {
 	t.Setenv("CONFIG_FILE", "")
 	t.Setenv("DATA_DIR", t.TempDir())
 	t.Setenv("RUNTIME_ROLE", "gateway")
+	t.Setenv("RUNTIME_ENABLE_SPLIT_ROLES", "false")
 	t.Setenv("DATABASE_MIGRATION_MODE", "check")
 	t.Setenv("RUNTIME_SHUTDOWN_TIMEOUT_SECONDS", "100")
-	// No JWT/TOTP/DB credentials are needed to refuse an unimplemented role.
+	// No JWT/TOTP/DB credentials are needed to refuse a disabled split role.
 	t.Setenv("JWT_SECRET", "")
 	t.Setenv("TOTP_ENCRYPTION_KEY", "")
 	policy, err := LoadStartupPolicy()
@@ -22,7 +23,7 @@ func TestLoadStartupPolicyBeforeSetup(t *testing.T) {
 	require.Equal(t, RuntimeRoleGateway, policy.Runtime.Role)
 	require.Equal(t, DatabaseMigrationModeCheck, policy.Database.MigrationMode)
 	require.Equal(t, 100, policy.Runtime.ShutdownTimeoutSeconds)
-	require.ErrorContains(t, policy.Runtime.ValidateRoleSupport(), "not implemented")
+	require.ErrorContains(t, policy.Runtime.ValidateRoleSupport(), "not enabled")
 }
 
 func TestLoadStartupPolicyFileAndEnv(t *testing.T) {
@@ -41,6 +42,21 @@ func TestLoadStartupPolicyFileAndEnv(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, policy.Runtime.ValidateRoleSupport())
 	require.Equal(t, DatabaseMigrationModeAuto, policy.Database.MigrationMode)
+}
+
+func TestLoadStartupPolicySplitOptIn(t *testing.T) {
+	t.Setenv("CONFIG_FILE", "")
+	t.Setenv("DATA_DIR", t.TempDir())
+	t.Setenv("RUNTIME_ROLE", "gateway")
+	t.Setenv("RUNTIME_ENABLE_SPLIT_ROLES", "true")
+	t.Setenv("DATABASE_MIGRATION_MODE", "check")
+	policy, err := LoadStartupPolicy()
+	require.NoError(t, err)
+	require.True(t, policy.Runtime.EnableSplitRoles)
+	require.NoError(t, policy.Runtime.ValidateRoleSupport())
+	t.Setenv("DATABASE_MIGRATION_MODE", "auto")
+	_, err = LoadStartupPolicy()
+	require.ErrorContains(t, err, "require database.migration_mode=check")
 }
 
 func TestLoadStartupPolicyInvalidConfiguration(t *testing.T) {

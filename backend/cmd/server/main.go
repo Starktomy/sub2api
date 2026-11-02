@@ -25,6 +25,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/web"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
 //go:embed VERSION
@@ -179,12 +180,18 @@ func runMainServer() error {
 	if err := app.Lifecycle.Start(context.Background()); err != nil {
 		return fmt.Errorf("start application lifecycle: %w", err)
 	}
-	if app.PluginManager != nil {
+	if cfg.Runtime.EnableSplitRoles {
+		logger.L().Info("experimental_runtime_started",
+			zap.String("runtime_role", cfg.Runtime.Role),
+			zap.Strings("runtime_tasks", app.Lifecycle.StartedTasks()),
+			zap.Bool("preproduction_only", true))
+	}
+	if app.PluginManager != nil && cfg.Runtime.Role != config.RuntimeRoleWorker {
 		if err := app.PluginManager.Start(context.Background()); err != nil {
 			log.Printf("Plugin manager started in degraded state: %v", err)
 		}
 	}
-	if app.PromptAudit != nil {
+	if app.PromptAudit != nil && (cfg.Runtime.Role == config.RuntimeRoleAll || cfg.Runtime.Role == config.RuntimeRoleGateway) {
 		if err := app.PromptAudit.Start(context.Background()); err != nil {
 			// Startup continues so unrelated APIs stay up. Fail-closed (unavailable)
 			// applies only when a persisted blocking policy was observed; without

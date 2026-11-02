@@ -96,27 +96,16 @@ func (c *tlsFingerprintProfileCache) NotifyUpdate(ctx context.Context) error {
 
 // SubscribeUpdates 订阅缓存更新通知
 func (c *tlsFingerprintProfileCache) SubscribeUpdates(ctx context.Context, handler func()) {
-	go func() {
-		sub := c.rdb.Subscribe(ctx, tlsFPProfilePubSubKey)
-		defer func() { _ = sub.Close() }()
+	if _, err := c.SubscribeUpdatesManaged(ctx, handler); err != nil {
+		slog.Warn("cache update subscription failed", "error", err)
+	}
+}
 
-		ch := sub.Channel()
-		for {
-			select {
-			case <-ctx.Done():
-				slog.Debug("tls_fp_profile_cache_subscriber_stopped", "reason", "context_done")
-				return
-			case msg := <-ch:
-				if msg == nil {
-					slog.Warn("tls_fp_profile_cache_subscriber_stopped", "reason", "channel_closed")
-					return
-				}
-				c.localMu.Lock()
-				c.localCache = nil
-				c.localMu.Unlock()
-
-				handler()
-			}
-		}
-	}()
+func (c *tlsFingerprintProfileCache) SubscribeUpdatesManaged(ctx context.Context, handler func()) (func(), error) {
+	return subscribeCacheUpdates(ctx, c.rdb, tlsFPProfilePubSubKey, func() {
+		c.localMu.Lock()
+		c.localCache = nil
+		c.localMu.Unlock()
+		handler()
+	})
 }

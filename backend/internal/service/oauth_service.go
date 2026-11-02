@@ -51,10 +51,23 @@ type OAuthService struct {
 
 // NewOAuthService creates a new OAuth service
 func NewOAuthService(proxyRepo ProxyRepository, oauthClient ClaudeOAuthClient) *OAuthService {
+	svc := NewManagedOAuthService(proxyRepo, oauthClient)
+	svc.Start()
+	return svc
+}
+
+func NewManagedOAuthService(proxyRepo ProxyRepository, oauthClient ClaudeOAuthClient) *OAuthService {
 	return &OAuthService{
-		sessionStore: oauth.NewSessionStore(),
+		sessionStore: oauth.NewManagedSessionStore(),
 		proxyRepo:    proxyRepo,
 		oauthClient:  oauthClient,
+	}
+}
+
+// Start begins only local authorization-session cleanup; token refresh is a separate task.
+func (s *OAuthService) Start() {
+	if s != nil && s.sessionStore != nil {
+		s.sessionStore.Start()
 	}
 }
 
