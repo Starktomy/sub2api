@@ -5,6 +5,13 @@ import (
 	"time"
 )
 
+// OAuthRefreshLeaseCache provides owner-checked leases for the unified refresh path.
+// A failed/expired owner must never delete a replacement owner's lease.
+type OAuthRefreshLeaseCache interface {
+	AcquireRefreshLease(ctx context.Context, cacheKey, owner string, ttl time.Duration) (bool, error)
+	ReleaseRefreshLease(ctx context.Context, cacheKey, owner string) error
+}
+
 // GeminiTokenCache stores short-lived access tokens and coordinates refresh to avoid stampedes.
 type GeminiTokenCache interface {
 	// cacheKey should be stable for the token scope; for GeminiCli OAuth we primarily use project_id.

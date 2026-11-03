@@ -133,7 +133,7 @@ func TestScopedAdminRefreshFailureDoesNotTriggerPrivacyBeforeRollback(t *testing
 	tx, err := client.Tx(context.Background())
 	require.NoError(t, err)
 	svc := &scopedRefreshPrivacyService{stubAdminService: newStubAdminService()}
-	h := &AccountHandler{adminService: svc, openaiOAuthService: service.NewOpenAIOAuthService(nil, nil)}
+	h := &AccountHandler{adminService: svc, oauthRefreshAPI: &manualRefreshStub{err: errors.New("refresh failed")}}
 	_, _, err = h.refreshSingleAccount(dbent.NewTxContext(context.Background(), tx), &service.Account{ID: 7, Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth})
 	require.Error(t, err)
 	require.Zero(t, svc.privacy, "刷新失败导致回滚时，不应提前调用上游隐私接口")

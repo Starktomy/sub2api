@@ -2,9 +2,13 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +36,29 @@ type GrokOAuthRefreshSuccessRepository interface {
 		expectedProxyID *int64,
 		credentials map[string]any,
 	) (bool, error)
+}
+
+// OAuthRefreshSuccessRepository atomically replaces credentials only if the
+// exact credential document and network route used by the attempt still match.
+type OAuthRefreshSuccessRepository interface {
+	UpdateOAuthCredentialsIfUnchanged(ctx context.Context, id int64, expectedCredentials map[string]any, expectedProxyID *int64, credentials map[string]any) (bool, error)
+}
+
+type oauthManualRefreshKey struct{}
+
+type manualOpenAIRefreshExecutor struct{ *OpenAITokenRefresher }
+
+func (e manualOpenAIRefreshExecutor) NeedsRefresh(*Account, time.Duration) bool { return true }
+
+// RefreshOpenAIManually shares the background/request-path coordinator. The
+// caller's credential snapshot acts as a generation marker: a waiter never
+// rotates again when another operation already replaced that document.
+func (api *OAuthRefreshAPI) RefreshOpenAIManually(ctx context.Context, account *Account, oauth *OpenAIOAuthService) (*OAuthRefreshResult, error) {
+	if api == nil || account == nil || !account.IsOpenAIOAuth() || account.IsCredentialShadow() || oauth == nil {
+		return nil, errors.New("OpenAI OAuth manual refresh is not configured for this account")
+	}
+	ctx = context.WithValue(ctx, oauthManualRefreshKey{}, true)
+	return api.RefreshIfNeeded(ctx, account, manualOpenAIRefreshExecutor{NewOpenAITokenRefresher(oauth, api.accountRepo)}, 0)
 }
 
 const (
@@ -125,10 +152,11 @@ func snapshotOAuthRefreshAccount(account *Account) *Account {
 // OAuthRefreshAPI 统一的 OAuth Token 刷新入口
 // 封装分布式锁、进程内互斥锁、DB 重读、已刷新检查、竞争恢复等通用逻辑
 type OAuthRefreshAPI struct {
-	accountRepo AccountRepository
-	tokenCache  GeminiTokenCache // 可选，nil = 无分布式锁
-	lockTTL     time.Duration
-	localLocks  sync.Map // key: cacheKey string -> value: *contextMutex
+	accountRepo     AccountRepository
+	durableRequired bool             // configured before Start; cloud roles must enable
+	tokenCache      GeminiTokenCache // 可选，nil = 无分布式锁
+	lockTTL         time.Duration
+	localLocks      sync.Map // key: cacheKey string -> value: *contextMutex
 }
 
 // NewOAuthRefreshAPI 创建统一刷新 API
@@ -190,8 +218,35 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 	}
 	defer localMu.Unlock()
 
-	// 1. 获取分布式锁
-	if api.tokenCache != nil {
+	// Owner-aware production caches fail closed on coordination errors. Bound
+	// the whole attempt below the lease; CAS remains the durable write fence.
+	if leases, ok := api.tokenCache.(OAuthRefreshLeaseCache); ok {
+		ownerBytes := make([]byte, 24)
+		if _, err := rand.Read(ownerBytes); err != nil {
+			return nil, errors.New("OAuth refresh lease owner generation failed")
+		}
+		owner := hex.EncodeToString(ownerBytes)
+		acquired, err := leases.AcquireRefreshLease(ctx, cacheKey, owner, api.lockTTL)
+		if err != nil {
+			return nil, errors.New("OAuth refresh lease coordination unavailable")
+		}
+		if !acquired {
+			return &OAuthRefreshResult{LockHeld: true}, nil
+		}
+		defer func() {
+			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), defaultRefreshLockReleaseTimeout)
+			defer cancel()
+			if err := leases.ReleaseRefreshLease(cleanup, cacheKey, owner); err != nil {
+				slog.Warn("oauth_refresh_owned_lease_release_failed", "account_id", account.ID)
+			}
+		}()
+		attempt, cancel := context.WithTimeout(ctx, clampRefreshAttemptToLockLease(api.lockTTL, api.lockTTL))
+		defer cancel()
+		ctx = attempt
+	} else if api.tokenCache != nil {
+		// Compatibility for legacy cache implementations; production Wire uses
+		// the owner-aware implementation above.
+
 		acquired, lockErr := api.tokenCache.AcquireRefreshLock(ctx, cacheKey, api.lockTTL)
 		if lockErr != nil {
 			// Redis 错误，降级为无锁刷新（进程内互斥锁仍生效）
@@ -225,7 +280,11 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 	if freshAccount.ID != account.ID {
 		return nil, fmt.Errorf("%w: account identity mismatch", errOAuthRefreshAccountRereadFailed)
 	}
-	if !freshAccount.IsActive() {
+	manual, _ := ctx.Value(oauthManualRefreshKey{}).(bool)
+	if manual && !reflect.DeepEqual(account.Credentials, freshAccount.Credentials) {
+		return &OAuthRefreshResult{Account: freshAccount}, nil
+	}
+	if !manual && !freshAccount.IsActive() {
 		if requestPath {
 			return nil, fmt.Errorf("%w: account is not active", errOAuthRefreshAccountStateChanged)
 		}
@@ -251,6 +310,23 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 		return &OAuthRefreshResult{
 			Account: freshAccount,
 		}, nil
+	}
+
+	// Durable coordination is a deliberate opt-in for existing installations.
+	// Cloud role wiring must enable it; missing schema/state storage fails closed.
+	if _, authorized := OAuthRefreshAuthorizationFromContext(ctx); api.durableRequired || authorized || os.Getenv("OAUTH_REFRESH_DURABLE_ENABLED") == "true" {
+		stateRepo, ok := api.accountRepo.(OAuthRefreshStateRepository)
+		if !ok {
+			return nil, errors.New("durable OAuth refresh state repository is not configured")
+		}
+		return api.runDurableOAuthRefresh(ctx, cacheKey, freshAccount, executor, stateRepo)
+	}
+
+	// Reject missing durable fencing before consuming a rotating provider token.
+	if freshAccount.IsOpenAIOAuth() {
+		if _, ok := api.accountRepo.(OAuthRefreshSuccessRepository); !ok {
+			return nil, errors.New("OAuth refresh conditional persistence is not configured")
+		}
 	}
 
 	// 4. 执行平台特定刷新逻辑
@@ -350,6 +426,24 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 			// while the provider call was in flight. Return the durable row so
 			// post-refresh cache publication cannot restore that stale snapshot.
 			freshAccount = durableAccount
+		} else if freshAccount.IsOpenAIOAuth() {
+			conditionalRepo, ok := api.accountRepo.(OAuthRefreshSuccessRepository)
+			if !ok {
+				return nil, errors.New("OAuth refresh conditional persistence is not configured")
+			}
+			applied, err := conditionalRepo.UpdateOAuthCredentialsIfUnchanged(ctx, freshAccount.ID,
+				attemptedAccount.Credentials, attemptedAccount.ProxyID, newCredentials)
+			if err != nil {
+				return nil, &providerCycleContainmentRefreshError{err: errOAuthRefreshCredentialPersist}
+			}
+			durable, err := api.loadGrokDurableAccountAfterPersist(ctx, cacheKey, freshAccount.ID)
+			if err != nil || durable == nil {
+				return nil, &providerCycleContainmentRefreshError{err: errOAuthRefreshAccountRereadFailed}
+			}
+			if !applied {
+				return &OAuthRefreshResult{Account: durable}, nil
+			}
+			freshAccount = durable
 		} else if updateErr := persistAccountCredentials(ctx, api.accountRepo, freshAccount, newCredentials); updateErr != nil {
 			slog.Error("oauth_refresh_update_failed",
 				"account_id", freshAccount.ID,

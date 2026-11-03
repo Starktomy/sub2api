@@ -20,6 +20,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/adminaccess"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -53,6 +54,7 @@ type AccountHandler struct {
 	adminService            service.AdminService
 	oauthService            *service.OAuthService
 	openaiOAuthService      *service.OpenAIOAuthService
+	oauthRefreshAPI         openAIManualRefresher
 	geminiOAuthService      *service.GeminiOAuthService
 	antigravityOAuthService *service.AntigravityOAuthService
 	grokOAuthService        service.GrokOAuthTokenService
@@ -1420,22 +1422,32 @@ func (h *AccountHandler) refreshSingleAccount(ctx context.Context, account *serv
 	var newCredentials map[string]any
 
 	if account.IsOpenAI() {
-		tokenInfo, err := h.openaiOAuthService.RefreshAccountToken(ctx, account)
+		if err := validateOpenAIManualRefresh(ctx, h.oauthRefreshAPI); err != nil {
+			return nil, "", err
+		}
+		result, err := refreshOpenAIManually(ctx, h.oauthRefreshAPI, account, h.openaiOAuthService)
 		if err != nil {
-			// 刷新失败但 access_token 可能仍有效，尝试设置隐私
-			service.AfterAccountCommit(ctx, func(committed context.Context) {
-				h.adminService.EnsureOpenAIPrivacy(committed, account)
-			})
+			// Authorization failure must not trigger another upstream operation.
+			// Keep legacy privacy recovery only for non-key administrators.
+			if adminaccess.FromContext(ctx) == nil {
+				service.AfterAccountCommit(ctx, func(committed context.Context) {
+					h.adminService.EnsureOpenAIPrivacy(committed, account)
+				})
+			}
 			return nil, "", err
 		}
 
-		newCredentials = h.openaiOAuthService.BuildAccountCredentials(tokenInfo)
-		for k, v := range account.Credentials {
-			if _, exists := newCredentials[k]; !exists {
-				newCredentials[k] = v
-			}
+		updatedAccount, err := openAIManualRefreshAccount(result)
+		if err != nil {
+			return nil, "", err
 		}
-		newCredentials = service.NormalizeOpenAIPersonalAccessTokenCredentials(account, tokenInfo, newCredentials)
+		h.invalidateScopedAccountToken(ctx, updatedAccount)
+		if adminaccess.FromContext(ctx) == nil {
+			service.AfterAccountCommit(ctx, func(committed context.Context) {
+				h.adminService.EnsureOpenAIPrivacy(committed, updatedAccount)
+			})
+		}
+		return updatedAccount, "", nil
 	} else if account.Platform == service.PlatformGemini {
 		tokenInfo, err := h.geminiOAuthService.RefreshAccountToken(ctx, account)
 		if err != nil {

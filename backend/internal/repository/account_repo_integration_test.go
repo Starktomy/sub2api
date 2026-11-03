@@ -1348,6 +1348,116 @@ func (s *AccountRepoSuite) TestUpdateGrokOAuthCredentialsIfUnchanged_SkipsConcur
 	s.Require().Zero(outboxCount)
 }
 
+func (s *AccountRepoSuite) TestUpdateOAuthCredentialsIfUnchanged() {
+	for _, tc := range []struct {
+		name     string
+		platform string
+		kind     string
+		change   string
+		applied  bool
+	}{
+		{"openai success", service.PlatformOpenAI, service.AccountTypeOAuth, "", true},
+		{"anthropic success", service.PlatformAnthropic, service.AccountTypeOAuth, "", true},
+		{"gemini success", service.PlatformGemini, service.AccountTypeOAuth, "", true},
+		{"antigravity success", service.PlatformAntigravity, service.AccountTypeOAuth, "", true},
+		{"grok success", service.PlatformGrok, service.AccountTypeOAuth, "", true},
+		{"setup token", service.PlatformAnthropic, service.AccountTypeSetupToken, "", true},
+		{"stale credentials", service.PlatformOpenAI, service.AccountTypeOAuth, "credentials", false},
+		{"proxy changed", service.PlatformOpenAI, service.AccountTypeOAuth, "proxy", false},
+		{"disabled stays disabled", service.PlatformOpenAI, service.AccountTypeOAuth, "disabled", true},
+		{"api key rejected", service.PlatformOpenAI, service.AccountTypeAPIKey, "", false},
+		{"unknown platform rejected", "unknown", service.AccountTypeOAuth, "", false},
+		{"grok setup token rejected", service.PlatformGrok, service.AccountTypeSetupToken, "", false},
+		{"deleted rejected", service.PlatformOpenAI, service.AccountTypeOAuth, "deleted", false},
+	} {
+		s.Run(tc.name, func() {
+			account := mustCreateAccount(s.T(), s.client, &service.Account{
+				Name: "generic-refresh-cas-" + tc.name, Platform: tc.platform, Type: tc.kind,
+				Status: service.StatusActive, Schedulable: true,
+				Credentials: map[string]any{"access_token": "attempted", "refresh_token": "same-refresh", "metadata": map[string]any{"version": 1}},
+			})
+			observed, err := s.repo.GetByID(s.ctx, account.ID)
+			s.Require().NoError(err)
+			switch tc.change {
+			case "credentials":
+				// The refresh token stays the same: comparing only that field is unsafe.
+				s.Require().NoError(s.repo.UpdateCredentials(s.ctx, account.ID, map[string]any{
+					"access_token": "attempted", "refresh_token": "same-refresh", "metadata": map[string]any{"version": 2},
+				}))
+			case "proxy":
+				proxy, err := s.client.Proxy.Create().SetName("cas-proxy").SetProtocol("http").SetHost("127.0.0.1").SetPort(18080).Save(s.ctx)
+				s.Require().NoError(err)
+				_, err = s.repo.sql.ExecContext(s.ctx, "UPDATE accounts SET proxy_id = $1 WHERE id = $2", proxy.ID, account.ID)
+				s.Require().NoError(err)
+			case "disabled":
+				_, err = s.repo.sql.ExecContext(s.ctx, "UPDATE accounts SET status = 'disabled', schedulable = FALSE, error_message = 'operator paused' WHERE id = $1", account.ID)
+				s.Require().NoError(err)
+			case "deleted":
+				_, err = s.repo.sql.ExecContext(s.ctx, "UPDATE accounts SET deleted_at = NOW() WHERE id = $1", account.ID)
+				s.Require().NoError(err)
+			}
+			cacheRecorder := &schedulerCacheRecorder{}
+			s.repo.schedulerCache = cacheRecorder
+			_, err = s.repo.sql.ExecContext(s.ctx, "TRUNCATE scheduler_outbox")
+			s.Require().NoError(err)
+			applied, err := s.repo.UpdateOAuthCredentialsIfUnchanged(s.ctx, account.ID, observed.Credentials, observed.ProxyID,
+				map[string]any{"access_token": "rotated", "refresh_token": "rotated-refresh"})
+			s.Require().NoError(err)
+			s.Require().Equal(tc.applied, applied)
+			var count int
+			err = scanSingleRow(s.ctx, s.repo.sql,
+				"SELECT COUNT(*) FROM scheduler_outbox WHERE event_type = $1 AND account_id = $2",
+				[]any{service.SchedulerOutboxEventAccountChanged, account.ID}, &count)
+			s.Require().NoError(err)
+			if !tc.applied {
+				s.Require().Zero(count)
+				s.Require().Empty(cacheRecorder.setAccounts)
+				var access string
+				err = scanSingleRow(s.ctx, s.repo.sql, "SELECT credentials->>'access_token' FROM accounts WHERE id = $1", []any{account.ID}, &access)
+				s.Require().NoError(err)
+				s.Require().Equal("attempted", access)
+				return
+			}
+			s.Require().Equal(1, count)
+			s.Require().Len(cacheRecorder.setAccounts, 1)
+			s.Require().Equal("rotated-refresh", cacheRecorder.setAccounts[0].Credentials["refresh_token"])
+			got, err := s.repo.GetByID(s.ctx, account.ID)
+			s.Require().NoError(err)
+			s.Require().Equal("rotated", got.Credentials["access_token"])
+			if tc.change == "disabled" {
+				s.Require().Equal("disabled", got.Status)
+				s.Require().False(got.Schedulable)
+				s.Require().Equal("operator paused", got.ErrorMessage)
+			}
+		})
+	}
+}
+
+func (s *AccountRepoSuite) TestUpdateOAuthCredentialsIfUnchanged_OutboxFailureRollsBack() {
+	account := mustCreateAccount(s.T(), s.client, &service.Account{
+		Name: "generic-refresh-outbox-rollback", Platform: service.PlatformOpenAI,
+		Type: service.AccountTypeOAuth, Status: service.StatusActive,
+		Credentials: map[string]any{"access_token": "attempted", "refresh_token": "attempted-refresh"},
+	})
+	observed, err := s.repo.GetByID(s.ctx, account.ID)
+	s.Require().NoError(err)
+	// A savepoint lets the surrounding test transaction inspect state after the
+	// deliberately failed PostgreSQL statement aborts its subtransaction.
+	_, err = s.repo.sql.ExecContext(s.ctx, "SAVEPOINT refresh_outbox_failure")
+	s.Require().NoError(err)
+	cacheRecorder := &schedulerCacheRecorder{}
+	repo := newAccountRepositoryWithSQL(s.client, &failAtomicSchedulerOutboxSQLExecutor{sqlExecutor: s.repo.sql}, cacheRecorder)
+	applied, err := repo.UpdateOAuthCredentialsIfUnchanged(s.ctx, account.ID, observed.Credentials, nil, map[string]any{"access_token": "rotated"})
+	s.Require().Error(err)
+	s.Require().False(applied)
+	s.Require().Empty(cacheRecorder.setAccounts)
+	_, err = s.repo.sql.ExecContext(s.ctx, "ROLLBACK TO SAVEPOINT refresh_outbox_failure")
+	s.Require().NoError(err)
+	got, err := s.repo.GetByID(s.ctx, account.ID)
+	s.Require().NoError(err)
+	s.Require().Equal("attempted", got.Credentials["access_token"])
+}
+
 func (s *AccountRepoSuite) TestGrokOAuthConditionalMutation_DetachesBoundedSnapshotSync() {
 	account := mustCreateAccount(s.T(), s.client, &service.Account{
 		Name:        "grok-conditional-detached-sync",
