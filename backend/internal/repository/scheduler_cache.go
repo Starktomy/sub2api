@@ -11,7 +11,6 @@ import (
 	"slices"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -62,6 +61,19 @@ const (
 	schedulerGroupLifecycleLockPrefix      = "sched:group:lifecycle-lock:"
 	schedulerGroupLifecycleOwnerTokenBytes = 16
 )
+
+// Compare decimal strings rather than Lua doubles: outbox IDs are int64.
+var advanceSchedulerWatermarkScript = redis.NewScript(`
+local candidate = ARGV[1]
+local current = redis.call('GET', KEYS[1])
+if current ~= false and string.match(current, '^%d+$') == nil then
+    return redis.error_reply('invalid scheduler watermark')
+end
+if current == false or #candidate > #current or (#candidate == #current and candidate > current) then
+    redis.call('SET', KEYS[1], candidate)
+end
+return 1
+`)
 
 var updateSchedulerLastUsedScript = redis.NewScript(`
 local updated = 0
@@ -250,10 +262,6 @@ type schedulerCache struct {
 
 	snapshotMu      sync.RWMutex
 	snapshotEntries map[string]*schedulerSnapshotEntry
-
-	// globalRevisionPending 与 globalRevisionWriting 合并写入出错后的后台全局修订号写入，见 scheduleGlobalAccountMetaRevision。
-	globalRevisionPending atomic.Bool
-	globalRevisionWriting atomic.Bool
 }
 
 // schedulerSnapshotEntry 是一个 bucket 的已解码快照。
@@ -891,7 +899,10 @@ func (c *schedulerCache) GetOutboxWatermark(ctx context.Context) (int64, error) 
 }
 
 func (c *schedulerCache) SetOutboxWatermark(ctx context.Context, id int64) error {
-	return c.rdb.Set(ctx, schedulerOutboxWatermarkKey, strconv.FormatInt(id, 10), 0).Err()
+	if id < 0 {
+		return fmt.Errorf("invalid scheduler watermark: %d", id)
+	}
+	return advanceSchedulerWatermarkScript.Run(ctx, c.rdb, []string{schedulerOutboxWatermarkKey}, strconv.FormatInt(id, 10)).Err()
 }
 
 func schedulerBucketKey(prefix string, bucket service.SchedulerBucket) string {
@@ -1081,30 +1092,15 @@ func schedulerMetaPlatformChanged(previous *redis.StatusCmd, platform string) bo
 	return old.Type != gjson.String || old.Str != platform
 }
 
-// scheduleGlobalAccountMetaRevision 在后台写入全局修订号，不阻塞调用方。
-// 同一时刻至多一个后台写入：写入前先清除待写标记，写完后标记再次被置位就再写一轮，
-// 因此每次调用之后都至少还有一次完整的写入发生在它之后。
+// scheduleGlobalAccountMetaRevision repairs revisions synchronously so callers own its lifetime.
 func (c *schedulerCache) scheduleGlobalAccountMetaRevision(ctx context.Context) {
-	c.globalRevisionPending.Store(true)
-	if !c.globalRevisionWriting.CompareAndSwap(false, true) {
-		return
-	}
-	go func() {
-		for {
-			c.globalRevisionPending.Store(false)
-			c.advanceGlobalAccountMetaRevision(ctx)
-			c.globalRevisionWriting.Store(false)
-			if !c.globalRevisionPending.Load() || !c.globalRevisionWriting.CompareAndSwap(false, true) {
-				return
-			}
-		}
-	}()
+	c.advanceGlobalAccountMetaRevision(ctx)
 }
 
 // advanceGlobalAccountMetaRevision 单独写入新的全局修订号，使所有 bucket 的进程内快照失效。
-// 不受调用方取消影响；失败只记录日志，由进程内快照缓存的最长复用时长兜底。
+// Respects caller cancellation; bounded memo reuse remains the fallback on failure.
 func (c *schedulerCache) advanceGlobalAccountMetaRevision(ctx context.Context) {
-	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), schedulerAccountMetaRevisionWriteTimeout)
+	writeCtx, cancel := context.WithTimeout(ctx, schedulerAccountMetaRevisionWriteTimeout)
 	defer cancel()
 	if err := c.rdb.Set(writeCtx, schedulerAccountMetaRevisionKey, newSchedulerAccountMetaRevision(), 0).Err(); err != nil {
 		slog.Warn("scheduler cache failed to advance account metadata revision", "error", err)

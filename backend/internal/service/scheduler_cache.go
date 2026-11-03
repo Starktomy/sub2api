@@ -118,6 +118,7 @@ type SchedulerCache interface {
 	ListBuckets(ctx context.Context) ([]SchedulerBucket, error)
 	// GetOutboxWatermark 读取 outbox 水位。
 	GetOutboxWatermark(ctx context.Context) (int64, error)
-	// SetOutboxWatermark 保存 outbox 水位。
+	// SetOutboxWatermark monotonically advances an informational high-water mark.
+	// It must never authorize selection or deletion of pending outbox rows.
 	SetOutboxWatermark(ctx context.Context, id int64) error
 }

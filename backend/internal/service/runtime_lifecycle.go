@@ -273,6 +273,9 @@ func registerRuntimeService(lifecycle *RuntimeLifecycle, name string, scope Runt
 	lifecycle.Register(RuntimeTask{
 		Name: name, Scope: scope, StopPhase: phase,
 		Start: func(ctx context.Context) error {
+			if contextual, ok := svc.(interface{ StartContext(context.Context) error }); ok {
+				return contextual.StartContext(ctx)
+			}
 			if contextual, ok := svc.(interface{ StartContext(context.Context) }); ok {
 				contextual.StartContext(ctx)
 			} else {
@@ -280,7 +283,13 @@ func registerRuntimeService(lifecycle *RuntimeLifecycle, name string, scope Runt
 			}
 			return nil
 		},
-		Stop: func(context.Context) error { svc.Stop(); return nil },
+		Stop: func(ctx context.Context) error {
+			if contextual, ok := svc.(interface{ StopContext(context.Context) error }); ok {
+				return contextual.StopContext(ctx)
+			}
+			svc.Stop()
+			return nil
+		},
 	})
 }
 

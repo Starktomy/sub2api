@@ -66,3 +66,35 @@ func TestSchedulerSnapshotOutboxReplay(t *testing.T) {
 		return cached.LastUsedAt.Unix() == expectedUnix
 	}, 5*time.Second, 100*time.Millisecond)
 }
+
+// PostgreSQL sequence allocation order is not commit order. No age/TTL
+// assumption is needed: the lower row remains pending after higher-ID ack.
+func TestSchedulerOutboxLateLowerIDRemainsPending(t *testing.T) {
+	ctx := context.Background()
+	_, err := integrationDB.ExecContext(ctx, "TRUNCATE scheduler_outbox")
+	require.NoError(t, err)
+	t.Cleanup(func() { _, _ = integrationDB.ExecContext(ctx, "TRUNCATE scheduler_outbox") })
+	tx, err := integrationDB.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer tx.Rollback()
+	var lower, higher int64
+	require.NoError(t, tx.QueryRowContext(ctx, "INSERT INTO scheduler_outbox (event_type) VALUES ('full_rebuild') RETURNING id").Scan(&lower))
+	require.NoError(t, integrationDB.QueryRowContext(ctx, "INSERT INTO scheduler_outbox (event_type) VALUES ('full_rebuild') RETURNING id").Scan(&higher))
+	require.Greater(t, higher, lower)
+	repo := NewSchedulerOutboxRepository(integrationDB)
+	events, err := repo.ListPendingAndReleaseDedup(ctx, 200)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	require.Equal(t, higher, events[0].ID)
+	require.NoError(t, repo.AcknowledgeProcessed(ctx, []int64{higher}))
+	require.NoError(t, tx.Commit())
+	events, err = repo.ListPendingAndReleaseDedup(ctx, 200)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	require.Equal(t, lower, events[0].ID)
+	require.NoError(t, repo.AcknowledgeProcessed(ctx, []int64{higher})) // stale duplicate ack
+	events, err = repo.ListPendingAndReleaseDedup(ctx, 200)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	require.Equal(t, lower, events[0].ID)
+}

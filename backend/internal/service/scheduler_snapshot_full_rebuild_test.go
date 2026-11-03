@@ -47,7 +47,8 @@ func (c *schedulerFullRebuildTestCache) ReopenBucket(_ context.Context, bucket S
 }
 
 func TestSchedulerSnapshotServiceFullRebuildCoalescesConcurrentRequestsIntoTrailingRun(t *testing.T) {
-	svc := &SchedulerSnapshotService{}
+	svc := NewSchedulerSnapshotService(nil, nil, nil, nil, nil)
+	t.Cleanup(svc.Stop)
 	wantTrailingErr := errors.New("trailing rebuild failed")
 	firstStarted := make(chan struct{})
 	releaseFirst := make(chan struct{})
@@ -115,7 +116,8 @@ func TestSchedulerSnapshotServiceFullRebuildCoalescesConcurrentRequestsIntoTrail
 }
 
 func TestSchedulerSnapshotServiceFullRebuildRunsAgainForSequentialRequest(t *testing.T) {
-	svc := &SchedulerSnapshotService{}
+	svc := NewSchedulerSnapshotService(nil, nil, nil, nil, nil)
+	t.Cleanup(svc.Stop)
 	wantSecondErr := errors.New("second rebuild failed")
 	var calls atomic.Int32
 	run := func() error {
