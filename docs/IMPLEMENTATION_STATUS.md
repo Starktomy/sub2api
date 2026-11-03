@@ -83,6 +83,31 @@
 
 完整资源/费用、命令与已知限制见 [EC2_MANAGED_DATA_VALIDATION.zh-CN.md](EC2_MANAGED_DATA_VALIDATION.zh-CN.md) 和 `infra/ec2-integration/README.md`。基础按需费用约136.15美元/月（不含已有EC2及其它费用），资源保留持续计费；未取得通知地址，未配置预算邮件告警。前端/ECS/ALB/PITR/真实模型与支付仍未验。
 
+## 第五批：授权 OAuth 真实调用首轮（2026-11-03）
+
+- 第四批已本地提交 `7561bccb5`；上下文摘要提交 `9bd33c364`。未推送。
+- 用户明确阅读并接受部署与运营合规承诺 v2026.06.10，授权为隔离测试环境记录确认；通过真实管理员登录和官方合规接口完成，不绕过门禁。
+- `tools/verify_oauth_live.py` 经官方 Codex session 导入接口接入两份独立 OAuth 账户；只传认证必要字段，不导入原文件中的密码、电话、2FA 等无关字段。
+- 首轮仅2次生成HTTP请求：账户1经Gateway A非流式、账户2经Gateway B流式；均HTTP200/completed，响应声明 `gpt-5.6-terra`，流式收到文本delta。
+- 每次31 input/5 output token；RDS各落一条usage，分别关联正确账户。客户余额从1降到0.99975600，合计0.000244美元；这是本地配置价格，不代表OAuth上游实际成本。
+- 测试后两账户status=disabled/schedulable=false、两Key inactive、两用户disabled，保留用量和账务记录。真实SQL核对通过；四服务health正常。
+- 对本轮服务journal和audit_logs检查所供access/refresh/id token、密码等长敏感值的精确匹配均为0；不等同于全面日志安全审计。
+- 私有证据：`/root/.local/state/sub2api-cloud/aws-integration/oauth-smoke-20261103-01/result.json`；不提交原始凭据或运行态配置。
+- 本轮尚未验证工具调用、会话亲和、同一池双账号调度/回退、上游刷新、在飞故障恢复、支付或ECS。两账户分别置于独立测试组，因此不能据此声称统一池调度已验收。
+- 运行后对工具的usage证据序列化进一步收敛到3个token计数字段；该小改动仅语法检查，不为重验脚本再消耗模型请求。
+
+## 第六批：同池/亲和/工具/传输回退/真实刷新（2026-11-03）
+
+- 用户明确要求验证以上能力；本批实际5次生成、1次官方串行刷新。
+- 同组同Key两账户候选选择、跨Gateway同session在优先级反转后仍亲和账户1、真实echo工具参数与完整回放结果续接均通过。
+- 停调账户1后同session落账户2，验证发送前过滤；再给账户2配置关闭端口代理，同一请求日志确认账户2传输失败后重选账户1，最终usage归账户1，区分于仅预过滤。
+- 池脚本最初journal时间格式导致证据采集失败并停测；原始passed=false保留。独立修正查询保存同请求回退证据，不重复4次调用；脚本修正只做语法验证。
+- 随后独立工具执行一次账户1官方刷新，access/refresh token均实际变化并持久化，成功响应未包含新token；刷新后生成与usage成功。
+- 本批5条usage本地客户费用共0.001070美元，不代表OAuth上游成本。最终两账户disabled/不可调度/无代理、原组恢复，测试Key/user停用、故障代理inactive；四服务健康。
+- 当前凭据在本轮audit/journal精确匹配为0。账户1新refresh token在DB及root私有恢复文件，原account.test未覆盖，不可用旧文件回滚。
+- unit标签令牌提供器/调度器测试通过0.303秒；未带标签那次no tests to run不计覆盖。管理员手动刷新缺统一CAS，不据单次成功宣称并发刷新安全。
+- 详见 [OAUTH_POOL_VALIDATION.zh-CN.md](OAUTH_POOL_VALIDATION.zh-CN.md)。未测真实429、在飞/部分流恢复、WS、并发刷新或跨平台统一调度。
+
 ## 尚未实现，禁止按已完成生产部署
 
 - 独立角色仅实验opt-in：共享Wire图/权限最小化、DI失败全资源回收、部分缓存janitor、Control OAuth多副本、维护worker多副本lease仍未完成。AWS下一步见 [AWS_PREPRODUCTION_CHECKLIST.zh-CN.md](AWS_PREPRODUCTION_CHECKLIST.zh-CN.md)。
