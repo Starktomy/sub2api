@@ -75,6 +75,7 @@ func ProvideMaintenanceLocker(db *sql.DB, cfg *config.Config) service.Maintenanc
 
 // ProviderSet is the Wire provider set for all repositories
 var ProviderSet = wire.NewSet(
+	NewSupplierRepository,
 	ProvideMaintenanceLocker,
 	NewUserRepository,
 	NewMCPOAuthRepository,

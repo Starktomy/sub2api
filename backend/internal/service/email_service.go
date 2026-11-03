@@ -326,8 +326,17 @@ func (s *EmailService) GenerateVerifyCode() (string, error) {
 
 // SendVerifyCode 发送验证码邮件
 func (s *EmailService) SendVerifyCode(ctx context.Context, email, siteName string, locale ...string) error {
+	return s.sendVerifyCode(ctx, email, email, siteName, locale...)
+}
+
+// Supplier codes use an isolated cache namespace; delivery still targets the real mailbox.
+func (s *EmailService) SendSupplierVerifyCode(ctx context.Context, email, siteName string, locale ...string) error {
+	return s.sendVerifyCode(ctx, "supplier:"+email, email, siteName, locale...)
+}
+
+func (s *EmailService) sendVerifyCode(ctx context.Context, cacheKey, email, siteName string, locale ...string) error {
 	// 检查是否在冷却期内
-	existing, err := s.cache.GetVerificationCode(ctx, email)
+	existing, err := s.cache.GetVerificationCode(ctx, cacheKey)
 	if err == nil && existing != nil {
 		if time.Since(existing.CreatedAt) < verifyCodeCooldown {
 			return ErrVerifyCodeTooFrequent
@@ -347,7 +356,7 @@ func (s *EmailService) SendVerifyCode(ctx context.Context, email, siteName strin
 		CreatedAt: time.Now(),
 		ExpiresAt: time.Now().Add(verifyCodeTTL),
 	}
-	if err := s.cache.SetVerificationCode(ctx, email, data, verifyCodeTTL); err != nil {
+	if err := s.cache.SetVerificationCode(ctx, cacheKey, data, verifyCodeTTL); err != nil {
 		return fmt.Errorf("save verify code: %w", err)
 	}
 
@@ -392,6 +401,32 @@ func (s *EmailService) VerifyCode(ctx context.Context, email, code string) error
 				slog.Error("failed to delete verification code after success", "email", email, "error", err)
 			}
 		})
+}
+
+// VerifySupplierCode never accepts registration/password-reset codes.
+func (s *EmailService) VerifySupplierCode(ctx context.Context, email, code string) error {
+	cache, ok := s.cache.(interface {
+		ConsumeSupplierVerificationCode(context.Context, string, string) (bool, error)
+	})
+	if !ok {
+		return ErrServiceUnavailable
+	}
+	key := "supplier:" + email
+	data, err := s.cache.GetVerificationCode(ctx, key)
+	if err != nil || data == nil || !time.Now().Before(data.ExpiresAt) {
+		return ErrInvalidVerifyCode
+	}
+	if err := verifyCodeWithAttempts(ctx, key, code, s.cache.GetVerificationCode, s.cache.IncrVerificationCodeAttempts, nil); err != nil {
+		return err
+	}
+	consumed, err := cache.ConsumeSupplierVerificationCode(ctx, key, code)
+	if err != nil {
+		return ErrServiceUnavailable
+	}
+	if !consumed {
+		return ErrInvalidVerifyCode
+	}
+	return nil
 }
 
 // verifyCodeWithAttempts checks a verification code while enforcing the attempt cap

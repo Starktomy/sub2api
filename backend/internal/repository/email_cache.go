@@ -242,3 +242,22 @@ func (c *emailCache) GetNotifyCodeUserRate(ctx context.Context, userID int64) (i
 	}
 	return count, nil
 }
+
+// ConsumeSupplierVerificationCode atomically consumes a matched supplier-only proof.
+// The attempt budget has already been charged by EmailService.
+func (c *emailCache) ConsumeSupplierVerificationCode(ctx context.Context, email, code string) (bool, error) {
+	if !strings.HasPrefix(email, "supplier:") {
+		return false, fmt.Errorf("invalid supplier proof namespace")
+	}
+	result, err := consumeSupplierCodeScript.Run(ctx, c.rdb, []string{verifyCodeKey(email), verifyCodeKey(email) + attemptsKeySuffix}, code).Int()
+	return result == 1, err
+}
+
+var consumeSupplierCodeScript = redis.NewScript(`
+local v=redis.call('GET',KEYS[1])
+if not v then return 0 end
+local ok,d=pcall(cjson.decode,v)
+if not ok or type(d)~='table' or d['Code']~=ARGV[1] then return 0 end
+redis.call('DEL',KEYS[1],KEYS[2])
+return 1
+`)

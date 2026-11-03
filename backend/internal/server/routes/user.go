@@ -25,6 +25,14 @@ func RegisterUserRoutes(
 	// 用户管理面变更类操作入审计（含 TOTP 启用/禁用、step-up 验证、密码修改等安全事件）
 	authenticated.Use(gin.HandlerFunc(auditLog))
 	{
+		// Supplier portal membership uses shared JWT identity, not admin/API keys.
+		if h.Supplier != nil {
+			supplier := authenticated.Group("/supplier")
+			supplier.GET("/profile", h.Supplier.GetProfile)
+			supplier.PUT("/profile", h.Supplier.UpdateProfile)
+			supplier.POST("/send-verify-code", h.Supplier.RateLimit(), h.Supplier.SendVerifyCode)
+			supplier.POST("/enroll", h.Supplier.RateLimit(), h.Supplier.Enroll)
+		}
 		// 用户接口
 		user := authenticated.Group("/user")
 		{
