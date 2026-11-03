@@ -1,0 +1,24 @@
+services:
+  openresty:
+    image: openresty/openresty@sha256:2cb90d64192934c26b3749cf744f47edd59277787fe761bd109eeebdc3e2214a
+    container_name: sub2api-openresty-origin
+    ports: ['80:8080', '443:8443']
+    user: '10001:10001'
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.20
+    pids_limit: 64
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m,uid=10001,gid=10001,mode=0700
+    volumes:
+      - ./openresty-origin.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
+      - /var/lib/sub2api-acme:/srv/acme:ro
+      - /etc/sub2api-openresty/tls:/run/tls:ro
+      - ../frontend/dist/supplier:/srv/supplier:ro
+      - ../backend/internal/web/dist:/srv/consumer:ro
+    logging:
+      driver: json-file
+      options: {max-size: 5m, max-file: '2'}

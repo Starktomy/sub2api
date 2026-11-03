@@ -1,0 +1,37 @@
+services:
+  supplier-control:
+    image: sha256:74fdd369ea9fa4c36dab9f8ae0dd2f01082847cddbeaae99c6ee3a4ac9047392
+    container_name: sub2api-supplier-control
+    user: '10001:10001'
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.30
+    pids_limit: 128
+    env_file: /etc/sub2api-supplier/runtime.env
+    ports: ['172.31.16.78:18082:8080']
+    networks: [roles]
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-T', '5', '--header=Host: supplier.aquawhale.net', '-O', '/dev/null', 'http://127.0.0.1:8080/api/v1/settings/public']
+      interval: 30s
+      timeout: 6s
+      start_period: 30s
+      retries: 3
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m
+      - /app/data:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0700
+    volumes:
+      - /etc/sub2api-roles/rds.pem:/run/certs/rds.pem:ro
+      - /etc/sub2api-supplier/keyring.json:/run/vault/keyring.json:ro
+    entrypoint: ['/bin/sh', '-ec']
+    command:
+      - 'printf "%s\n" "pricing:" "  remote_url: \"\"" "  hash_url: \"\"" "  data_dir: /app/data/pricing" "  fallback_file: /app/resources/model-pricing/model_prices_and_context_window.json" > /app/data/config.yaml; exec /app/cloud-entrypoint'
+    logging:
+      driver: json-file
+      options: {max-size: 5m, max-file: '2'}
+networks:
+  roles:
+    external: true
+    name: sub2api-roles
