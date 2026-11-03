@@ -956,14 +956,14 @@ func TestSchedulerCacheSnapshotMemoNilBeforeRealPipelineError(t *testing.T) {
 	}, 2*time.Second, 5*time.Millisecond, "the global revision is advanced in the background")
 }
 
-func TestSchedulerCacheSnapshotMemoCoalescesBackgroundGlobalRevisionWrites(t *testing.T) {
+func TestSchedulerCacheSnapshotMemoRevisionRepairIsSynchronous(t *testing.T) {
 	cache, _, recorder := newSchedulerCacheMemoUnit(t, defaultSchedulerSnapshotWriteChunkSize)
 	recorder.reset()
 	for range 50 {
 		cache.scheduleGlobalAccountMetaRevision(context.Background())
 	}
 	require.Eventually(t, func() bool {
-		return !cache.globalRevisionWriting.Load() && memoRevisionValue(cache, schedulerAccountMetaRevisionKey) != ""
+		return memoRevisionValue(cache, schedulerAccountMetaRevisionKey) != ""
 	}, 2*time.Second, 5*time.Millisecond)
 	writes := 0
 	for _, command := range recorder.recorded() {
@@ -972,7 +972,7 @@ func TestSchedulerCacheSnapshotMemoCoalescesBackgroundGlobalRevisionWrites(t *te
 		}
 	}
 	require.GreaterOrEqual(t, writes, 1)
-	require.LessOrEqual(t, writes, 3, "concurrent schedules collapse into at most a couple of background writes")
+	require.Equal(t, 50, writes, "each synchronous repair finishes before its caller returns")
 }
 
 func ptrAccount(account service.Account) *service.Account {

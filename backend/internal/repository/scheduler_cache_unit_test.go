@@ -1223,3 +1223,14 @@ func TestBuildSchedulerMetadataAccount_KeepsRPMFieldsForRPMGate(t *testing.T) {
 			"投影裁掉 rpm_strategy 会让粘性豁免账号退回三区判定")
 	})
 }
+
+func TestSchedulerWatermarkNeverRegressesAndPreservesInt64(t *testing.T) {
+	cache := newSchedulerCacheUnit(t)
+	ctx := context.Background()
+	for _, id := range []int64{9007199254740992, 9007199254740993, 1, 9007199254740992} {
+		require.NoError(t, cache.SetOutboxWatermark(ctx, id))
+	}
+	got, err := cache.GetOutboxWatermark(ctx)
+	require.NoError(t, err)
+	require.Equal(t, int64(9007199254740993), got)
+}

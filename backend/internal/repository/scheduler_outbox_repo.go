@@ -11,23 +11,18 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/lib/pq"
 )
 
 type schedulerOutboxRepository struct {
 	db *sql.DB
 }
 
-type schedulerOutboxCleanupLease struct {
-	conn *sql.Conn
-}
-
-const schedulerOutboxDefaultCleanSize = 5000
-
 func NewSchedulerOutboxRepository(db *sql.DB) service.SchedulerOutboxRepository {
 	return &schedulerOutboxRepository{db: db}
 }
 
-func (r *schedulerOutboxRepository) ListAfterAndReleaseDedup(ctx context.Context, afterID int64, limit int) ([]service.SchedulerOutboxEvent, error) {
+func (r *schedulerOutboxRepository) ListPendingAndReleaseDedup(ctx context.Context, limit int) ([]service.SchedulerOutboxEvent, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -35,9 +30,8 @@ func (r *schedulerOutboxRepository) ListAfterAndReleaseDedup(ctx context.Context
 		WITH selected AS MATERIALIZED (
 			SELECT id, event_type, account_id, group_id, payload, created_at
 			FROM scheduler_outbox
-			WHERE id > $1
 			ORDER BY id ASC
-			LIMIT $2
+			LIMIT $1
 			FOR UPDATE
 		), released AS (
 			UPDATE scheduler_outbox AS o
@@ -51,7 +45,7 @@ func (r *schedulerOutboxRepository) ListAfterAndReleaseDedup(ctx context.Context
 		FROM selected AS s
 		CROSS JOIN (SELECT COUNT(*) FROM released) AS release_barrier
 		ORDER BY s.id ASC
-	`, afterID, limit)
+	`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -119,63 +113,12 @@ func (r *schedulerOutboxRepository) MaxID(ctx context.Context) (int64, error) {
 	return maxID, nil
 }
 
-func (r *schedulerOutboxRepository) DeleteConsumedUpTo(ctx context.Context, watermark int64, limit int) (int64, error) {
-	if watermark <= 0 {
-		return 0, nil
+func (r *schedulerOutboxRepository) AcknowledgeProcessed(ctx context.Context, ids []int64) error {
+	if len(ids) == 0 {
+		return nil
 	}
-	if limit <= 0 {
-		limit = schedulerOutboxDefaultCleanSize
-	}
-	// created_at < NOW() - INTERVAL '10 seconds' 防御 PG 序列号在事务内提前分配但
-	// 提交延迟的竞争：若某 Tx 在 watermark 推进前持有 id=N（未提交），watermark
-	// 跨过 N 后该 Tx 才提交，此时 row N 已经"低于 watermark"但从未被 poll；10s
-	// 宽限期让此类慢事务有机会提交后被消费，再被 cleanup 删除。
-	result, err := r.db.ExecContext(ctx, `
-		WITH doomed AS (
-			SELECT id
-			FROM scheduler_outbox
-			WHERE id <= $1
-				AND created_at < NOW() - INTERVAL '10 seconds'
-			ORDER BY id ASC
-			LIMIT $2
-		)
-		DELETE FROM scheduler_outbox o
-		USING doomed d
-		WHERE o.id = d.id
-	`, watermark, limit)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
-func (r *schedulerOutboxRepository) TryAcquireCleanupLock(ctx context.Context) (service.SchedulerOutboxCleanupLease, bool, error) {
-	conn, err := r.db.Conn(ctx)
-	if err != nil {
-		return nil, false, err
-	}
-
-	var acquired bool
-	if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock(hashtext('scheduler_outbox_cleanup'))").Scan(&acquired); err != nil {
-		_ = conn.Close()
-		return nil, false, err
-	}
-	if !acquired {
-		_ = conn.Close()
-		return nil, false, nil
-	}
-	return &schedulerOutboxCleanupLease{conn: conn}, true, nil
-}
-
-func (l *schedulerOutboxCleanupLease) Release() {
-	if l == nil || l.conn == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	_, _ = l.conn.ExecContext(ctx, "SELECT pg_advisory_unlock(hashtext('scheduler_outbox_cleanup'))")
-	_ = l.conn.Close()
-	l.conn = nil
+	_, err := r.db.ExecContext(ctx, "DELETE FROM scheduler_outbox WHERE id = ANY($1)", pq.Array(ids))
+	return err
 }
 
 func enqueueSchedulerOutbox(ctx context.Context, exec sqlExecutor, eventType string, accountID *int64, groupID *int64, payload any) error {
