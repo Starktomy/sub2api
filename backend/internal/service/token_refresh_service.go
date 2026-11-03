@@ -70,6 +70,10 @@ type TokenRefreshService struct {
 	privacyClientFactory PrivacyClientFactory
 	proxyRepo            ProxyRepository
 
+	maintenanceSafe bool
+	startOnce       sync.Once
+	lifecycleMu     sync.Mutex // serialize Start/Stop and WaitGroup Add/Wait
+
 	stopCh        chan struct{}
 	stopOnce      sync.Once
 	wg            sync.WaitGroup
@@ -199,14 +203,45 @@ func (s *TokenRefreshService) notifyAccountSchedulingBlockCleared(accountID int6
 }
 
 // Start 启动后台刷新服务
-func (s *TokenRefreshService) Start() {
+// SetMultiReplicaMaintenance disables unfenced post-refresh mutations and
+// external privacy calls. Durable coordination is mandatory in this mode.
+type maintenanceRefreshContextKey struct{}
+
+func isMaintenanceRefresh(ctx context.Context) bool {
+	value, _ := ctx.Value(maintenanceRefreshContextKey{}).(bool)
+	return value
+}
+
+func (s *TokenRefreshService) SetMultiReplicaMaintenance() { s.maintenanceSafe = true }
+
+func (s *TokenRefreshService) Start() { s.StartContext(context.Background()) }
+
+func (s *TokenRefreshService) StartContext(parent context.Context) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.maintenanceSafe && (s.refreshAPI == nil || !s.refreshAPI.durableRequired) {
+		slog.Error("token_refresh.multi_replica_requires_durable_coordination")
+		return
+	}
 	if s.cfg == nil || !s.cfg.Enabled {
 		slog.Info("token_refresh.service_disabled")
 		return
 	}
 
-	s.wg.Add(1)
-	go s.refreshLoop()
+	s.startOnce.Do(func() {
+		select {
+		case <-s.stopCh:
+			return
+		default:
+		}
+		// Only construction/Start/Stop own runCtx; lifecycle serializes them.
+		if s.runCancel != nil {
+			s.runCancel()
+		}
+		s.runCtx, s.runCancel = context.WithCancel(parent)
+		s.wg.Add(1)
+		go s.refreshLoop()
+	})
 
 	slog.Info("token_refresh.service_started",
 		"check_interval_minutes", s.cfg.CheckIntervalMinutes,
@@ -216,6 +251,8 @@ func (s *TokenRefreshService) Start() {
 
 // Stop 停止刷新服务（可安全多次调用）
 func (s *TokenRefreshService) Stop() {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 	s.stopOnce.Do(func() {
 		if s.runCancel != nil {
 			s.runCancel()
@@ -860,10 +897,19 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 			}
 		}
 		attemptCtx, cancelAttempt := context.WithTimeout(ctx, s.attemptTimeout())
+		if s.maintenanceSafe {
+			attemptCtx = context.WithValue(attemptCtx, maintenanceRefreshContextKey{}, true)
+		}
 		var newCredentials map[string]any
 		var err error
 		shortCircuit := false
 		credentialsPersisted := false
+
+		if s.maintenanceSafe && (s.refreshAPI == nil || !s.refreshAPI.durableRequired || executor == nil) {
+			cancelAttempt()
+			releaseAttempt()
+			return &providerConfigurationRefreshError{err: errors.New("multi-replica refresh requires a durable executor")}
+		}
 
 		// 优先使用统一 API（带分布式锁 + DB 重读保护）
 		if s.refreshAPI != nil && executor != nil {
@@ -959,6 +1005,11 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 		}
 		if errors.Is(err, errRefreshSkipped) {
 			return errRefreshSkipped
+		}
+		if s.maintenanceSafe {
+			// Durable refresh owns failure quarantine. Never translate an old
+			// attempt's error into unfenced account status/cooldown mutations.
+			return &providerCycleContainmentRefreshError{err: err}
 		}
 		if isProviderScopedTerminalRefreshError(err) {
 			return err
@@ -1158,6 +1209,10 @@ func (s *TokenRefreshService) retryBackoff(accountID int64, attempt int) time.Du
 
 // postRefreshActions 刷新成功后的后续动作（清除错误状态、缓存失效、调度器同步等）
 func (s *TokenRefreshService) postRefreshActions(ctx context.Context, account *Account) {
+	if s.maintenanceSafe {
+		s.postRefreshStateSync(ctx, account)
+		return
+	}
 	s.clearAntigravityForceTokenRefresh(ctx, account, "success")
 
 	// Antigravity 账户：如果之前是因为缺少 project_id 而标记为 error，现在成功获取到了，清除错误状态
@@ -1229,7 +1284,9 @@ func (s *TokenRefreshService) postRefreshStateSync(ctx context.Context, account 
 		}
 	}
 	// 同步更新调度器缓存，确保调度获取的 Account 对象包含最新的 credentials
-	if s.schedulerCache != nil {
+	// Durable completion already publishes account invalidation. Do not let an
+	// old holder publish a stale read back over a newly changed account snapshot.
+	if s.schedulerCache != nil && !s.maintenanceSafe {
 		if err := s.schedulerCache.SetAccount(ctx, account); err != nil {
 			slog.Warn("token_refresh.sync_scheduler_cache_failed",
 				"account_id", account.ID,

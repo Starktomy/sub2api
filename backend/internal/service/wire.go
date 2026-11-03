@@ -174,6 +174,9 @@ func ProvideTokenRefreshService(
 	// 调用侧显式注入后台刷新策略，避免策略漂移
 	svc.SetRefreshPolicy(DefaultBackgroundRefreshPolicy())
 	svc.SetAccountRuntimeBlocker(runtimeBlocker)
+	if cfg != nil && cfg.Runtime.MultiReplicaWorkers {
+		svc.SetMultiReplicaMaintenance()
+	}
 	registerRuntimeService(lifecycle, "TokenRefreshService", RuntimeScopeWorker, svc)
 	return svc
 }
