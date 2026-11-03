@@ -622,7 +622,9 @@ func (s *BillingCacheService) SubscribeSubscriptionCacheInvalidationManaged(ctx 
 			if stopSubscription != nil {
 				stopSubscription()
 			}
+			// Wait for an in-flight callback to exit before returning Stop.
 			callbackMu.Lock()
+			//nolint:staticcheck // SA2001: intentional callback-drain mutex barrier
 			callbackMu.Unlock()
 		})
 	}

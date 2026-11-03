@@ -132,10 +132,10 @@ func TestTamperAndWrongIdentity(t *testing.T) {
 			case "nonce":
 				e.Nonce[0] ^= 1
 			case "encrypted_data_key":
-				old := string(e.EncryptedKey)
+				old := f.records[string(e.EncryptedKey)]
 				e.EncryptedKey[0] ^= 1
 				// Simulate another valid wrapper for the same DEK: AAD must reject.
-				f.records[string(e.EncryptedKey)] = f.records[old]
+				f.records[string(e.EncryptedKey)] = old
 			}
 			data, _ = json.Marshal(e)
 			got, err := c.Decrypt(context.Background(), "account-1", data)

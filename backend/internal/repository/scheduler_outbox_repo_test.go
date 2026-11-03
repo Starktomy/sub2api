@@ -64,7 +64,7 @@ func TestSchedulerOutboxRepositoryFirstCreatedAtAfterReturnsNotFound(t *testing.
 func TestSchedulerOutboxRepositoryAcknowledgeExactIDs(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	repo := &schedulerOutboxRepository{db: db}
 	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM scheduler_outbox WHERE id = ANY($1)")).
 		WithArgs("{3,10000}").WillReturnResult(sqlmock.NewResult(0, 2))

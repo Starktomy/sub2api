@@ -20,7 +20,7 @@ func TestAuthorizedOAuthRefreshRejectsRevokedPrincipalAtCommit(t *testing.T) {
 		t.Run(map[bool]string{false: "scoped", true: "full_key"}[full], func(t *testing.T) {
 			db, mock, err := sqlmock.New()
 			require.NoError(t, err)
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 			client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
 			repo := &accountRepository{client: client}
 			ctx := adminaccess.WithPrincipal(context.Background(), &adminaccess.Principal{KeyID: "key", CreatorID: 9, Policy: adminaccess.Policy{FullAccess: full}})
@@ -37,7 +37,7 @@ func TestAuthorizedOAuthRefreshRejectsRevokedPrincipalAtCommit(t *testing.T) {
 func TestAuthorizedOAuthRefreshRejectsRotatedKeyGenerationAtCommit(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
 	repo := &accountRepository{client: client}
 	policy := adminaccess.Policy{FullAccess: true}

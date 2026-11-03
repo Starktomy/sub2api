@@ -34,7 +34,7 @@ func allocateMaintenanceGeneration(ctx context.Context, conn *sql.Conn) (generat
 	if err != nil {
 		return 0, "", fmt.Errorf("begin maintenance generation allocation: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if err := checkMaintenanceGenerationLock(ctx, tx); err != nil {
 		return 0, "", err
 	}
@@ -67,7 +67,7 @@ func withMaintenanceGeneration(ctx context.Context, conn *sql.Conn, generation i
 	if err != nil {
 		return fmt.Errorf("begin maintenance generation guard: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if err := checkMaintenanceGenerationLock(ctx, tx); err != nil {
 		return err
 	}
