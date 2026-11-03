@@ -2,6 +2,10 @@
 
 更新时间：2026-11-03。本文件回答“角色拆分完成后能否在 AWS 实机启动”。
 
+## 当前阶段更新
+
+2026-11-03用户明确调整：先在当前EC2运行拆分角色，不加负载均衡；真实RDS/Valkey优先。该集成阶段已部署并验证限定范围，见 [EC2_MANAGED_DATA_VALIDATION.zh-CN.md](EC2_MANAGED_DATA_VALIDATION.zh-CN.md)。本清单中的ECS/ALB是后续阶段，不要求现在创建。
+
 ## 结论与边界
 
 完成进程级隔离和本地烟测之后，可以开始**封闭预生产环境**的 AWS 部署工程，不等于现仓库已经能一键 terraform apply 并对外收费。
@@ -16,15 +20,15 @@
 - [x] ChannelMonitor从持久配置周期收敛，错误保留、变更/删除处理。
 - [x] 2 Gateway + Control + Worker连接真实PG和临时密码Redis，健康/路由/任务scope/正常退出已跑通。
 - [x] 最终增强槽位四角色烟测及受影响完整回归通过；订阅关闭时序专项复测结果见IMPLEMENTATION_STATUS。
-- [ ] 真实RDS PostgreSQL16 / Valkey7.2 TLS环境验证（本地PG15.19/Redis7.0不能替代）。
+- [x] 真实RDS PostgreSQL16.13 / Valkey7.2.6 TLS/ACL/迁移/共享状态验证，受控切换和恢复后非模型业务复验通过；见验收报告限制。
 - [ ] 模型协议、计量和支付沙箱；强杀/断网/数据库commit结果不明的恢复。
 
 ## B. 身份和预算（需要用户/AWS管理员）
 
-- [ ] 不使用现有root作为日常部署身份；提供专用IAM role及允许的account ID。
-- [ ] us-west-2、stage环境命名、Owner/CostCenter、CIDR不冲突。
+- [x] EC2集成阶段使用专用host→deployer角色，root仅IAM bootstrap/策略管理；数据资源非root创建，临时高权限已撤除。
+- [x] 当前us-west-2、integration命名、隔离子网CIDR已核对；生产Owner/CostCenter仍需正式治理。
 - [ ] 审查至少两个NAT/公网IPv4、RDS主备、Valkey两节点、ALB、Fargate、日志/Secret/KMS费用，并设置预算告警。
-- [ ] 加密、版本化、有锁的Terraform远端state backend，独立bootstrap并限制访问。
+- [x] EC2集成模块的S3远端state已加密/版本化/lock并限制范围，未来ECS模块仍需使用审定backend。
 - [ ] 明确需要内部ALB还是公网TLS入口；公网入口需受控域名与ACM证书，且限制预生产访问。
 
 ## C. 现有 Terraform foundation
@@ -41,7 +45,7 @@
 ## D. 还需实现的应用部署接线
 
 - [ ] ECS适用镜像：明确server/migrate入口、非root、资源与文件目录、RDS CA、license、固定digest、无自动setup和自更新。
-- [ ] 运行配置/Secrets：JWT、TOTP、DB migrator/runtime用户、Valkey ACL用户与密码；不能用DB master启动应用。
+- [x] EC2阶段JWT/TOTP、DB migrator/runtime、ValkeyACL已由Secret/0600配置提供，不用DB master运行；后续ECS Secret注入接线仍待实现。
 - [ ] 一次性bootstrap管理入口：创建runtime DB角色/权限、应用管理员（带不可重复误重置保护）；不写凭据进state或Git。
 - [ ] ECS Task execution role和每角色Task role；最小Secret/KMS/SQS/S3/Bedrock授权。
 - [ ] Gateway/Control/Worker Task definitions及services，private task subnets、端口/健康检查、IAM、日志、部署策略。

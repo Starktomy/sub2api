@@ -1,0 +1,12 @@
+# Dedicated application UID only; do not change SSH or other host traffic.
+# sub2api-it UID is substituted by the installer if it differs from 999.
+# Idempotent replacement: an existing live ruleset was inspected before install.
+add table inet sub2api_integration
+flush table inet sub2api_integration
+table inet sub2api_integration {
+    chain output {
+        type filter hook output priority 0; policy accept;
+        meta skuid 999 ip daddr 169.254.169.254 reject
+        meta skuid 999 ip6 daddr fd00:ec2::254 reject
+    }
+}

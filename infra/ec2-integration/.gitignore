@@ -1,0 +1,11 @@
+.terraform/
+.plugin-cache/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.plan
+*.tfvars
+*.tfvars.json
+crash.log
+!tests/
+!tests/**

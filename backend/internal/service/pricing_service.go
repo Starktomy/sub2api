@@ -415,6 +415,15 @@ func (s *PricingService) startUpdateScheduler() {
 // checkAndUpdatePricing 检查并更新价格数据
 func (s *PricingService) checkAndUpdatePricing() error {
 	pricingFile := s.getPricingFilePath()
+	// An explicitly blank remote URL is a supported offline mode. Load a local
+	// snapshot/fallback without attempting an invalid download or logging a
+	// spurious startup failure on every isolated integration process.
+	if strings.TrimSpace(s.cfg.Pricing.RemoteURL) == "" {
+		if err := s.loadPricingData(pricingFile); err == nil {
+			return nil
+		}
+		return s.useFallbackPricing()
+	}
 
 	// 检查本地文件是否存在
 	if _, err := os.Stat(pricingFile); os.IsNotExist(err) {

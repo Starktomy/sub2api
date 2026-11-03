@@ -5,12 +5,14 @@ on:
     paths:
       - 'backend/**'
       - 'infra/aws/**'
+      - 'infra/ec2-integration/**'
       - '.github/workflows/cloud-foundation.yml'
       - 'tools/smoke_cloud_roles.py'
   pull_request:
     paths:
       - 'backend/**'
       - 'infra/aws/**'
+      - 'infra/ec2-integration/**'
       - '.github/workflows/cloud-foundation.yml'
       - 'tools/smoke_cloud_roles.py'
 
@@ -83,6 +85,13 @@ jobs:
         with:
           terraform_version: '1.17.1'
       - name: Format, validate and mock tests (no AWS credentials)
+        run: |
+          terraform fmt -check -recursive
+          terraform init -backend=false -input=false
+          terraform validate
+          terraform test
+      - name: EC2 integration data module (offline only)
+        working-directory: infra/ec2-integration
         run: |
           terraform fmt -check -recursive
           terraform init -backend=false -input=false

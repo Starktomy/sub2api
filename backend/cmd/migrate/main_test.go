@@ -8,11 +8,13 @@ import (
 	"encoding/hex"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 )
 
@@ -46,7 +48,10 @@ func TestDatabaseConnectorValidation(t *testing.T) {
 		{"database missing", "DATABASE_DBNAME", "", "DATABASE_DBNAME"},
 		{"invalid port", "DATABASE_PORT", "99999", "DATABASE_PORT"},
 		{"negative port", "DATABASE_PORT", "-1", "DATABASE_PORT"},
+		{"zero port", "DATABASE_PORT", "0", "DATABASE_PORT"},
+		{"port injection redacted", "DATABASE_PORT", "5432 password=secret-do-not-print", "DATABASE_PORT"},
 		{"invalid TLS mode", "DATABASE_SSLMODE", "prefer", "DATABASE_SSLMODE"},
+		{"TLS injection redacted", "DATABASE_SSLMODE", "verify-full password=secret-do-not-print", "DATABASE_SSLMODE"},
 		{"invalid DSN redacted", "DATABASE_DSN", "password='secret-do-not-print", "connection details omitted"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -58,6 +63,63 @@ func TestDatabaseConnectorValidation(t *testing.T) {
 			})
 			require.ErrorContains(t, err, tc.wantError)
 			require.NotContains(t, err.Error(), "secret-do-not-print")
+		})
+	}
+}
+
+func TestDatabaseConnectorEnvironmentLibpqParsing(t *testing.T) {
+	for _, tc := range []struct {
+		name, password, rootCert string
+	}{
+		{"default TLS", "secret", ""},
+		{"empty password", "", ""},
+		{"special credentials and root cert", `quotes' slash\ spaces sslmode=disable`, `/opt/cert bundles/rds'root\cert.pem`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := map[string]string{
+				"DATABASE_HOST": "database.example.com", "DATABASE_PORT": "5432",
+				"DATABASE_USER": `runtime' user\`, "DATABASE_DBNAME": "sub2api \t' db",
+				"DATABASE_PASSWORD": tc.password, "DATABASE_SSLROOTCERT": tc.rootCert,
+			}
+			connector, err := databaseConnector(func(key string) string { return env[key] })
+			require.NoError(t, err)
+			params := url.Values{
+				"host": {env["DATABASE_HOST"]}, "port": {"5432"},
+				"user": {env["DATABASE_USER"]}, "dbname": {env["DATABASE_DBNAME"]},
+				"sslmode": {"verify-full"}, "connect_timeout": {"10"},
+			}
+			if tc.password != "" {
+				params.Set("password", tc.password)
+			}
+			if tc.rootCert != "" {
+				params.Set("sslrootcert", tc.rootCert)
+			}
+			// Compare the real driver's parsed options without opening a socket.
+			reference := "postgresql:///?" + params.Encode()
+			want, err := pq.NewConnector(reference)
+			require.NoError(t, err)
+			require.Equal(t, want, connector)
+		})
+	}
+}
+
+func TestDatabaseConnectorRawDSNCompatibility(t *testing.T) {
+	for _, dsn := range []string{
+		" host=localhost port=5432 user=runtime password='raw\\' password' dbname=sub2api sslmode=disable application_name='raw dsn' ",
+		"postgresql://runtime:raw%20%27%5C@localhost:5432/sub2api?sslmode=disable&connect_timeout=3&application_name=raw-dsn",
+	} {
+		t.Run(dsn[:10], func(t *testing.T) {
+			connector, err := databaseConnector(func(key string) string {
+				if key == "DATABASE_DSN" {
+					return dsn
+				}
+				t.Fatalf("DATABASE_DSN must take precedence over %s", key)
+				return ""
+			})
+			require.NoError(t, err)
+			want, err := pq.NewConnector(dsn)
+			require.NoError(t, err)
+			require.Equal(t, want, connector)
 		})
 	}
 }

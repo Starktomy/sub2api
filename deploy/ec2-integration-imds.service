@@ -1,0 +1,11 @@
+[Unit]
+Description=Block Sub2API integration app UID from EC2 metadata credentials
+Before=sub2api-integration@gateway-a.service sub2api-integration@gateway-b.service sub2api-integration@control.service sub2api-integration@worker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/nft -f /etc/nftables.d/sub2api-integration.nft
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/lib/pq"
 )
@@ -36,7 +37,7 @@ func run(parent context.Context, args []string, getenv func(string) string, out 
 	timeout := flags.Duration("timeout", 10*time.Minute, "Overall migration/check timeout")
 	flags.Usage = func() {
 		fmt.Fprintln(out, "Usage: migrate [-check] [-timeout 10m]")
-		fmt.Fprintln(out, "Connection: DATABASE_DSN or DATABASE_HOST/PORT/USER/PASSWORD/DBNAME/SSLMODE.")
+		fmt.Fprintln(out, "Connection: DATABASE_DSN or DATABASE_HOST/PORT/USER/PASSWORD/DBNAME/SSLMODE/SSLROOTCERT.")
 		fmt.Fprintln(out, "SSLMODE defaults to verify-full. Do not pass credentials on the command line.")
 		flags.PrintDefaults()
 	}
@@ -118,14 +119,16 @@ func databaseConnector(getenv func(string) string) (*pq.Connector, error) {
 	default:
 		return nil, errors.New("DATABASE_SSLMODE must be disable, require, verify-ca, or verify-full")
 	}
-	quote := func(value string) string {
-		return "'" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(value) + "'"
+	database := config.DatabaseConfig{
+		Host:        host,
+		Port:        number,
+		User:        user,
+		Password:    getenv("DATABASE_PASSWORD"),
+		DBName:      name,
+		SSLMode:     sslmode,
+		SSLRootCert: getenv("DATABASE_SSLROOTCERT"),
 	}
-	dsn := "host=" + quote(host) + " port=" + quote(port) + " user=" + quote(user) +
-		" dbname=" + quote(name) + " sslmode=" + quote(sslmode) + " connect_timeout='10'"
-	if password := getenv("DATABASE_PASSWORD"); password != "" {
-		dsn += " password=" + quote(password)
-	}
+	dsn := database.DSN() + " connect_timeout=10"
 	connector, err := pq.NewConnector(dsn)
 	if err != nil {
 		return nil, errors.New("invalid database connection settings; connection details omitted")
