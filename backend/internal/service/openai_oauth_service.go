@@ -278,7 +278,7 @@ func (s *OpenAIOAuthService) RefreshTokenWithClientID(ctx context.Context, refre
 // 从 accounts/check 获取最新 plan_type、subscription_expires_at、email，
 // 然后尝试关闭训练数据共享。适用于所有获取/刷新 token 的路径。
 func (s *OpenAIOAuthService) enrichTokenInfo(ctx context.Context, tokenInfo *OpenAITokenInfo, proxyURL string) {
-	if tokenInfo.AccessToken == "" || s.privacyClientFactory == nil {
+	if isMaintenanceRefresh(ctx) || tokenInfo.AccessToken == "" || s.privacyClientFactory == nil {
 		return
 	}
 

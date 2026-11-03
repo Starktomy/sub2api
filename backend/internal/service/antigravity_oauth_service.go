@@ -271,8 +271,10 @@ func (s *AntigravityOAuthService) ValidateRefreshToken(ctx context.Context, refr
 		}
 	}
 
-	// 令牌刚获取，立即设置隐私
-	tokenInfo.PrivacyMode = setAntigravityPrivacy(ctx, tokenInfo.AccessToken, tokenInfo.ProjectID, proxyURL)
+	// External privacy mutations are excluded from durable maintenance refresh.
+	if !isMaintenanceRefresh(ctx) {
+		tokenInfo.PrivacyMode = setAntigravityPrivacy(ctx, tokenInfo.AccessToken, tokenInfo.ProjectID, proxyURL)
+	}
 
 	return tokenInfo, nil
 }
