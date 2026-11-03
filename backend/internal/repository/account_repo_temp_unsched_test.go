@@ -254,11 +254,70 @@ func TestAccountRepository_UpdateGrokOAuthCredentialsIfUnchanged_UsesExactAttemp
 	normalized := normalizeSQLWhitespace(exec.execQueries[0])
 	require.Contains(t, normalized, "WITH updated AS")
 	require.Contains(t, normalized, "credentials = $1::jsonb")
+	require.Contains(t, normalized, "a.platform = $3 AND a.type = $4")
+	require.Equal(t, service.PlatformGrok, exec.execArgs[0][2])
+	require.Equal(t, service.AccountTypeOAuth, exec.execArgs[0][3])
+	require.NotContains(t, normalized, "setup-token", "the legacy Grok boundary must stay OAuth-only")
 	require.Contains(t, normalized, "credentials = $5::jsonb")
 	require.Contains(t, normalized, "proxy_id IS NOT DISTINCT FROM $6")
 	require.Contains(t, normalized, "INSERT INTO scheduler_outbox")
 	require.Len(t, exec.execArgs[0], 7)
 	require.Equal(t, &proxyID, exec.execArgs[0][5])
+}
+
+func TestAccountRepository_UpdateOAuthCredentialsIfUnchanged_ExactStateAndAtomicOutbox(t *testing.T) {
+	for _, affected := range []int64{0, 1} {
+		t.Run(string(rune('0'+affected)), func(t *testing.T) {
+			exec := &recordingSQLExecutor{result: rowsAffectedResult(affected)}
+			repo := newAccountRepositoryWithSQL(nil, exec, nil)
+			proxyID := int64(29)
+			applied, err := repo.UpdateOAuthCredentialsIfUnchanged(context.Background(), 42,
+				map[string]any{"refresh_token": "attempted", "metadata": map[string]any{"version": 1}}, &proxyID,
+				map[string]any{"access_token": "rotated", "refresh_token": "replacement"})
+			require.NoError(t, err)
+			require.Equal(t, affected == 1, applied)
+			require.Len(t, exec.execQueries, 1)
+			query := normalizeSQLWhitespace(exec.execQueries[0])
+			require.Contains(t, query, "WITH updated AS ( UPDATE accounts AS a SET credentials = $1::jsonb, updated_at = NOW()")
+			require.Contains(t, query, "a.deleted_at IS NULL")
+			require.Contains(t, query, "a.platform IN ('anthropic', 'openai', 'gemini', 'antigravity', 'grok')")
+			require.Contains(t, query, "a.type = $4 OR (a.platform = 'anthropic' AND a.type = 'setup-token')")
+			require.Contains(t, query, "a.credentials = $5::jsonb")
+			require.Contains(t, query, "a.proxy_id IS NOT DISTINCT FROM $6")
+			require.Contains(t, query, "INSERT INTO scheduler_outbox (event_type, account_id, group_id, payload) SELECT $7, updated.id, NULL, NULL FROM updated")
+			require.NotContains(t, query, "status =", "successful rotation must not reactivate disabled/error accounts")
+			require.Len(t, exec.execArgs[0], 7)
+			require.JSONEq(t, `{"refresh_token":"attempted","metadata":{"version":1}}`, exec.execArgs[0][4].(string))
+			require.Equal(t, &proxyID, exec.execArgs[0][5])
+			require.Equal(t, service.AccountTypeOAuth, exec.execArgs[0][3])
+			require.Equal(t, service.SchedulerOutboxEventAccountChanged, exec.execArgs[0][6])
+		})
+	}
+}
+
+func TestAccountRepository_UpdateOAuthCredentialsIfUnchanged_FailsClosed(t *testing.T) {
+	t.Run("unconfigured", func(t *testing.T) {
+		var repo *accountRepository
+		applied, err := repo.UpdateOAuthCredentialsIfUnchanged(context.Background(), 42, nil, nil, nil)
+		require.Error(t, err)
+		require.False(t, applied)
+	})
+	t.Run("outbox error", func(t *testing.T) {
+		exec := &recordingSQLExecutor{err: sql.ErrConnDone}
+		repo := newAccountRepositoryWithSQL(nil, exec, nil)
+		applied, err := repo.UpdateOAuthCredentialsIfUnchanged(context.Background(), 42, nil, nil, nil)
+		require.ErrorIs(t, err, sql.ErrConnDone)
+		require.False(t, applied)
+		require.Len(t, exec.execQueries, 1)
+	})
+	t.Run("invalid credentials", func(t *testing.T) {
+		exec := &recordingSQLExecutor{}
+		repo := newAccountRepositoryWithSQL(nil, exec, nil)
+		applied, err := repo.UpdateOAuthCredentialsIfUnchanged(context.Background(), 42, nil, nil, map[string]any{"invalid": make(chan int)})
+		require.Error(t, err)
+		require.False(t, applied)
+		require.Empty(t, exec.execQueries)
+	})
 }
 
 func TestAccountRepository_ListOAuthRefreshCandidatePage_SQLFilter(t *testing.T) {

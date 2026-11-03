@@ -19,11 +19,13 @@ import (
 
 // OpenAIOAuthHandler handles OpenAI OAuth-related operations
 type OpenAIOAuthHandler struct {
-	openaiOAuthService *service.OpenAIOAuthService
-	adminService       service.AdminService
-	quotaService       openAIQuotaService
-	referralService    openAIReferralService
-	rateLimitService   openAIAccountStateRecoverer
+	openaiOAuthService    *service.OpenAIOAuthService
+	oauthRefreshAPI       openAIManualRefresher
+	tokenCacheInvalidator service.TokenCacheInvalidator
+	adminService          service.AdminService
+	quotaService          openAIQuotaService
+	referralService       openAIReferralService
+	rateLimitService      openAIAccountStateRecoverer
 }
 
 type openAIQuotaService interface {
@@ -101,6 +103,22 @@ func NewOpenAIOAuthHandler(
 	if rateLimitService != nil {
 		h.rateLimitService = rateLimitService
 	}
+	return h
+}
+
+// ProvideOpenAIOAuthHandler injects the shared refresh coordinator and cache
+// invalidator without changing the public constructor.
+func ProvideOpenAIOAuthHandler(
+	openaiOAuthService *service.OpenAIOAuthService,
+	adminService service.AdminService,
+	quotaService *service.OpenAIQuotaService,
+	rateLimitService *service.RateLimitService,
+	oauthRefreshAPI *service.OAuthRefreshAPI,
+	tokenCacheInvalidator service.TokenCacheInvalidator,
+) *OpenAIOAuthHandler {
+	h := NewOpenAIOAuthHandler(openaiOAuthService, adminService, quotaService, rateLimitService)
+	h.SetOAuthRefreshAPI(oauthRefreshAPI)
+	h.tokenCacheInvalidator = tokenCacheInvalidator
 	return h
 }
 
@@ -281,30 +299,25 @@ func (h *OpenAIOAuthHandler) RefreshAccountToken(c *gin.Context) {
 		return
 	}
 
-	// Use OpenAI OAuth service to refresh token
-	tokenInfo, err := h.openaiOAuthService.RefreshAccountToken(c.Request.Context(), account)
-	if err != nil {
-		response.ErrorFrom(c, err)
+	ctx := c.Request.Context()
+	if err := validateOpenAIManualRefresh(ctx, h.oauthRefreshAPI); err != nil {
+		scopedOpenAIError(c, err)
 		return
 	}
-
-	// Build new credentials from token info
-	newCredentials := h.openaiOAuthService.BuildAccountCredentials(tokenInfo)
-
-	// Preserve non-token settings from existing credentials
-	for k, v := range account.Credentials {
-		if _, exists := newCredentials[k]; !exists {
-			newCredentials[k] = v
+	result, err := refreshOpenAIManually(ctx, h.oauthRefreshAPI, account, h.openaiOAuthService)
+	if err != nil {
+		scopedOpenAIError(c, err)
+		return
+	}
+	updatedAccount, err := openAIManualRefreshAccount(result)
+	if err != nil {
+		scopedOpenAIError(c, err)
+		return
+	}
+	if h.tokenCacheInvalidator != nil {
+		if err := h.tokenCacheInvalidator.InvalidateToken(ctx, updatedAccount); err != nil {
+			slog.Warn("Failed to invalidate refreshed OpenAI token cache", "account_id", updatedAccount.ID, "error", err)
 		}
-	}
-	newCredentials = service.NormalizeOpenAIPersonalAccessTokenCredentials(account, tokenInfo, newCredentials)
-
-	updatedAccount, err := h.adminService.UpdateAccount(c.Request.Context(), accountID, &service.UpdateAccountInput{
-		Credentials: newCredentials,
-	})
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
 	}
 
 	response.Success(c, dto.AccountFromService(updatedAccount))

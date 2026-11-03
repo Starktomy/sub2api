@@ -109,8 +109,12 @@ func ProvideAuthService(
 }
 
 // ProvideOAuthRefreshAPI creates OAuthRefreshAPI with the default lock TTL.
-func ProvideOAuthRefreshAPI(accountRepo AccountRepository, tokenCache GeminiTokenCache) *OAuthRefreshAPI {
-	return NewOAuthRefreshAPI(accountRepo, tokenCache)
+func ProvideOAuthRefreshAPI(accountRepo AccountRepository, tokenCache GeminiTokenCache, cfg *config.Config) *OAuthRefreshAPI {
+	api := NewOAuthRefreshAPI(accountRepo, tokenCache)
+	// Split roles always require durable fencing; config-file roles cannot
+	// bypass this by omitting an environment variable. Legacy all is opt-in.
+	api.SetDurableRequired(cfg != nil && cfg.Runtime.Role != "" && cfg.Runtime.Role != config.RuntimeRoleAll)
+	return api
 }
 
 func ProvideBatchImageModelPricingResolver(resolver *ModelPricingResolver) *BatchImageModelPricingResolver {

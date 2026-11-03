@@ -15,6 +15,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -26,6 +27,7 @@ import (
 	dbpredicate "github.com/Wei-Shaw/sub2api/ent/predicate"
 	dbproxy "github.com/Wei-Shaw/sub2api/ent/proxy"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/adminaccess"
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -1630,6 +1632,35 @@ func (r *accountRepository) UpdateGrokOAuthCredentialsIfUnchanged(
 	expectedProxyID *int64,
 	credentials map[string]any,
 ) (bool, error) {
+	return r.updateOAuthCredentialsIfUnchanged(ctx, id, expectedCredentials, expectedProxyID, credentials, service.PlatformGrok)
+}
+
+// UpdateOAuthCredentialsIfUnchanged persists a provider-issued rotation only
+// while the full credential document and proxy still match the refresh attempt.
+// Like the Grok success path, it preserves status, errors and scheduling state:
+// a successful refresh must not reactivate an account disabled during the call.
+// Anthropic setup-token accounts also carry refreshable OAuth credentials.
+// The signature has no expected platform/type: eligibility is checked at commit,
+// but a concurrent change between eligible platforms/types is not detected unless
+// credentials or proxy also change.
+func (r *accountRepository) UpdateOAuthCredentialsIfUnchanged(
+	ctx context.Context,
+	id int64,
+	expectedCredentials map[string]any,
+	expectedProxyID *int64,
+	credentials map[string]any,
+) (bool, error) {
+	return r.updateOAuthCredentialsIfUnchanged(ctx, id, expectedCredentials, expectedProxyID, credentials, "")
+}
+
+func (r *accountRepository) updateOAuthCredentialsIfUnchanged(
+	ctx context.Context,
+	id int64,
+	expectedCredentials map[string]any,
+	expectedProxyID *int64,
+	credentials map[string]any,
+	platform string,
+) (bool, error) {
 	if r == nil || r.sql == nil {
 		return false, errors.New("account repository SQL executor is not configured")
 	}
@@ -1641,6 +1672,13 @@ func (r *accountRepository) UpdateGrokOAuthCredentialsIfUnchanged(
 	if err != nil {
 		return false, err
 	}
+	// Keep the legacy Grok boundary strict; generic refresh additionally supports
+	// the registered OAuth platforms and Anthropic's refreshable setup tokens.
+	eligibility := "a.platform = $3 AND a.type = $4"
+	if platform == "" {
+		eligibility = `($3 = '' AND a.platform IN ('anthropic', 'openai', 'gemini', 'antigravity', 'grok'))
+			AND (a.type = $4 OR (a.platform = 'anthropic' AND a.type = 'setup-token'))`
+	}
 	result, err := r.sql.ExecContext(ctx, `
 		WITH updated AS (
 		UPDATE accounts AS a
@@ -1648,8 +1686,7 @@ func (r *accountRepository) UpdateGrokOAuthCredentialsIfUnchanged(
 			updated_at = NOW()
 		WHERE a.id = $2
 			AND a.deleted_at IS NULL
-			AND a.platform = $3
-			AND a.type = $4
+			AND `+eligibility+`
 			AND a.credentials = $5::jsonb
 			AND a.proxy_id IS NOT DISTINCT FROM $6
 		RETURNING a.id
@@ -1659,7 +1696,7 @@ func (r *accountRepository) UpdateGrokOAuthCredentialsIfUnchanged(
 	`,
 		string(credentialsJSON),
 		id,
-		service.PlatformGrok,
+		platform,
 		service.AccountTypeOAuth,
 		string(expectedJSON),
 		expectedProxyID,
@@ -4147,4 +4184,186 @@ func (r *accountRepository) ListShadowsByParent(ctx context.Context, parentID in
 		out = append(out, accountEntityToService(m))
 	}
 	return out, nil
+}
+
+// PrepareOAuthRefreshAuthorization releases all authorization locks before the
+// remote OAuth call. The key generation is checked again at durable completion.
+func (r *accountRepository) PrepareOAuthRefreshAuthorization(ctx context.Context, id int64) (context.Context, error) {
+	if dbent.TxFromContext(ctx) != nil {
+		return ctx, infraerrors.ServiceUnavailable("OPENAI_REFRESH_TRANSACTION", "OpenAI refresh cannot run inside a database transaction")
+	}
+	principal := adminaccess.FromContext(ctx)
+	if principal == nil {
+		return ctx, nil
+	}
+	tx, err := r.client.Tx(ctx)
+	if err != nil {
+		return ctx, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err = r.authorizeOAuthRefresh(ctx, tx.Client(), id, true); err != nil {
+		return ctx, err
+	}
+	rows, err := tx.Client().QueryContext(ctx, `SELECT key_hash, updated_at FROM scoped_admin_api_keys WHERE id=$1`, principal.KeyID)
+	if err != nil {
+		return ctx, err
+	}
+	var authorization service.OAuthRefreshAuthorization
+	if !rows.Next() {
+		_ = rows.Close()
+		return ctx, service.ErrScopedAdminKeyInvalid
+	}
+	err = rows.Scan(&authorization.KeyHash, &authorization.UpdatedAt)
+	if err == nil {
+		err = rows.Err()
+	}
+	_ = rows.Close()
+	if err != nil {
+		return ctx, err
+	}
+	if err = tx.Commit(); err != nil {
+		return ctx, err
+	}
+	return service.WithOAuthRefreshAuthorization(ctx, authorization), nil
+}
+
+// authorizeOAuthRefresh must run in the short Begin/Complete transaction. Row
+// locks serialize key/creator revocation and group removal with the commit;
+// locking the account also blocks new membership inserts through the FK.
+func (r *accountRepository) authorizeOAuthRefresh(ctx context.Context, client *dbent.Client, id int64, lock bool) error {
+	principal := adminaccess.FromContext(ctx)
+	if principal == nil {
+		return nil
+	}
+	if principal.KeyID == "" || principal.CreatorID <= 0 {
+		return service.ErrScopedAdminKeyInvalid
+	}
+	suffix := ""
+	if lock {
+		suffix = " FOR SHARE"
+	}
+	rows, err := client.QueryContext(ctx, `SELECT key_hash, updated_at, policy FROM scoped_admin_api_keys WHERE id=$1 AND created_by=$2 AND enabled=true AND revoked_at IS NULL AND deleted_at IS NULL AND (expires_at IS NULL OR expires_at>clock_timestamp())`+suffix, principal.KeyID, principal.CreatorID)
+	if err != nil {
+		return err
+	}
+	if !rows.Next() {
+		_ = rows.Close()
+		return service.ErrScopedAdminKeyInvalid
+	}
+	var hash string
+	var updated time.Time
+	var rawPolicy []byte
+	err = rows.Scan(&hash, &updated, &rawPolicy)
+	if err == nil {
+		err = rows.Err()
+	}
+	_ = rows.Close()
+	if err != nil {
+		return err
+	}
+	var policy adminaccess.Policy
+	if json.Unmarshal(rawPolicy, &policy) != nil || !reflect.DeepEqual(policy, principal.Policy) {
+		return service.ErrScopedAdminKeyInvalid
+	}
+	if expected, ok := service.OAuthRefreshAuthorizationFromContext(ctx); ok && (expected.KeyHash != hash || !expected.UpdatedAt.Equal(updated)) {
+		return service.ErrScopedAdminKeyInvalid
+	}
+	rows, err = client.QueryContext(ctx, `SELECT id FROM users WHERE id=$1 AND role='admin' AND status='active' AND deleted_at IS NULL`+suffix, principal.CreatorID)
+	if err != nil {
+		return err
+	}
+	active := rows.Next()
+	err = rows.Err()
+	_ = rows.Close()
+	if err != nil {
+		return err
+	}
+	if !active {
+		return service.ErrScopedAdminKeyInvalid
+	}
+	accountLock := ""
+	if lock {
+		accountLock = " FOR UPDATE"
+	}
+	rows, err = client.QueryContext(ctx, `SELECT platform, type, parent_account_id FROM accounts WHERE id=$1 AND deleted_at IS NULL`+accountLock, id)
+	if err != nil {
+		return err
+	}
+	if !rows.Next() {
+		_ = rows.Close()
+		return infraerrors.NotFound("SCOPED_ACCOUNT_NOT_FOUND", "账户不存在")
+	}
+	resource := adminaccess.Account{ID: id}
+	var parent sql.NullInt64
+	err = rows.Scan(&resource.Platform, &resource.Type, &parent)
+	if err == nil {
+		err = rows.Err()
+	}
+	_ = rows.Close()
+	if err != nil {
+		return err
+	}
+	if parent.Valid {
+		return infraerrors.Forbidden("SCOPED_ACCOUNT_FORBIDDEN", "不支持修改影子账户")
+	}
+	rows, err = client.QueryContext(ctx, `SELECT group_id FROM account_groups WHERE account_id=$1`+accountLock, id)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var groupID int64
+		if err = rows.Scan(&groupID); err != nil {
+			break
+		}
+		resource.GroupIDs = append(resource.GroupIDs, groupID)
+	}
+	if err == nil {
+		err = rows.Err()
+	}
+	_ = rows.Close()
+	if err != nil {
+		return err
+	}
+	// Group deletion must not leave stale membership authorizing completion.
+	rows, err = client.QueryContext(ctx, `SELECT g.id FROM groups g JOIN account_groups ag ON ag.group_id=g.id WHERE ag.account_id=$1 AND g.deleted_at IS NULL`+func() string {
+		if lock {
+			return " FOR SHARE OF g"
+		}
+		return ""
+	}(), id)
+	if err != nil {
+		return err
+	}
+	resource.GroupIDs = nil
+	for rows.Next() {
+		var groupID int64
+		if err = rows.Scan(&groupID); err != nil {
+			break
+		}
+		resource.GroupIDs = append(resource.GroupIDs, groupID)
+	}
+	if err == nil {
+		err = rows.Err()
+	}
+	_ = rows.Close()
+	if err != nil {
+		return err
+	}
+	if !policy.FullAccess && !policy.AllowsAccount("accounts.refresh", resource) {
+		return infraerrors.NotFound("SCOPED_ACCOUNT_NOT_FOUND", "账户不存在")
+	}
+	rows, err = client.QueryContext(ctx, `SELECT id FROM accounts WHERE parent_account_id=$1 AND deleted_at IS NULL LIMIT 1`, id)
+	if err != nil {
+		return err
+	}
+	hasShadows := rows.Next()
+	err = rows.Err()
+	_ = rows.Close()
+	if err != nil {
+		return err
+	}
+	if !policy.FullAccess && hasShadows {
+		return infraerrors.Forbidden("SCOPED_ACCOUNT_FORBIDDEN", "请由完整管理员管理关联影子账户")
+	}
+	return nil
 }

@@ -198,6 +198,18 @@ func (h *AccountHandler) ScopedAdminKeyAccounts(c *gin.Context) {
 			return
 		}
 
+		// The authorized coordinator performs preflight and durable-commit
+		// authorization in short transactions, never around the remote call.
+		if a.IsOpenAI() {
+			updated, _, err := h.refreshSingleAccount(ctx, a)
+			if err != nil {
+				scopedAdminAccountError(c, err)
+				return
+			}
+			response.Success(c, gin.H{"id": updated.ID, "status": updated.Status})
+			return
+		}
+
 		run = func(txctx context.Context, a *service.Account) (*service.Account, error) {
 			updated, _, err := h.refreshSingleAccount(txctx, a)
 			if err != nil {

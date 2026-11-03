@@ -38,6 +38,21 @@ func (c *geminiTokenCache) DeleteAccessToken(ctx context.Context, cacheKey strin
 	return c.rdb.Del(ctx, key).Err()
 }
 
+func (c *geminiTokenCache) AcquireRefreshLease(ctx context.Context, cacheKey, owner string, ttl time.Duration) (bool, error) {
+	if owner == "" || ttl <= 0 {
+		return false, fmt.Errorf("invalid OAuth refresh lease")
+	}
+	return c.rdb.SetNX(ctx, oauthRefreshLockKeyPrefix+cacheKey, owner, ttl).Result()
+}
+
+func (c *geminiTokenCache) ReleaseRefreshLease(ctx context.Context, cacheKey, owner string) error {
+	if owner == "" {
+		return fmt.Errorf("invalid OAuth refresh lease owner")
+	}
+	return c.rdb.Eval(ctx, `if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end return 0`,
+		[]string{oauthRefreshLockKeyPrefix + cacheKey}, owner).Err()
+}
+
 func (c *geminiTokenCache) AcquireRefreshLock(ctx context.Context, cacheKey string, ttl time.Duration) (bool, error) {
 	key := fmt.Sprintf("%s%s", oauthRefreshLockKeyPrefix, cacheKey)
 	return c.rdb.SetNX(ctx, key, 1, ttl).Result()
