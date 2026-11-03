@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/url"
 	"os"
 	"strings"
@@ -83,10 +82,9 @@ func (s *OAuthSession) TryConsume() bool {
 
 // SessionStore manages xAI OAuth sessions with an optional Redis backend.
 type SessionStore struct {
-	mu        sync.RWMutex
-	sessions  map[string]*OAuthSession
-	localOnly map[string]struct{}
-	remote    *redissession.Store
+	mu       sync.RWMutex
+	sessions map[string]*OAuthSession
+	remote   *redissession.Store
 
 	lifecycleMu sync.Mutex
 	started     bool
@@ -95,23 +93,11 @@ type SessionStore struct {
 	cleanupWG   sync.WaitGroup
 }
 
-type oauthSessionDTO struct {
-	State         string    `json:"state"`
-	CodeVerifier  string    `json:"code_verifier"`
-	CodeChallenge string    `json:"code_challenge"`
-	ClientID      string    `json:"client_id,omitempty"`
-	Scope         string    `json:"scope,omitempty"`
-	ProxyURL      string    `json:"proxy_url,omitempty"`
-	RedirectURI   string    `json:"redirect_uri"`
-	CreatedAt     time.Time `json:"created_at"`
-}
-
 // NewManagedSessionStore creates a session store without starting background work.
 func NewManagedSessionStore() *SessionStore {
 	return &SessionStore{
-		sessions:  make(map[string]*OAuthSession),
-		localOnly: make(map[string]struct{}),
-		stopCh:    make(chan struct{}),
+		sessions: make(map[string]*OAuthSession),
+		stopCh:   make(chan struct{}),
 	}
 }
 
@@ -138,9 +124,7 @@ func (s *SessionStore) Start() {
 // NewManagedRedisSessionStore configures Redis without starting background work.
 func NewManagedRedisSessionStore(rdb *redis.Client) *SessionStore {
 	store := NewManagedSessionStore()
-	if rdb != nil {
-		store.remote = redissession.New(rdb, "oauth:session:xai", SessionTTL)
-	}
+	store.remote = redissession.New(rdb, "oauth:session:xai", SessionTTL)
 	return store
 }
 
@@ -152,47 +136,28 @@ func NewRedisSessionStore(rdb *redis.Client) *SessionStore {
 }
 
 func (s *SessionStore) Set(sessionID string, session *OAuthSession) {
-	if session == nil {
-		return
-	}
-	var remoteErr error
-	if s != nil && s.remote != nil {
-		remoteErr = s.remote.Set(context.Background(), sessionID, oauthSessionDTO{
-			State: session.State, CodeVerifier: session.CodeVerifier, CodeChallenge: session.CodeChallenge,
-			ClientID: session.ClientID, Scope: session.Scope, ProxyURL: session.ProxyURL,
-			RedirectURI: session.RedirectURI, CreatedAt: session.CreatedAt,
-		})
+	_ = s.Save(context.Background(), sessionID, session)
+}
+
+// Save never falls back to local storage when Redis is configured.
+func (s *SessionStore) Save(ctx context.Context, sessionID string, session *OAuthSession) error {
+	if s.remote != nil {
+		return s.remote.Set(ctx, sessionID, session)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sessions[sessionID] = session
-	if remoteErr != nil {
-		s.localOnly[sessionID] = struct{}{}
-		slog.Warn("xai oauth session Redis write failed; using process-local fallback", "error", remoteErr)
-	} else {
-		delete(s.localOnly, sessionID)
-	}
+	return nil
 }
 
 func (s *SessionStore) Get(sessionID string) (*OAuthSession, bool) {
-	if s.isLocalOnly(sessionID) {
-		return s.getMemory(sessionID)
-	}
-	if s != nil && s.remote != nil {
-		var dto oauthSessionDTO
-		ok, err := s.remote.Get(context.Background(), sessionID, &dto)
-		if err != nil || !ok || time.Since(dto.CreatedAt) > SessionTTL {
+	if s.remote != nil {
+		var session OAuthSession
+		ok, err := s.remote.Get(context.Background(), sessionID, &session)
+		if err != nil || !ok || time.Since(session.CreatedAt) > SessionTTL {
 			return nil, false
 		}
-		session := &OAuthSession{
-			State: dto.State, CodeVerifier: dto.CodeVerifier, CodeChallenge: dto.CodeChallenge,
-			ClientID: dto.ClientID, Scope: dto.Scope, ProxyURL: dto.ProxyURL,
-			RedirectURI: dto.RedirectURI, CreatedAt: dto.CreatedAt,
-		}
-		s.mu.Lock()
-		s.sessions[sessionID] = session
-		s.mu.Unlock()
-		return session, true
+		return &session, true
 	}
 	return s.getMemory(sessionID)
 }
@@ -211,39 +176,31 @@ func (s *SessionStore) getMemory(sessionID string) (*OAuthSession, bool) {
 }
 
 func (s *SessionStore) Delete(sessionID string) {
-	if s != nil && s.remote != nil {
+	if s.remote != nil {
 		_ = s.remote.Delete(context.Background(), sessionID)
+		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.sessions, sessionID)
-	delete(s.localOnly, sessionID)
 }
 
 func (s *SessionStore) TryConsumeSession(sessionID string) bool {
 	if s == nil {
 		return false
 	}
-	if s.isLocalOnly(sessionID) {
-		return s.tryConsumeMemory(sessionID)
-	}
 	if s.remote != nil {
 		ok, err := s.remote.TryConsume(context.Background(), sessionID)
 		return err == nil && ok
 	}
-	return s.tryConsumeMemory(sessionID)
-}
-
-func (s *SessionStore) isLocalOnly(sessionID string) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	_, ok := s.localOnly[sessionID]
-	return ok
-}
-
-func (s *SessionStore) tryConsumeMemory(sessionID string) bool {
-	session, ok := s.getMemory(sessionID)
-	return ok && session.TryConsume()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session, ok := s.sessions[sessionID]
+	if !ok || time.Since(session.CreatedAt) > SessionTTL {
+		return false
+	}
+	delete(s.sessions, sessionID)
+	return session.TryConsume()
 }
 
 // Stop permanently stops cleanup and waits for it to exit, even on repeated calls.
@@ -270,7 +227,6 @@ func (s *SessionStore) cleanup() {
 			for id, session := range s.sessions {
 				if time.Since(session.CreatedAt) > SessionTTL {
 					delete(s.sessions, id)
-					delete(s.localOnly, id)
 				}
 			}
 			s.mu.Unlock()

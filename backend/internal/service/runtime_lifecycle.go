@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 
@@ -46,13 +47,15 @@ type RuntimeTask struct {
 // RuntimeLifecycle makes task ownership explicit without a second scheduler.
 // It is single-use: once stopped or a start fails, it cannot be restarted.
 type RuntimeLifecycle struct {
-	operation sync.Mutex
-	mu        sync.Mutex
-	role      string
-	tasks     []RuntimeTask
-	started   []RuntimeTask
-	state     string
-	configErr error
+	operation    sync.Mutex
+	mu           sync.Mutex
+	role         string
+	tasks        []RuntimeTask
+	started      []RuntimeTask
+	state        string
+	configErr    error
+	multiReplica bool
+	coordinator  *MaintenanceCoordinator
 }
 
 func NewRuntimeLifecycle(cfg *config.Config) *RuntimeLifecycle {
@@ -61,7 +64,7 @@ func NewRuntimeLifecycle(cfg *config.Config) *RuntimeLifecycle {
 		runtime = cfg.Runtime
 	}
 	err := runtime.Validate()
-	return &RuntimeLifecycle{role: runtime.Role, state: "new", configErr: err}
+	return &RuntimeLifecycle{role: runtime.Role, state: "new", configErr: err, multiReplica: runtime.MultiReplicaWorkers}
 }
 
 // Register does not execute callbacks. Invalid/duplicate registrations are
@@ -117,7 +120,21 @@ func (l *RuntimeLifecycle) Start(ctx context.Context) error {
 	tasks := append([]RuntimeTask(nil), l.tasks...)
 	l.mu.Unlock()
 
+	if l.multiReplica && l.OwnsScope(RuntimeScopeWorker) && l.coordinator == nil {
+		l.setState("failed")
+		return errors.New("multi-replica workers require PostgreSQL maintenance coordinator")
+	}
+	var maintenance []RuntimeTask
 	for _, task := range tasks {
+		if l.multiReplica && task.Scope == RuntimeScopeWorker && l.OwnsScope(RuntimeScopeWorker) {
+			if reason := MaintenanceTaskPolicy(task.Name); reason != "" {
+				slog.Warn("maintenance task disabled in multi-replica mode", "task", task.Name, "reason", reason)
+			} else {
+				maintenance = append(maintenance, task)
+				slog.Info("maintenance task admitted for PostgreSQL coordination", "task", task.Name)
+			}
+			continue
+		}
 		if !runtimeScopeEnabled(l.role, task.Scope) {
 			continue
 		}
@@ -131,6 +148,15 @@ func (l *RuntimeLifecycle) Start(ctx context.Context) error {
 		}
 		l.mu.Lock()
 		l.started = append(l.started, task)
+		l.mu.Unlock()
+	}
+	if l.multiReplica && l.OwnsScope(RuntimeScopeWorker) {
+		if err := l.coordinator.Start(ctx, maintenance); err != nil {
+			l.setState("failed")
+			return err
+		}
+		l.mu.Lock()
+		l.started = append(l.started, RuntimeTask{Name: "MaintenanceCoordinator", Scope: RuntimeScopeWorker, Stop: l.coordinator.Stop})
 		l.mu.Unlock()
 	}
 	l.setState("running")
@@ -246,7 +272,26 @@ func registerRuntimeService(lifecycle *RuntimeLifecycle, name string, scope Runt
 	}
 	lifecycle.Register(RuntimeTask{
 		Name: name, Scope: scope, StopPhase: phase,
-		Start: func(context.Context) error { svc.Start(); return nil },
-		Stop:  func(context.Context) error { svc.Stop(); return nil },
+		Start: func(ctx context.Context) error {
+			if contextual, ok := svc.(interface{ StartContext(context.Context) }); ok {
+				contextual.StartContext(ctx)
+			} else {
+				svc.Start()
+			}
+			return nil
+		},
+		Stop: func(context.Context) error { svc.Stop(); return nil },
 	})
+}
+
+// SetMaintenanceCoordinator installs the shared worker election before startup.
+// Constructors and this setter never acquire locks or launch goroutines.
+func (l *RuntimeLifecycle) SetMaintenanceCoordinator(coordinator *MaintenanceCoordinator) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.state != "new" {
+		l.configErr = errors.Join(l.configErr, errors.New("maintenance coordinator installed after startup"))
+		return
+	}
+	l.coordinator = coordinator
 }

@@ -13,7 +13,9 @@ import (
 
 var ErrNotConfigured = errors.New("redis session store not configured")
 
-// Store persists JSON sessions and single-use markers under one namespace.
+// Store persists short-lived JSON sessions under one namespace. Payloads include
+// sensitive PKCE verifiers: secure Redis access and transport; never log payloads.
+// There is no process-local or file fallback when Redis is unavailable.
 type Store struct {
 	rdb    *redis.Client
 	prefix string
@@ -105,21 +107,11 @@ func (s *Store) TryConsume(ctx context.Context, id string) (bool, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ttl := s.ttl
-	if remaining, err := s.rdb.TTL(ctx, s.dataKey(id)).Result(); err == nil && remaining > 0 {
-		ttl = remaining
-	}
-	ok, err := s.rdb.SetNX(ctx, s.usedKey(id), "1", ttl).Result()
-	if err != nil || !ok {
-		return ok, err
-	}
-	exists, err := s.rdb.Exists(ctx, s.dataKey(id)).Result()
-	if err != nil {
-		return false, err
-	}
-	if exists == 0 {
-		_ = s.rdb.Del(ctx, s.usedKey(id)).Err()
-		return false, nil
-	}
-	return true, nil
+	// DEL is atomic and removes sensitive session material before upstream I/O.
+	// Honor markers written by older replicas during rolling upgrades.
+	result, err := s.rdb.Eval(ctx, `
+ if redis.call('EXISTS', KEYS[2]) == 1 then return 0 end
+ return redis.call('DEL', KEYS[1])
+ `, []string{s.dataKey(id), s.usedKey(id)}).Int64()
+	return result == 1, err
 }

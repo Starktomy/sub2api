@@ -31,7 +31,11 @@ type SubscriptionExpiryService struct {
 	settingRepo              SettingRepository
 	notificationEmailService *NotificationEmailService
 	interval                 time.Duration
+	multiReplica             bool
 	stopCh                   chan struct{}
+	workerCtx                context.Context
+	workerCancel             context.CancelFunc
+	lifecycleMu              sync.Mutex
 	stopOnce                 sync.Once
 	wg                       sync.WaitGroup
 
@@ -71,11 +75,26 @@ func (s *SubscriptionExpiryService) SetNotificationEmailService(notificationEmai
 	s.notificationEmailService = notificationEmailService
 }
 
-func (s *SubscriptionExpiryService) Start() {
+func (s *SubscriptionExpiryService) Start() { s.StartContext(context.Background()) }
+
+func (s *SubscriptionExpiryService) StartContext(parent context.Context) {
 	if s == nil || s.userSubRepo == nil || s.interval <= 0 {
 		return
 	}
+	s.lifecycleMu.Lock()
+	if s.workerCancel != nil {
+		s.lifecycleMu.Unlock()
+		return
+	}
+	select {
+	case <-s.stopCh:
+		s.lifecycleMu.Unlock()
+		return
+	default:
+	}
+	s.workerCtx, s.workerCancel = context.WithCancel(parent)
 	s.wg.Add(1)
+	s.lifecycleMu.Unlock()
 	go func() {
 		defer s.wg.Done()
 		ticker := time.NewTicker(s.interval)
@@ -86,6 +105,8 @@ func (s *SubscriptionExpiryService) Start() {
 			select {
 			case <-ticker.C:
 				s.runOnce()
+			case <-s.workerCtx.Done():
+				return
 			case <-s.stopCh:
 				return
 			}
@@ -97,14 +118,19 @@ func (s *SubscriptionExpiryService) Stop() {
 	if s == nil {
 		return
 	}
+	s.lifecycleMu.Lock()
+	if s.workerCancel != nil {
+		s.workerCancel()
+	}
 	s.stopOnce.Do(func() {
 		close(s.stopCh)
 	})
+	s.lifecycleMu.Unlock()
 	s.wg.Wait()
 }
 
 func (s *SubscriptionExpiryService) runOnce() {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(s.maintenanceContext(), 10*time.Second)
 	defer cancel()
 
 	updated, err := s.userSubRepo.BatchUpdateExpiredStatus(ctx)
@@ -115,7 +141,9 @@ func (s *SubscriptionExpiryService) runOnce() {
 	if updated > 0 {
 		log.Printf("[SubscriptionExpiry] Updated %d expired subscriptions", updated)
 	}
-	s.sendExpiryReminders(ctx)
+	if !s.multiReplica {
+		s.sendExpiryReminders(ctx)
+	}
 }
 
 func (s *SubscriptionExpiryService) sendExpiryReminders(ctx context.Context) {
@@ -213,3 +241,16 @@ func (s *SubscriptionExpiryService) sendExpiryReminderIfDue(ctx context.Context,
 		log.Printf("[SubscriptionExpiry] Send expiry reminder failed: subscription=%d user=%d err=%v", sub.ID, sub.UserID, err)
 	}
 }
+
+func (s *SubscriptionExpiryService) maintenanceContext() context.Context {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.workerCtx != nil {
+		return s.workerCtx
+	}
+	return context.Background()
+}
+
+// SetMultiReplicaMaintenance disables unclaimed email sends, retaining only the
+// atomic conditional SQL subscription expiry sweep. Call before Start.
+func (s *SubscriptionExpiryService) SetMultiReplicaMaintenance() { s.multiReplica = true }

@@ -11,7 +11,10 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/oauth"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/google/wire"
 	"github.com/redis/go-redis/v9"
@@ -21,7 +24,7 @@ import (
 func ProvideGrokOAuthService(lifecycle *RuntimeLifecycle, proxyRepo ProxyRepository, oauthClient GrokOAuthClient, cfg *config.Config, redisClient *redis.Client) *GrokOAuthService {
 	svc := NewManagedGrokOAuthService(proxyRepo, oauthClient, cfg)
 	// wire.go is depguard-exempt for redis; construct the Redis session store here.
-	if redisClient != nil {
+	if sharedOAuthSessionsRequired(cfg) || redisClient != nil {
 		svc = svc.WithSessionStore(xai.NewManagedRedisSessionStore(redisClient))
 	}
 	registerRuntimeService(lifecycle, "GrokOAuthService", RuntimeScopeControl, svc)
@@ -133,8 +136,13 @@ func ProvideOpenAIOAuthService(
 	proxyRepo ProxyRepository,
 	oauthClient OpenAIOAuthClient,
 	privacyClientFactory PrivacyClientFactory,
+	cfg *config.Config,
+	redisClient *redis.Client,
 ) *OpenAIOAuthService {
 	svc := NewManagedOpenAIOAuthService(proxyRepo, oauthClient)
+	if sharedOAuthSessionsRequired(cfg) {
+		svc.sessionStore = openai.NewManagedRedisSessionStore(redisClient)
+	}
 	svc.SetPrivacyClientFactory(privacyClientFactory)
 	registerRuntimeService(lifecycle, "OpenAIOAuthService", RuntimeScopeControl, svc)
 	return svc
@@ -473,11 +481,14 @@ func ProvideProxyExpiryService(lifecycle *RuntimeLifecycle, proxyRepo ProxyRepos
 }
 
 // ProvideSubscriptionExpiryService creates and starts SubscriptionExpiryService.
-func ProvideSubscriptionExpiryService(lifecycle *RuntimeLifecycle, userSubRepo UserSubscriptionRepository, settingRepo SettingRepository, notificationEmailService *NotificationEmailService, lockCache LeaderLockCache, db *sql.DB) *SubscriptionExpiryService {
+func ProvideSubscriptionExpiryService(lifecycle *RuntimeLifecycle, userSubRepo UserSubscriptionRepository, settingRepo SettingRepository, notificationEmailService *NotificationEmailService, lockCache LeaderLockCache, db *sql.DB, cfg *config.Config) *SubscriptionExpiryService {
 	svc := NewSubscriptionExpiryService(userSubRepo, time.Minute)
 	svc.SetSettingRepository(settingRepo)
 	svc.SetNotificationEmailService(notificationEmailService)
 	svc.SetLeaderLock(lockCache, db)
+	if cfg != nil && cfg.Runtime.MultiReplicaWorkers {
+		svc.SetMultiReplicaMaintenance()
+	}
 	registerRuntimeService(lifecycle, "SubscriptionExpiryService", RuntimeScopeWorker, svc)
 	return svc
 }
@@ -937,9 +948,19 @@ func ProvideAPIKeyService(
 	return svc
 }
 
+// ProvideRuntimeLifecycle attaches maintenance coordination only for the
+// explicit multi-replica worker experiment. All other roles keep legacy starts.
+func ProvideRuntimeLifecycle(cfg *config.Config, locker MaintenanceLocker) *RuntimeLifecycle {
+	lifecycle := NewRuntimeLifecycle(cfg)
+	if cfg != nil && cfg.Runtime.MultiReplicaWorkers {
+		lifecycle.SetMaintenanceCoordinator(NewMaintenanceCoordinator(locker))
+	}
+	return lifecycle
+}
+
 // ProviderSet is the Wire provider set for all services
 var ProviderSet = wire.NewSet(
-	NewRuntimeLifecycle,
+	ProvideRuntimeLifecycle,
 	// Core services
 	ProvideAuthService,
 	NewPasskeyService,
@@ -1174,4 +1195,37 @@ func ProvideClaudeResetCreditService(accounts AccountRepository, tokens *ClaudeT
 	s := NewClaudeResetCreditService(accounts, tokens, proxies, settings)
 	s.ConfigureRedemption(idem, locks)
 	return s
+}
+
+// Split Control must share sensitive authorization state across replicas. Legacy
+// all keeps its existing local provider stores (and configured xAI Redis store).
+func sharedOAuthSessionsRequired(cfg *config.Config) bool {
+	return cfg != nil && cfg.Runtime.Role == config.RuntimeRoleControl
+}
+
+func ProvideOAuthService(lifecycle *RuntimeLifecycle, proxies ProxyRepository, client ClaudeOAuthClient, cfg *config.Config, redisClient *redis.Client) *OAuthService {
+	svc := NewManagedOAuthService(proxies, client)
+	if sharedOAuthSessionsRequired(cfg) {
+		svc.sessionStore = oauth.NewManagedRedisSessionStore(redisClient)
+	}
+	registerRuntimeService(lifecycle, "OAuthService", RuntimeScopeControl, svc)
+	return svc
+}
+
+func ProvideGeminiOAuthService(lifecycle *RuntimeLifecycle, proxies ProxyRepository, client GeminiOAuthClient, codeAssist GeminiCliCodeAssistClient, drive geminicli.DriveClient, cfg *config.Config, redisClient *redis.Client) *GeminiOAuthService {
+	svc := NewManagedGeminiOAuthService(proxies, client, codeAssist, drive, cfg)
+	if sharedOAuthSessionsRequired(cfg) {
+		svc.sessionStore = geminicli.NewManagedRedisSessionStore(redisClient)
+	}
+	registerRuntimeService(lifecycle, "GeminiOAuthService", RuntimeScopeControl, svc)
+	return svc
+}
+
+func ProvideAntigravityOAuthService(lifecycle *RuntimeLifecycle, proxies ProxyRepository, cfg *config.Config, redisClient *redis.Client) *AntigravityOAuthService {
+	svc := NewManagedAntigravityOAuthService(proxies)
+	if sharedOAuthSessionsRequired(cfg) {
+		svc.sessionStore = antigravity.NewManagedRedisSessionStore(redisClient)
+	}
+	registerRuntimeService(lifecycle, "AntigravityOAuthService", RuntimeScopeControl, svc)
+	return svc
 }

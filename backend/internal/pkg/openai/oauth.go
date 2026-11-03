@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -11,6 +12,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/redissession"
+	"github.com/redis/go-redis/v9"
 )
 
 // OpenAI OAuth Constants (from CRS project - Codex CLI client)
@@ -49,8 +53,9 @@ type OAuthSession struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
-// SessionStore manages OAuth sessions in memory
+// SessionStore manages OAuth sessions with an optional fail-closed Redis backend.
 type SessionStore struct {
+	remote   *redissession.Store
 	mu       sync.RWMutex
 	sessions map[string]*OAuthSession
 
@@ -91,13 +96,54 @@ func (s *SessionStore) Start() {
 
 // Set stores a session
 func (s *SessionStore) Set(sessionID string, session *OAuthSession) {
+	_ = s.Save(context.Background(), sessionID, session)
+}
+
+// Save persists a session without falling back to memory when Redis is configured.
+func (s *SessionStore) Save(ctx context.Context, sessionID string, session *OAuthSession) error {
+	if s.remote != nil {
+		return s.remote.Set(ctx, sessionID, session)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sessions[sessionID] = session
+	return nil
+}
+
+// NewManagedRedisSessionStore always selects Redis, including a missing client (fail closed).
+func NewManagedRedisSessionStore(rdb *redis.Client) *SessionStore {
+	store := NewManagedSessionStore()
+	store.remote = redissession.New(rdb, "oauth:session:openai", SessionTTL)
+	return store
+}
+
+// TryConsumeSession atomically removes a session before any upstream exchange.
+// A failed or ambiguous exchange intentionally cannot reuse the authorization session.
+func (s *SessionStore) TryConsumeSession(sessionID string) bool {
+	if s.remote != nil {
+		ok, err := s.remote.TryConsume(context.Background(), sessionID)
+		return err == nil && ok
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session, ok := s.sessions[sessionID]
+	if !ok || time.Since(session.CreatedAt) > SessionTTL {
+		return false
+	}
+	delete(s.sessions, sessionID)
+	return true
 }
 
 // Get retrieves a session
 func (s *SessionStore) Get(sessionID string) (*OAuthSession, bool) {
+	if s.remote != nil {
+		var session OAuthSession
+		ok, err := s.remote.Get(context.Background(), sessionID, &session)
+		if err != nil || !ok || time.Since(session.CreatedAt) > SessionTTL {
+			return nil, false
+		}
+		return &session, true
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	session, ok := s.sessions[sessionID]
@@ -113,6 +159,10 @@ func (s *SessionStore) Get(sessionID string) (*OAuthSession, bool) {
 
 // Delete removes a session
 func (s *SessionStore) Delete(sessionID string) {
+	if s.remote != nil {
+		_ = s.remote.Delete(context.Background(), sessionID)
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.sessions, sessionID)
