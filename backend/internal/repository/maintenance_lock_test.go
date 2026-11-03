@@ -12,7 +12,7 @@ import (
 func TestMaintenanceDedicatedSessionAcquireCheckRelease(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	repo := NewMaintenanceLockRepository(db)
 	mock.ExpectQuery("SELECT pg_try_advisory_lock").WithArgs(maintenanceLockNamespace, maintenanceLockID).WillReturnRows(sqlmock.NewRows([]string{"locked"}).AddRow(true))
 	session, ok, err := repo.TryAcquire(context.Background())
@@ -30,7 +30,7 @@ func TestMaintenanceDedicatedSessionAcquireCheckRelease(t *testing.T) {
 func TestMaintenanceStandbyReturnsConnection(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	mock.ExpectQuery("SELECT pg_try_advisory_lock").WillReturnRows(sqlmock.NewRows([]string{"locked"}).AddRow(false))
 	session, ok, err := NewMaintenanceLockRepository(db).TryAcquire(context.Background())
 	require.NoError(t, err)
@@ -43,7 +43,7 @@ func TestMaintenanceStandbyReturnsConnection(t *testing.T) {
 func TestMaintenanceLostSessionIsNotHealthy(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	mock.ExpectQuery("SELECT pg_try_advisory_lock").WillReturnRows(sqlmock.NewRows([]string{"locked"}).AddRow(true))
 	session, ok, err := NewMaintenanceLockRepository(db).TryAcquire(context.Background())
 	require.NoError(t, err)
@@ -59,7 +59,7 @@ func TestMaintenanceLostSessionIsNotHealthy(t *testing.T) {
 func TestFencedMaintenanceAllocationFailureDiscardsSession(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	mock.ExpectQuery("SELECT pg_try_advisory_lock").WillReturnRows(sqlmock.NewRows([]string{"locked"}).AddRow(true))
 	mock.ExpectBegin()
 	expectMaintenanceGenerationLock(mock, true)

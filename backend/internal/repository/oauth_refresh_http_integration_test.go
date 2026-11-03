@@ -26,7 +26,11 @@ func (s *AccountRepoSuite) TestOAuthRefreshConcreteHTTPDurableNoReplay() {
 				calls.Add(1)
 				_, _ = io.Copy(io.Discard, r.Body)
 				if outcome == "disconnect" {
-					conn, _, err := w.(http.Hijacker).Hijack()
+					hijacker, ok := w.(http.Hijacker)
+					if !ok {
+						panic("loopback server does not support hijacking")
+					}
+					conn, _, err := hijacker.Hijack()
 					if err == nil {
 						_ = conn.Close()
 					}

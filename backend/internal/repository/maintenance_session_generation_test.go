@@ -23,7 +23,7 @@ func TestFencedMaintenanceSessionTransactionRejectsReleasedAndLegacy(t *testing.
 func TestFencedMaintenanceConstructorAndSessionGuard(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	mock.ExpectQuery("SELECT pg_try_advisory_lock").WillReturnRows(sqlmock.NewRows([]string{"held"}).AddRow(true))
 	mock.ExpectBegin()
 	expectMaintenanceGenerationLock(mock, true)
@@ -32,7 +32,8 @@ func TestFencedMaintenanceConstructorAndSessionGuard(t *testing.T) {
 	got, ok, err := NewFencedMaintenanceLockRepository(db).TryAcquire(context.Background())
 	require.NoError(t, err)
 	require.True(t, ok)
-	session := got.(*maintenanceSession)
+	session, ok := got.(*maintenanceSession)
+	require.True(t, ok)
 	fence := session.Fence()
 	require.True(t, fence.Valid())
 	require.Equal(t, int64(11), fence.Generation)

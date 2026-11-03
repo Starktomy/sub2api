@@ -46,7 +46,11 @@ func TestMaintenanceConcreteOAuthClientsSingleRequest(t *testing.T) {
 						w.Header().Set("Location", "/redirect-target")
 						w.WriteHeader(307)
 					case "disconnect":
-						conn, _, err := w.(http.Hijacker).Hijack()
+						hijacker, ok := w.(http.Hijacker)
+						if !ok {
+							panic("loopback server does not support hijacking")
+						}
+						conn, _, err := hijacker.Hijack()
 						if err == nil {
 							_ = conn.Close()
 						}

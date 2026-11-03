@@ -15,7 +15,7 @@ import (
 // Durable operations own their short transactions; these tests deliberately
 // use the disposable container's non-transactional client, unlike legacy suite.
 func (s *AccountRepoSuite) useDurableRefreshClient() {
-	s.client = integrationEntClient
+	s.client = testEntClient(s.T())
 	s.repo = newAccountRepositoryWithSQL(s.client, integrationDB, nil)
 }
 

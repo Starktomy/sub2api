@@ -101,7 +101,6 @@ type outboxCleanupRepo struct {
 	maxIDErr            error
 	lockAcquired        bool
 	lockAttempts        int
-	releaseCount        int
 	deleteCalls         []outboxCleanupDeleteCall
 	firstCreatedAfterID []int64
 }
@@ -798,14 +797,6 @@ func TestSchedulerSnapshotServiceEmptyPollDoesNotReleaseRunningRebuild(t *testin
 	if calls := cache.listCalls(); calls != 1 {
 		t.Fatalf("expected one rebuild generation, got %d", calls)
 	}
-}
-
-func int64Range(start, end int64) []int64 {
-	values := make([]int64, 0, end-start+1)
-	for id := start; id <= end; id++ {
-		values = append(values, id)
-	}
-	return values
 }
 
 type cancelAfterEffectCache struct {

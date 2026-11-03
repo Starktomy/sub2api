@@ -97,15 +97,18 @@ func TestManagedDataLiveContracts(t *testing.T) {
 		require.NoError(t, err)
 		require.InDelta(t, 8.75, balance, 0.00000001)
 		messages := make(chan string, 2)
-		managed := a.(interface {
+		managed, ok := a.(interface {
 			SubscribeSubscriptionCacheInvalidationManaged(context.Context, func(string)) (func(), error)
 		})
+		require.True(t, ok)
 		stop, err := managed.SubscribeSubscriptionCacheInvalidationManaged(ctx, func(message string) { messages <- message })
 		require.NoError(t, err)
 		defer stop()
-		require.NoError(t, b.(interface {
+		publisher, ok := b.(interface {
 			PublishSubscriptionCacheInvalidation(context.Context, string) error
-		}).PublishSubscriptionCacheInvalidation(ctx, "managed-live-"+runID))
+		})
+		require.True(t, ok)
+		require.NoError(t, publisher.PublishSubscriptionCacheInvalidation(ctx, "managed-live-"+runID))
 		select {
 		case message := <-messages:
 			require.Equal(t, "managed-live-"+runID, message)

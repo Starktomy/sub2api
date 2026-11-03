@@ -55,7 +55,7 @@ func refreshRequestClient(ctx context.Context, proxyURL string, timeout time.Dur
 				return nil, nil, err
 			}
 			cs := conn.ConnectionState()
-			return conn, &tls.ConnectionState{Version: cs.Version, HandshakeComplete: cs.HandshakeComplete, NegotiatedProtocol: cs.NegotiatedProtocol, NegotiatedProtocolIsMutual: cs.NegotiatedProtocolIsMutual, ServerName: cs.ServerName, PeerCertificates: cs.PeerCertificates, VerifiedChains: cs.VerifiedChains}, nil
+			return conn, &tls.ConnectionState{Version: cs.Version, HandshakeComplete: cs.HandshakeComplete, NegotiatedProtocol: cs.NegotiatedProtocol, ServerName: cs.ServerName, PeerCertificates: cs.PeerCertificates, VerifiedChains: cs.VerifiedChains}, nil
 		})
 	}
 	client.SetCommonRetryCount(0).EnableForceHTTP1().DisableKeepAlives().SetRedirectPolicy(req.NoRedirectPolicy())

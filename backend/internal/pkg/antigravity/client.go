@@ -403,7 +403,11 @@ func (c *Client) RefreshToken(ctx context.Context, refreshToken string) (*TokenR
 	client := c.httpClient
 	if refreshpolicy.SingleAttempt(ctx) {
 		// Clone rather than mutate the shared legacy client/transport.
-		transport := http.DefaultTransport.(*http.Transport).Clone()
+		base, ok := http.DefaultTransport.(*http.Transport)
+		if !ok {
+			return nil, errors.New("strict refresh requires a configurable default HTTP transport")
+		}
+		transport := base.Clone()
 		if existing, ok := client.Transport.(*http.Transport); ok {
 			transport = existing.Clone()
 		} else if client.Transport != nil {

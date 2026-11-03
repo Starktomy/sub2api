@@ -51,10 +51,10 @@ func expectOutboxFence(mock sqlmock.Sqlmock, generation int64, owner string) {
 func TestBindFencedSchedulerOutboxRejectsInvalidSessions(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	conn, err := db.Conn(context.Background())
 	require.NoError(t, err)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	var typedNil *maintenanceSession
 	for _, session := range []service.MaintenanceSession{
 		nil, typedNil, forgedOutboxMaintenanceSession{},
@@ -203,10 +203,10 @@ func TestFencedSchedulerOutboxExactAcknowledgment(t *testing.T) {
 func TestFencedSchedulerOutboxReadOnlyObservationsUsePool(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	conn, err := db.Conn(context.Background())
 	require.NoError(t, err)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	s := &maintenanceSession{conn: conn, fence: service.MaintenanceFence{Generation: 7, Owner: strings.Repeat("a", 64)}}
 	repo, err := BindFencedSchedulerOutbox(db, s)
 	require.NoError(t, err)

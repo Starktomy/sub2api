@@ -5,12 +5,14 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -23,7 +25,7 @@ import (
 
 	"entgo.io/ent/dialect"
 	entsql "entgo.io/ent/dialect/sql"
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 	redisclient "github.com/redis/go-redis/v9"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
@@ -40,7 +42,18 @@ var (
 	integrationRedis     *redisclient.Client
 
 	redisNamespaceSeq uint64
+
+	// Database integration tests are serial (no t.Parallel). Track ownership so
+	// cleanup is registered before transaction rollbacks, including tests that
+	// obtain a committing client after opening a rollback-only transaction.
+	integrationFixtureTests        sync.Map // map[*testing.T]*integrationFixtureTest
+	integrationFixtureTables       []string
+	integrationFixtureSeededTables []string
 )
+
+type integrationFixtureTest struct {
+	committed bool
+}
 
 func TestMain(m *testing.M) {
 	ctx := context.Background()
@@ -98,6 +111,11 @@ func TestMain(m *testing.M) {
 	}
 	if err := ApplyMigrations(ctx, integrationDB); err != nil {
 		log.Printf("failed to apply db migrations: %v", err)
+		os.Exit(1)
+	}
+
+	if err := snapshotIntegrationFixtures(ctx); err != nil {
+		log.Printf("failed to snapshot migration baseline: %v", err)
 		os.Exit(1)
 	}
 
@@ -200,21 +218,112 @@ func pingWithTimeout(ctx context.Context, db *sql.DB, timeout time.Duration) err
 	return db.PingContext(pingCtx)
 }
 
+// snapshotIntegrationFixtures records the migrated state, including settings and
+// seeded groups, in a private schema in the disposable PostgreSQL container.
+// Migration bookkeeping is never truncated; maintenance_generation is also
+// excluded so its fencing authority remains monotonic across test boundaries.
+// Never use this reset mechanism with an external/shared application database.
+func snapshotIntegrationFixtures(ctx context.Context) error {
+	if _, err := integrationDB.ExecContext(ctx, "CREATE SCHEMA integration_fixture_baseline"); err != nil {
+		return err
+	}
+	rows, err := integrationDB.QueryContext(ctx, `SELECT tablename FROM pg_tables
+WHERE schemaname = 'public'
+  AND tablename NOT IN ('schema_migrations', 'atlas_schema_revisions', 'maintenance_generation')
+ORDER BY tablename`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var table string
+		if err := rows.Scan(&table); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		integrationFixtureTables = append(integrationFixtureTables, pq.QuoteIdentifier("public")+"."+pq.QuoteIdentifier(table))
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, table := range integrationFixtureTables {
+		baseline := strings.Replace(table, `"public".`, `"integration_fixture_baseline".`, 1)
+		result, err := integrationDB.ExecContext(ctx, "CREATE TABLE "+baseline+" AS TABLE "+table)
+		if err != nil {
+			return fmt.Errorf("snapshot %s: %w", table, err)
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if count > 0 {
+			integrationFixtureSeededTables = append(integrationFixtureSeededTables, table)
+		}
+	}
+	return nil
+}
+
+func trackIntegrationFixtures(t *testing.T) *integrationFixtureTest {
+	t.Helper()
+	state := &integrationFixtureTest{}
+	actual, loaded := integrationFixtureTests.LoadOrStore(t, state)
+	if loaded {
+		return actual.(*integrationFixtureTest)
+	}
+	t.Cleanup(func() {
+		defer integrationFixtureTests.Delete(t)
+		if !state.committed {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		tx, err := integrationDB.BeginTx(ctx, nil)
+		require.NoError(t, err, "begin committed fixture cleanup")
+		defer func() { _ = tx.Rollback() }()
+		// Restore exact seed rows without firing application triggers or depending
+		// on FK insertion order. This is transaction-local and requires the
+		// disposable container's superuser; it never changes the shared pool.
+		_, err = tx.ExecContext(ctx, "SET LOCAL session_replication_role = replica")
+		require.NoError(t, err, "disable triggers while restoring migration baseline")
+		_, err = tx.ExecContext(ctx, "TRUNCATE TABLE "+strings.Join(integrationFixtureTables, ", "))
+		require.NoError(t, err, "truncate committed fixtures")
+		for _, table := range integrationFixtureSeededTables {
+			baseline := strings.Replace(table, `"public".`, `"integration_fixture_baseline".`, 1)
+			_, err = tx.ExecContext(ctx, "INSERT INTO "+table+" SELECT * FROM "+baseline)
+			require.NoError(t, err, "restore migration baseline for %s", table)
+		}
+		// Deliberately do not restart sequences: callers must not depend on IDs
+		// being reused, and seeded primary keys must never collide with fixtures.
+		require.NoError(t, tx.Commit(), "commit fixture cleanup")
+	})
+	return state
+}
+
 func testTx(t *testing.T) *sql.Tx {
 	t.Helper()
+	trackIntegrationFixtures(t)
 
 	tx, err := integrationDB.BeginTx(context.Background(), nil)
 	require.NoError(t, err, "begin tx")
 	t.Cleanup(func() {
-		_ = tx.Rollback()
+		err := tx.Rollback()
+		if !errors.Is(err, sql.ErrTxDone) {
+			require.NoError(t, err, "rollback test transaction")
+		}
 	})
 	return tx
 }
 
-// testEntClient 返回全局的 ent client，用于测试需要内部管理事务的代码（如 Create/Update 方法）。
-// 注意：此 client 的操作会真正写入数据库，测试结束后不会自动回滚。
+// testEntClient returns a committing client for code that manages its own
+// transactions. Once all test transactions and explicit cleanups have finished,
+// the harness removes committed fixtures and restores the migration baseline.
+// Database integration tests using this helper must not call t.Parallel.
 func testEntClient(t *testing.T) *dbent.Client {
 	t.Helper()
+	trackIntegrationFixtures(t).committed = true
 	return integrationEntClient
 }
 
@@ -222,11 +331,15 @@ func testEntClient(t *testing.T) *dbent.Client {
 // 测试结束后会自动回滚，不会影响数据库状态。
 func testEntTx(t *testing.T) *dbent.Tx {
 	t.Helper()
+	trackIntegrationFixtures(t)
 
 	tx, err := integrationEntClient.Tx(context.Background())
 	require.NoError(t, err, "begin ent tx")
 	t.Cleanup(func() {
-		_ = tx.Rollback()
+		err := tx.Rollback()
+		if !errors.Is(err, sql.ErrTxDone) {
+			require.NoError(t, err, "rollback test transaction")
+		}
 	})
 	return tx
 }
@@ -243,6 +356,38 @@ func testEntSQLTx(t *testing.T) (*dbent.Client, *sql.Tx) {
 	// 直接失败，避免旧测试误用导致的事务嵌套 panic。
 	t.Fatalf("testEntSQLTx 已弃用：请使用 testEntClient 或 testEntTx")
 	return nil, nil
+}
+
+func TestCommittedIntegrationFixtureCleanup(t *testing.T) {
+	ctx := context.Background()
+	var userID, accountID int64
+	t.Run("committed fixtures", func(t *testing.T) {
+		// Exercise the same ordering as AccountRepoSuite's durable tests.
+		testEntTx(t)
+		client := testEntClient(t)
+		require.Same(t, client, testEntClient(t), "repeated helper calls share one cleanup")
+		user, err := client.User.Create().SetEmail("harness-cleanup@example.com").SetPasswordHash("test").Save(ctx)
+		require.NoError(t, err)
+		userID = user.ID
+		account, err := client.Account.Create().SetName("harness-cleanup").SetPlatform("openai").SetType("oauth").Save(ctx)
+		require.NoError(t, err)
+		accountID = account.ID
+		_, err = integrationDB.ExecContext(ctx, `INSERT INTO settings (key, value) VALUES ('integration_fixture_cleanup', 'test')`)
+		require.NoError(t, err)
+	})
+	var remaining int
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT
+		(SELECT COUNT(*) FROM users WHERE id = $1) +
+		(SELECT COUNT(*) FROM accounts WHERE id = $2) +
+		(SELECT COUNT(*) FROM settings WHERE key = 'integration_fixture_cleanup')`, userID, accountID).Scan(&remaining))
+	require.Zero(t, remaining, "committed fixtures must not leak past a test boundary")
+	var baselineMatches bool
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT NOT EXISTS (
+		(SELECT * FROM public.settings EXCEPT SELECT * FROM integration_fixture_baseline.settings)
+		UNION ALL
+		(SELECT * FROM integration_fixture_baseline.settings EXCEPT SELECT * FROM public.settings)
+	)`).Scan(&baselineMatches))
+	require.True(t, baselineMatches, "cleanup must preserve exact migration settings seeds")
 }
 
 func testRedis(t *testing.T) *redisclient.Client {
