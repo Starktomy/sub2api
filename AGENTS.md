@@ -22,8 +22,9 @@
 
 - Never put usable credentials, tokens, database passwords, or private keys in code, Markdown, Terraform variables/examples, logs, or Git.
 - Read-only AWS discovery is permitted. Before creating/modifying billable or outward-facing AWS resources, review the target account, region, deploy role, plan, and cost scope with the user.
-- Do not provision with AWS account root credentials. Use a dedicated deployment role with least privilege.
-- Do not run `terraform apply`, `terraform destroy`, publish images, or change DNS without explicit authorization for that deployment.
+- Do not provision data or application resources with AWS account root credentials. The user explicitly authorized the integration IAM bootstrap; root was used only to create/attach dedicated roles and administer scoped policies. Subsequent data/state operations use the dedicated assumed role; do not expand root use.
+- Do not run `terraform apply`, `terraform destroy`, publish images, or change DNS without explicit authorization for that deployment. The user's 2026-11-03 authorization covers the current EC2 + RDS/Valkey integration stage in us-west-2; it does not authorize unrelated ECS/ALB/NAT expansion, image publication, DNS changes, or data destruction.
+- The user authorized two OAuth accounts in the external `account.test` file for later real testing, then explicitly required all current tasks to finish first. Do not import accounts or call real models until the integration-stage verification/commit/report is complete. Never print or commit that file or its credential values.
 - No network services with empty/example passwords or public database/cache access.
 - Tools, scripts, and downloaded archives must be kept separate; validate official checksums before executing downloaded tooling.
 

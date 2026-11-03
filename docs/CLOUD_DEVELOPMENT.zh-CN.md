@@ -99,7 +99,15 @@ GOMAXPROCS=2 go test -p=1 ./cmd/migrate -count=1
 
 所有真实上游、支付和云资源集成验收均需单独执行；没有凭据和测试环境时不能声称通过。
 
-## AWS 部署前置条件
+## 当前EC2＋真实托管数据测试
+
+用户已授权创建集成数据层，`infra/ec2-integration`已实际部署；四角色systemd运行、RDS/Valkey TLS/权限/共享状态、非模型HTTP业务与受控切换结果见 [EC2_MANAGED_DATA_VALIDATION.zh-CN.md](EC2_MANAGED_DATA_VALIDATION.zh-CN.md)。`account.test`仅检查格式/设0600，未导入或调用模型；按用户要求先收尾本批。
+
+证书配置：`DATABASE_SSLMODE=verify-full`＋`DATABASE_SSLROOTCERT=/opt/sub2api-integration/certs/rds.pem`；Valkey `REDIS_ENABLE_TLS=true`，使用主机名认证及专用ACL。不要在故障时改成disable或跳过证书验证。
+
+真实fixture验收：`TestManagedDataLiveContracts`需显式`MANAGED_DATA_LIVE=1`及命名RDS集成库/缓存设置，默认skip，不使用生产资源；运行环境由root私有文件加载，不把密码写命令参数。业务脚本`tools/verify_managed_business.py`只产生/清理临时fixture，无模型/支付调用。故障脚本需显式授权参数，仅作用命名测试资源；不要为复验健康而重复触发。
+
+## 后续ECS部署前置条件
 
 - Region 固定 `us-west-2`。
 - 使用专用部署角色，不使用 AWS root。

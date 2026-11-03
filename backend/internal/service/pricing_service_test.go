@@ -29,6 +29,20 @@ func TestPricingSchedulerBlankRemoteURLDoesNotStart(t *testing.T) {
 	}
 }
 
+func TestPricingOfflineInitializationLoadsFallbackWithoutRemoteClient(t *testing.T) {
+	root := t.TempDir()
+	fallback := filepath.Join(root, "fallback.json")
+	require.NoError(t, os.WriteFile(fallback, []byte(`{"integration-model":{"input_cost_per_token":0.000001,"output_cost_per_token":0.000002}}`), 0o600))
+	svc := NewPricingService(&config.Config{Pricing: config.PricingConfig{
+		RemoteURL: "", HashURL: "https://must-not-be-requested.invalid/hash",
+		DataDir: filepath.Join(root, "data"), FallbackFile: fallback,
+	}}, nil)
+	t.Cleanup(svc.Stop)
+	require.NoError(t, svc.Initialize(), "offline mode must not call an absent remote client")
+	require.NotNil(t, svc.GetModelPricing("integration-model"))
+	require.NoError(t, svc.Initialize(), "repeated initialization is idempotent")
+}
+
 func TestPricingNonEmptyInvalidRemoteURLStillReturnsValidationError(t *testing.T) {
 	svc := NewPricingService(&config.Config{Pricing: config.PricingConfig{
 		RemoteURL: "://invalid",

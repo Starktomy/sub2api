@@ -67,6 +67,22 @@
 
 本批本地实现和上述验证已完成；没有创建AWS资源、没有推送。AWS预生产部署仍需专用role/state/费用批准、runtime DB/Secrets、镜像/migrator入口、ECS services与ALB接线，不具备一键生产上线条件。
 
+## 第四批：当前EC2＋真实AWS数据层（2026-11-03）
+
+用户明确授权创建所需资源及合理配置IAM；后续又指定先完成当前任务，再开始已授权的两份OAuth/5.6 Terra真实调用。本阶段没有导入账户、没有模型或支付provider调用。
+
+- 复用当前EC2/VPC，新增两个isolated数据子网、安全组、RDS PostgreSQL16.13 Multi-AZ DB instance（db.t4g.medium/20GiB gp3）及Valkey7.2.6跨AZ主从（2×cache.t4g.small/CMD/TLS/ACL/noeviction）；没有新增NAT/ALB/ECS。
+- 创建专用host/deployer IAM，root仅用于IAM bootstrap/策略管理，真实data/state通过assumed integration角色创建；远端S3加密/版本化/lock已使用。
+- 真实CA verify-full、TLS、独立schema owner/migrator/runtime账户；300迁移成功，Runtime不能DDL/读取security_secrets/更改manifest；动态Secret与环境文件不进Git。
+- 四个systemd非root服务已在127.0.0.1:18080–18083运行，app UID的IPv4/IPv6 IMDS被阻断；未enable开机自动启动。
+- 真实Valkey并发槽Lua/等待计数/Billing Lua/PubSub、RDS事务幂等、两个Gateway共享Key认证均通过；临时用户/Key/上游账户数最终为0。
+- 实际Control登录、余额兑换、套餐兑换、重复兑换拒绝、Key创建幂等、Key停用传播至双Gateway通过；不是支付渠道验收。
+- Valkey受控切换：约36.37秒观察稳定，001→002，哨兵保留；RDS切换AWS事件间隔24.785秒，提交行保留。RDS观察脚本因AZ元数据滞后被停止并修正，未重复触发故障；客户端精确中断时长未测。切换后data/business复验通过。
+- 证书/DSN配置、仓储和离线定价回归/相关vet/build通过；最终binary逐个systemd重启健康，启动窗口无ERROR；Terraform离线5项mock plan通过、真实plan为No changes。
+- 临时资源创建、failover和RDS masterSecret读取权限已移除，IAM模拟确认拒绝；保留元信息只读、精确集成Secret读取和专用state/lock。
+
+完整资源/费用、命令与已知限制见 [EC2_MANAGED_DATA_VALIDATION.zh-CN.md](EC2_MANAGED_DATA_VALIDATION.zh-CN.md) 和 `infra/ec2-integration/README.md`。基础按需费用约136.15美元/月（不含已有EC2及其它费用），资源保留持续计费；未取得通知地址，未配置预算邮件告警。前端/ECS/ALB/PITR/真实模型与支付仍未验。
+
 ## 尚未实现，禁止按已完成生产部署
 
 - 独立角色仅实验opt-in：共享Wire图/权限最小化、DI失败全资源回收、部分缓存janitor、Control OAuth多副本、维护worker多副本lease仍未完成。AWS下一步见 [AWS_PREPRODUCTION_CHECKLIST.zh-CN.md](AWS_PREPRODUCTION_CHECKLIST.zh-CN.md)。
@@ -76,12 +92,12 @@
 - ECS Task definitions/services、ALB/域名/证书、发布和长连接排空控制。
 - 真实上游协议、支付沙箱及云故障验收。
 
-## 云部署门禁
+## 云部署授权与当前边界
 
-- 用户已确认 Region 为 `us-west-2`、数据库为 RDS PostgreSQL Multi-AZ DB instance。
-- 尚未指定专用 deploy role、资源预算、域名/ACM 证书、生产账号/Secret bootstrap 策略。
-- 不执行 `terraform apply`/`destroy`，不创建付费资源，不推镜像、不更改 DNS。
-- Terraform state 需要加密远端 backend 和锁；本地 backend 仅用于离线验证。
+- 用户已确认 `us-west-2`、RDS PostgreSQL Multi-AZ DB instance，并明确授权创建当前集成测试所需资源及合理IAM。
+- 当前EC2＋真实RDS/Valkey已部署并验收限定范围；专用IAM角色、加密版本化远端state及Secret bootstrap已落实，临时高权限已收紧。
+- `infra/aws` 的未来ECS foundation仍未apply；不因集成阶段授权擅自扩建NAT/ALB/ECS、改DNS、推镜像或销毁数据。
+- 当前四服务只loopback访问；Control/Worker各一实例，尚无生产多活保证。预算告警、外部域名/证书、ECS应用部署和生产运行权限仍需后续。
 
 ## 验证记录
 
@@ -104,6 +120,6 @@
 | 只读数据库行为 | session 只读拒绝 DDL但 CheckMigrations 成功；仅 manifest SELECT 权限角色 InitEnt 成功且拒绝 secret INSERT |
 | 实际程序启动 | 未实现 gateway role、check+setup、check 缺共享密钥均非0退出，未开放向导 |
 | Terraform | 1.17.1 / aws provider 6.71.0，`fmt` / `init -backend=false` / `validate` / `test` 通过；7 passed，0 failed；全部 mock provider，无 AWS API |
-| AWS 写入 | 未执行 apply/destroy、未创建资源、未推镜像/更改DNS |
+| AWS 写入（前3批） | 当时未创建资源；第四批按新增明确授权创建EC2集成数据层，见上方；未推镜像/更改DNS/销毁 |
 
-注意：首次离线 config 测试曾因依赖缓存为空无法编译，之后依赖补齐后的真实包测试通过。未运行全仓所有测试、前端构建、真实上游/支付、PG16/RDS、ECS 故障和成本验收，不能据本表宣称完成云原生改造。
+注意：本表前3批是历史验证记录，不能覆盖第四批新增真实RDS16/Valkey结果。首次离线config缺依赖、后续回归失败和修复均保留说明。仍未运行全仓所有测试、前端构建、真实上游/支付、ECS或PITR恢复，不宣称完整云原生/生产验收。

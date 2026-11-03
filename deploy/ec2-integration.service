@@ -1,0 +1,36 @@
+# Installed as sub2api-integration@.service for the authorized EC2 test stage.
+# gateway-a/gateway-b/control/worker each get root-owned config and env files.
+[Unit]
+Description=Sub2API managed-data integration (%i)
+Wants=network-online.target
+After=network-online.target sub2api-integration-imds.service
+Requires=sub2api-integration-imds.service
+
+[Service]
+Type=simple
+User=sub2api-it
+Group=sub2api-it
+WorkingDirectory=/opt/sub2api-integration
+EnvironmentFile=/etc/sub2api-integration/%i.env
+ExecStart=/opt/sub2api-integration/bin/server
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=110s
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+ReadWritePaths=/var/lib/sub2api-integration/%i
+LimitNOFILE=65536
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
