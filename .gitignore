@@ -167,6 +167,7 @@ issues/
 !docs/CLOUD_RUNTIME_MIGRATION.zh-CN.md
 !docs/AWS_PREPRODUCTION_CHECKLIST.zh-CN.md
 !docs/EC2_MANAGED_DATA_VALIDATION.zh-CN.md
+!docs/CONTEXT_HANDOFF.zh-CN.md
 
 # Operator-provided upstream account exports are never source files.
 account.test
