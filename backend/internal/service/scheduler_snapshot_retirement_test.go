@@ -78,7 +78,7 @@ func (c *retirementRaceCache) SetSnapshot(_ context.Context, bucket SchedulerBuc
 	return nil
 }
 
-func (c *retirementRaceCache) RetireBucket(_ context.Context, bucket SchedulerBucket) error {
+func (c *retirementRaceCache) RetireBucket(_ context.Context, bucket SchedulerBucket, lease SchedulerGroupLifecycleLease) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	key := bucket.String()
@@ -92,7 +92,7 @@ func (c *retirementRaceCache) RetireBucket(_ context.Context, bucket SchedulerBu
 	return nil
 }
 
-func (c *retirementRaceCache) ReopenBucket(_ context.Context, bucket SchedulerBucket) (SchedulerBucketWriteToken, error) {
+func (c *retirementRaceCache) ReopenBucket(_ context.Context, bucket SchedulerBucket, lease SchedulerGroupLifecycleLease) (SchedulerBucketWriteToken, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	key := bucket.String()
@@ -104,11 +104,11 @@ func (c *retirementRaceCache) ReopenBucket(_ context.Context, bucket SchedulerBu
 	return SchedulerBucketWriteToken{Bucket: bucket, Epoch: c.epochs[key]}, nil
 }
 
-func (c *retirementRaceCache) TryLockBucket(context.Context, SchedulerBucket, time.Duration) (bool, error) {
-	return true, nil
+func (c *retirementRaceCache) TryLockBucket(_ context.Context, bucket SchedulerBucket, _ time.Duration) (SchedulerBucketLease, bool, error) {
+	return SchedulerBucketLease{Bucket: bucket, OwnerToken: "fixture-bucket"}, true, nil
 }
 
-func (c *retirementRaceCache) UnlockBucket(context.Context, SchedulerBucket) error {
+func (c *retirementRaceCache) UnlockBucket(context.Context, SchedulerBucketLease) error {
 	return nil
 }
 
@@ -178,8 +178,8 @@ func TestSchedulerFullRebuildCapturesAllRegistryTokensBeforeDBLoad(t *testing.T)
 	captures, reopens := cache.captureAndReopenCounts()
 	require.Equal(t, 2*schedulerCanonicalBucketCount(), captures, "group0 and active-group canonical tokens must be captured before the first DB load")
 	require.Zero(t, reopens)
-	require.NoError(t, cache.RetireBucket(context.Background(), queued))
-	_, err := cache.ReopenBucket(context.Background(), queued)
+	require.NoError(t, cache.RetireBucket(context.Background(), queued, SchedulerGroupLifecycleLease{GroupID: queued.GroupID, OwnerToken: "fixture"}))
+	_, err := cache.ReopenBucket(context.Background(), queued, SchedulerGroupLifecycleLease{GroupID: queued.GroupID, OwnerToken: "fixture"})
 	require.NoError(t, err)
 	close(releaseDB)
 	require.NoError(t, <-result)
@@ -228,7 +228,7 @@ func TestSchedulerRebuildRetireAfterDBLoadFencesPublish(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("snapshot writer did not reach allocation boundary")
 	}
-	require.NoError(t, cache.RetireBucket(context.Background(), bucket))
+	require.NoError(t, cache.RetireBucket(context.Background(), bucket, SchedulerGroupLifecycleLease{GroupID: bucket.GroupID, OwnerToken: "fixture"}))
 	close(releaseSet)
 	require.NoError(t, <-result)
 
@@ -241,7 +241,7 @@ func TestSchedulerRebuildRetireAfterDBLoadFencesPublish(t *testing.T) {
 func TestSchedulerFallbackReturnsDBAccountsWhenBucketRetired(t *testing.T) {
 	bucket := SchedulerBucket{GroupID: 63, Platform: PlatformOpenAI, Mode: SchedulerModeSingle}
 	cache := newRetirementRaceCache()
-	require.NoError(t, cache.RetireBucket(context.Background(), bucket))
+	require.NoError(t, cache.RetireBucket(context.Background(), bucket, SchedulerGroupLifecycleLease{GroupID: bucket.GroupID, OwnerToken: "fixture"}))
 	repo := &mockAccountRepoForPlatform{
 		accounts: []Account{{ID: 6301, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true}},
 	}

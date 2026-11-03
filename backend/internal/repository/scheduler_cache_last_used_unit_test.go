@@ -37,7 +37,7 @@ func TestSchedulerCacheUpdateLastUsedUsesSideKeyWithoutRewritingPayloads(t *test
 		},
 		Extra: map[string]any{"large": strings.Repeat("x", 4096)},
 	}
-	token, err := cache.CaptureBucketWriteToken(ctx, bucket)
+	token, err := captureLeasedSchedulerToken(t, cache, ctx, bucket)
 	require.NoError(t, err)
 	require.NoError(t, cache.SetSnapshot(ctx, bucket, token, []service.Account{account}))
 
@@ -141,7 +141,7 @@ func TestSchedulerCacheLastUsedSideKeySurvivesStaleAccountAndSnapshotWrites(t *t
 	require.NoError(t, cache.UpdateLastUsed(ctx, map[int64]time.Time{account.ID: latest}))
 
 	require.NoError(t, cache.SetAccount(ctx, &account))
-	token, err := cache.CaptureBucketWriteToken(ctx, bucket)
+	token, err := captureLeasedSchedulerToken(t, cache, ctx, bucket)
 	require.NoError(t, err)
 	require.NoError(t, cache.SetSnapshot(ctx, bucket, token, []service.Account{account}))
 

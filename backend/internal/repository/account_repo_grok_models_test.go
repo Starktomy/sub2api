@@ -275,12 +275,12 @@ func (s *grokCatalogCacheSpy) SetSnapshot(context.Context, service.SchedulerBuck
 	return nil
 }
 
-func (s *grokCatalogCacheSpy) RetireBucket(context.Context, service.SchedulerBucket) error {
+func (s *grokCatalogCacheSpy) RetireBucket(context.Context, service.SchedulerBucket, service.SchedulerGroupLifecycleLease) error {
 	s.bucketOps++
 	return nil
 }
 
-func (s *grokCatalogCacheSpy) ReopenBucket(context.Context, service.SchedulerBucket) (service.SchedulerBucketWriteToken, error) {
+func (s *grokCatalogCacheSpy) ReopenBucket(context.Context, service.SchedulerBucket, service.SchedulerGroupLifecycleLease) (service.SchedulerBucketWriteToken, error) {
 	s.bucketOps++
 	return service.SchedulerBucketWriteToken{}, nil
 }
@@ -311,12 +311,12 @@ func (s *grokCatalogCacheSpy) UpdateLastUsed(context.Context, map[int64]time.Tim
 	return nil
 }
 
-func (s *grokCatalogCacheSpy) TryLockBucket(context.Context, service.SchedulerBucket, time.Duration) (bool, error) {
+func (s *grokCatalogCacheSpy) TryLockBucket(context.Context, service.SchedulerBucket, time.Duration) (service.SchedulerBucketLease, bool, error) {
 	s.bucketOps++
-	return false, nil
+	return service.SchedulerBucketLease{}, false, nil
 }
 
-func (s *grokCatalogCacheSpy) UnlockBucket(context.Context, service.SchedulerBucket) error {
+func (s *grokCatalogCacheSpy) UnlockBucket(context.Context, service.SchedulerBucketLease) error {
 	s.bucketOps++
 	return nil
 }

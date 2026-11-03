@@ -70,7 +70,7 @@ func TestSchedulerCacheAnthropicThresholdAdmission(t *testing.T) {
 			}
 			cache := newSchedulerCacheUnit(t)
 			bucket := service.SchedulerBucket{GroupID: 8, Platform: service.PlatformAnthropic, Mode: service.SchedulerModeSingle}
-			token, err := cache.CaptureBucketWriteToken(ctx, bucket)
+			token, err := captureLeasedSchedulerToken(t, cache, ctx, bucket)
 			require.NoError(t, err)
 			require.NoError(t, cache.SetSnapshot(ctx, bucket, token, []service.Account{account}))
 			candidates, hit, err := cache.GetSnapshot(ctx, bucket)
@@ -115,7 +115,7 @@ func TestSchedulerCacheAnthropicUsageRefresh(t *testing.T) {
 		Credentials: map[string]any{"account_scheduling_threshold": 60},
 		Extra:       map[string]any{"passive_usage_7d_utilization": .59, "passive_usage_7d_reset": end.Unix()},
 	}
-	token, err := cache.CaptureBucketWriteToken(ctx, bucket)
+	token, err := captureLeasedSchedulerToken(t, cache, ctx, bucket)
 	require.NoError(t, err)
 	require.NoError(t, cache.SetSnapshot(ctx, bucket, token, []service.Account{account}))
 	for _, used := range []float64{.59, .66, .10} {

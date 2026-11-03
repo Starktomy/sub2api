@@ -43,11 +43,11 @@ func (s *schedulerCacheRecorder) SetSnapshot(ctx context.Context, bucket service
 	return nil
 }
 
-func (s *schedulerCacheRecorder) RetireBucket(ctx context.Context, bucket service.SchedulerBucket) error {
+func (s *schedulerCacheRecorder) RetireBucket(ctx context.Context, bucket service.SchedulerBucket, lease service.SchedulerGroupLifecycleLease) error {
 	return nil
 }
 
-func (s *schedulerCacheRecorder) ReopenBucket(ctx context.Context, bucket service.SchedulerBucket) (service.SchedulerBucketWriteToken, error) {
+func (s *schedulerCacheRecorder) ReopenBucket(ctx context.Context, bucket service.SchedulerBucket, lease service.SchedulerGroupLifecycleLease) (service.SchedulerBucketWriteToken, error) {
 	return service.SchedulerBucketWriteToken{Bucket: bucket, Epoch: 1}, nil
 }
 
@@ -115,11 +115,11 @@ func (s *schedulerCacheRecorder) UpdateLastUsed(ctx context.Context, updates map
 	return nil
 }
 
-func (s *schedulerCacheRecorder) TryLockBucket(ctx context.Context, bucket service.SchedulerBucket, ttl time.Duration) (bool, error) {
-	return true, nil
+func (s *schedulerCacheRecorder) TryLockBucket(ctx context.Context, bucket service.SchedulerBucket, ttl time.Duration) (service.SchedulerBucketLease, bool, error) {
+	return service.SchedulerBucketLease{}, true, nil
 }
 
-func (s *schedulerCacheRecorder) UnlockBucket(ctx context.Context, bucket service.SchedulerBucket) error {
+func (s *schedulerCacheRecorder) UnlockBucket(ctx context.Context, lease service.SchedulerBucketLease) error {
 	return nil
 }
 
@@ -1664,7 +1664,7 @@ func (s *AccountRepoSuite) TestUpdateExtra_AnthropicThresholdRefreshesCandidateS
 	cache := NewSchedulerCache(testRedis(s.T()))
 	s.repo.schedulerCache = cache
 	bucket := service.SchedulerBucket{GroupID: account.ID, Platform: service.PlatformAnthropic, Mode: service.SchedulerModeSingle}
-	token, err := cache.CaptureBucketWriteToken(s.ctx, bucket)
+	token, err := captureIntegrationLeasedSchedulerToken(s.T(), cache, s.ctx, bucket)
 	s.Require().NoError(err)
 	s.Require().NoError(cache.SetSnapshot(s.ctx, bucket, token, []service.Account{*account}))
 	for _, step := range []struct {

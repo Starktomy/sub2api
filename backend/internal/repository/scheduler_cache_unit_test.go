@@ -102,7 +102,7 @@ func TestSchedulerCacheSnapshotAccountIDReusePreservesPayloadAndMembers(t *testi
 	accounts := []service.Account{validOne, invalid, validTwo, validOne}
 
 	single := service.SchedulerBucket{GroupID: 17, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
-	singleToken, err := cache.CaptureBucketWriteToken(ctx, single)
+	singleToken, err := captureLeasedSchedulerToken(t, cache, ctx, single)
 	require.NoError(t, err)
 	accountIDs, err := cache.SetSnapshotAndReturnAccountIDs(ctx, single, singleToken, accounts)
 	require.NoError(t, err)
@@ -120,7 +120,7 @@ func TestSchedulerCacheSnapshotAccountIDReusePreservesPayloadAndMembers(t *testi
 	require.Equal(t, wantMeta, metaBefore)
 
 	forced := service.SchedulerBucket{GroupID: 17, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeForced}
-	forcedToken, err := cache.CaptureBucketWriteToken(ctx, forced)
+	forcedToken, err := captureLeasedSchedulerToken(t, cache, ctx, forced)
 	require.NoError(t, err)
 	require.NoError(t, cache.SetSnapshotByAccountIDs(ctx, forced, forcedToken, accountIDs))
 
@@ -161,7 +161,7 @@ func TestSchedulerCacheSetSnapshotMatchesIDPublishing(t *testing.T) {
 	accounts := []service.Account{validOne, invalid, validTwo, validOne}
 
 	normal := service.SchedulerBucket{GroupID: 21, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
-	normalToken, err := cache.CaptureBucketWriteToken(ctx, normal)
+	normalToken, err := captureLeasedSchedulerToken(t, cache, ctx, normal)
 	require.NoError(t, err)
 	require.NoError(t, cache.SetSnapshot(ctx, normal, normalToken, accounts))
 
@@ -171,7 +171,7 @@ func TestSchedulerCacheSetSnapshotMatchesIDPublishing(t *testing.T) {
 	require.NoError(t, err)
 
 	idOnly := service.SchedulerBucket{GroupID: 21, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeForced}
-	idOnlyToken, err := cache.CaptureBucketWriteToken(ctx, idOnly)
+	idOnlyToken, err := captureLeasedSchedulerToken(t, cache, ctx, idOnly)
 	require.NoError(t, err)
 	accountIDs, err := cache.SetSnapshotAndReturnAccountIDs(ctx, idOnly, idOnlyToken, accounts)
 	require.NoError(t, err)
@@ -200,14 +200,14 @@ func TestSchedulerCacheSnapshotAccountIDReuseKeepsEmptySnapshotSemantics(t *test
 	accounts := []service.Account{{ID: 811, Platform: service.PlatformOpenAI, ExpiresAt: &invalidTime}}
 
 	single := service.SchedulerBucket{GroupID: 18, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
-	singleToken, err := cache.CaptureBucketWriteToken(ctx, single)
+	singleToken, err := captureLeasedSchedulerToken(t, cache, ctx, single)
 	require.NoError(t, err)
 	accountIDs, err := cache.SetSnapshotAndReturnAccountIDs(ctx, single, singleToken, accounts)
 	require.NoError(t, err)
 	require.Empty(t, accountIDs)
 
 	forced := service.SchedulerBucket{GroupID: 18, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeForced}
-	forcedToken, err := cache.CaptureBucketWriteToken(ctx, forced)
+	forcedToken, err := captureLeasedSchedulerToken(t, cache, ctx, forced)
 	require.NoError(t, err)
 	require.NoError(t, cache.SetSnapshotByAccountIDs(ctx, forced, forcedToken, accountIDs))
 
@@ -232,9 +232,9 @@ func TestSchedulerCacheSetSnapshotByAccountIDsKeepsFencing(t *testing.T) {
 	_, err = cache.rdb.Get(ctx, schedulerBucketKey(schedulerVersionPrefix, bucket)).Result()
 	require.ErrorIs(t, err, redis.Nil)
 
-	token, err := cache.CaptureBucketWriteToken(ctx, bucket)
+	token, err := captureLeasedSchedulerToken(t, cache, ctx, bucket)
 	require.NoError(t, err)
-	require.NoError(t, cache.RetireBucket(ctx, bucket))
+	require.NoError(t, cache.RetireBucket(ctx, bucket, schedulerTestGroupLease(t, cache, ctx, bucket.GroupID)))
 	err = cache.SetSnapshotByAccountIDs(ctx, bucket, token, []int64{901})
 	require.ErrorIs(t, err, service.ErrSchedulerBucketRetired)
 }
@@ -244,7 +244,7 @@ func TestSchedulerCacheSetSnapshotByAccountIDsDoesNotResurrectDeletedAccount(t *
 	cache := newSchedulerCacheUnit(t)
 	account := service.Account{ID: 902, Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth}
 	single := service.SchedulerBucket{GroupID: 20, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
-	singleToken, err := cache.CaptureBucketWriteToken(ctx, single)
+	singleToken, err := captureLeasedSchedulerToken(t, cache, ctx, single)
 	require.NoError(t, err)
 	accountIDs, err := cache.SetSnapshotAndReturnAccountIDs(ctx, single, singleToken, []service.Account{account})
 	require.NoError(t, err)
@@ -252,7 +252,7 @@ func TestSchedulerCacheSetSnapshotByAccountIDsDoesNotResurrectDeletedAccount(t *
 	require.NoError(t, cache.DeleteAccount(ctx, account.ID))
 
 	forced := service.SchedulerBucket{GroupID: 20, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeForced}
-	forcedToken, err := cache.CaptureBucketWriteToken(ctx, forced)
+	forcedToken, err := captureLeasedSchedulerToken(t, cache, ctx, forced)
 	require.NoError(t, err)
 	require.NoError(t, cache.SetSnapshotByAccountIDs(ctx, forced, forcedToken, accountIDs))
 
@@ -550,7 +550,7 @@ func TestBuildSchedulerMetadataAccount_KeepsQuotaStateForCachedAccounts(t *testi
 			cache := newSchedulerCacheUnit(t)
 			ctx := context.Background()
 			bucket := service.SchedulerBucket{GroupID: int64(46690 + i), Platform: tc.platform, Mode: service.SchedulerModeSingle}
-			token, err := cache.CaptureBucketWriteToken(ctx, bucket)
+			token, err := captureLeasedSchedulerToken(t, cache, ctx, bucket)
 			require.NoError(t, err)
 			require.NoError(t, cache.SetSnapshot(ctx, bucket, token, []service.Account{account}))
 
@@ -629,7 +629,7 @@ func TestSchedulerCacheBucketRetirementFencesWritersAndReopen(t *testing.T) {
 	otherBucket := service.SchedulerBucket{GroupID: 42, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
 	account := service.Account{ID: 4101, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}
 
-	token, err := cache.CaptureBucketWriteToken(ctx, bucket)
+	token, err := captureLeasedSchedulerToken(t, cache, ctx, bucket)
 	require.NoError(t, err)
 	require.True(t, token.ValidFor(bucket))
 	require.NoError(t, cache.SetSnapshot(ctx, bucket, token, []service.Account{account}))
@@ -640,20 +640,20 @@ func TestSchedulerCacheBucketRetirementFencesWritersAndReopen(t *testing.T) {
 	_, err = cache.rdb.Get(ctx, schedulerBucketKey(schedulerVersionPrefix, otherBucket)).Result()
 	require.ErrorIs(t, err, redis.Nil)
 	otherAccount := service.Account{ID: 4201, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}
-	otherToken, err := cache.CaptureBucketWriteToken(ctx, otherBucket)
+	otherToken, err := captureLeasedSchedulerToken(t, cache, ctx, otherBucket)
 	require.NoError(t, err)
 	require.NoError(t, cache.SetSnapshot(ctx, otherBucket, otherToken, []service.Account{otherAccount}))
 	otherEpoch := otherToken.Epoch
 
 	activeVersion, err := cache.rdb.Get(ctx, schedulerBucketKey(schedulerActivePrefix, bucket)).Result()
 	require.NoError(t, err)
-	require.NoError(t, cache.RetireBucket(ctx, bucket))
+	require.NoError(t, cache.RetireBucket(ctx, bucket, schedulerTestGroupLease(t, cache, ctx, bucket.GroupID)))
 	retiredEpoch, err := cache.rdb.Get(ctx, schedulerBucketKey(schedulerEpochPrefix, bucket)).Int64()
 	require.NoError(t, err)
 	require.Greater(t, retiredEpoch, token.Epoch)
 
 	// Retirement is idempotent and does not advance the epoch again.
-	require.NoError(t, cache.RetireBucket(ctx, bucket))
+	require.NoError(t, cache.RetireBucket(ctx, bucket, schedulerTestGroupLease(t, cache, ctx, bucket.GroupID)))
 	retiredEpochAgain, err := cache.rdb.Get(ctx, schedulerBucketKey(schedulerEpochPrefix, bucket)).Int64()
 	require.NoError(t, err)
 	require.Equal(t, retiredEpoch, retiredEpochAgain)
@@ -684,7 +684,7 @@ func TestSchedulerCacheBucketRetirementFencesWritersAndReopen(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, otherEpoch, otherEpochAfter)
 
-	_, err = cache.CaptureBucketWriteToken(ctx, bucket)
+	_, err = captureLeasedSchedulerToken(t, cache, ctx, bucket)
 	require.ErrorIs(t, err, service.ErrSchedulerBucketRetired)
 	versionBeforeRejectedWrite, err := cache.rdb.Get(ctx, schedulerBucketKey(schedulerVersionPrefix, bucket)).Int64()
 	require.NoError(t, err)
@@ -701,17 +701,17 @@ func TestSchedulerCacheBucketRetirementFencesWritersAndReopen(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, exists, "retired active snapshot must expire after the in-flight grace period")
 
-	newToken, err := cache.ReopenBucket(ctx, bucket)
+	newToken, err := reopenLeasedSchedulerToken(t, cache, ctx, bucket)
 	require.NoError(t, err)
 	require.True(t, newToken.ValidFor(bucket))
 	require.Equal(t, retiredEpoch, newToken.Epoch)
-	reopenedAgain, err := cache.ReopenBucket(ctx, bucket)
+	reopenedAgain, err := reopenLeasedSchedulerToken(t, cache, ctx, bucket)
 	require.NoError(t, err)
 	require.Equal(t, newToken, reopenedAgain, "reopen must be idempotent within one retirement generation")
 	err = cache.SetSnapshot(ctx, bucket, token, []service.Account{account})
 	require.ErrorIs(t, err, service.ErrSchedulerBucketWriteFenced)
 	require.NoError(t, cache.SetSnapshot(ctx, bucket, newToken, []service.Account{account}))
-	reopenedWhileOpen, err := cache.ReopenBucket(ctx, bucket)
+	reopenedWhileOpen, err := reopenLeasedSchedulerToken(t, cache, ctx, bucket)
 	require.NoError(t, err)
 	require.Equal(t, newToken, reopenedWhileOpen)
 
@@ -728,17 +728,17 @@ func TestSchedulerCacheActivationIsFencedAfterRetire(t *testing.T) {
 	bucket := service.SchedulerBucket{GroupID: 51, Platform: service.PlatformAnthropic, Mode: service.SchedulerModeMixed}
 	account := service.Account{ID: 5101, Platform: service.PlatformAnthropic, Type: service.AccountTypeAPIKey}
 
-	token, err := cache.CaptureBucketWriteToken(ctx, bucket)
+	token, err := captureLeasedSchedulerToken(t, cache, ctx, bucket)
 	require.NoError(t, err)
 	version, err := cache.allocateSnapshotVersion(ctx, bucket, token)
 	require.NoError(t, err)
-	_, err = cache.writeSnapshotVersionAndReturnAccountIDs(ctx, bucket, version, []service.Account{account})
+	_, err = cache.writeSnapshotVersionAndReturnAccountIDs(ctx, bucket, token, version, []service.Account{account})
 	require.NoError(t, err)
 
 	// Deterministic race C: retirement and authoritative reopen both happen after
 	// INCR/write but before the old writer activates.
-	require.NoError(t, cache.RetireBucket(ctx, bucket))
-	_, err = cache.ReopenBucket(ctx, bucket)
+	require.NoError(t, cache.RetireBucket(ctx, bucket, schedulerTestGroupLease(t, cache, ctx, bucket.GroupID)))
+	_, err = reopenLeasedSchedulerToken(t, cache, ctx, bucket)
 	require.NoError(t, err)
 	err = cache.activateSnapshotVersion(ctx, bucket, token, version)
 	require.ErrorIs(t, err, service.ErrSchedulerBucketWriteFenced)
@@ -764,9 +764,9 @@ func TestSchedulerCacheConcurrentReopenReturnsSameToken(t *testing.T) {
 	bucket := service.SchedulerBucket{GroupID: 53, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeForced}
 	account := service.Account{ID: 5301, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}
 
-	oldToken, err := cache.CaptureBucketWriteToken(ctx, bucket)
+	oldToken, err := captureLeasedSchedulerToken(t, cache, ctx, bucket)
 	require.NoError(t, err)
-	require.NoError(t, cache.RetireBucket(ctx, bucket))
+	require.NoError(t, cache.RetireBucket(ctx, bucket, schedulerTestGroupLease(t, cache, ctx, bucket.GroupID)))
 
 	type reopenResult struct {
 		token service.SchedulerBucketWriteToken
@@ -777,7 +777,7 @@ func TestSchedulerCacheConcurrentReopenReturnsSameToken(t *testing.T) {
 	for range 2 {
 		go func() {
 			<-start
-			token, err := cache.ReopenBucket(ctx, bucket)
+			token, err := reopenLeasedSchedulerToken(t, cache, ctx, bucket)
 			results <- reopenResult{token: token, err: err}
 		}()
 	}
@@ -799,7 +799,7 @@ func TestSchedulerCacheReopenExpiresPreviousActiveSnapshot(t *testing.T) {
 	bucket := service.SchedulerBucket{GroupID: 52, Platform: service.PlatformGemini, Mode: service.SchedulerModeForced}
 	account := service.Account{ID: 5201, Platform: service.PlatformGemini, Type: service.AccountTypeAPIKey}
 
-	oldToken, err := cache.CaptureBucketWriteToken(ctx, bucket)
+	oldToken, err := captureLeasedSchedulerToken(t, cache, ctx, bucket)
 	require.NoError(t, err)
 	require.NoError(t, cache.SetSnapshot(ctx, bucket, oldToken, []service.Account{account}))
 	oldVersion, err := cache.rdb.Get(ctx, schedulerBucketKey(schedulerActivePrefix, bucket)).Result()
@@ -808,7 +808,7 @@ func TestSchedulerCacheReopenExpiresPreviousActiveSnapshot(t *testing.T) {
 	require.NoError(t, cache.rdb.Set(ctx, schedulerBucketKey(schedulerEpochPrefix, bucket), retiredEpoch, 0).Err())
 	require.NoError(t, cache.rdb.Set(ctx, schedulerBucketKey(schedulerRetiredPrefix, bucket), retiredEpoch, 0).Err())
 
-	newToken, err := cache.ReopenBucket(ctx, bucket)
+	newToken, err := reopenLeasedSchedulerToken(t, cache, ctx, bucket)
 	require.NoError(t, err)
 	require.Equal(t, retiredEpoch, newToken.Epoch)
 	_, hit, err := cache.GetSnapshot(ctx, bucket)
@@ -1233,4 +1233,107 @@ func TestSchedulerWatermarkNeverRegressesAndPreservesInt64(t *testing.T) {
 	got, err := cache.GetOutboxWatermark(ctx)
 	require.NoError(t, err)
 	require.Equal(t, int64(9007199254740993), got)
+}
+
+// Test helpers explicitly acquire ownership; production APIs never infer it.
+func schedulerTestBucketLease(t *testing.T, cache service.SchedulerCache, ctx context.Context, bucket service.SchedulerBucket) service.SchedulerBucketLease {
+	t.Helper()
+	concrete := cache.(*schedulerCache)
+	owner, err := concrete.rdb.Get(ctx, schedulerBucketKey(schedulerLockPrefix, bucket)).Result()
+	if err == nil {
+		return service.SchedulerBucketLease{Bucket: bucket, OwnerToken: owner}
+	}
+	lease, ok, err := cache.TryLockBucket(ctx, bucket, time.Hour)
+	require.NoError(t, err)
+	require.True(t, ok)
+	return lease
+}
+func captureLeasedSchedulerToken(t *testing.T, cache service.SchedulerCache, ctx context.Context, bucket service.SchedulerBucket) (service.SchedulerBucketWriteToken, error) {
+	token, err := cache.CaptureBucketWriteToken(ctx, bucket)
+	if err == nil {
+		token.Lease = schedulerTestBucketLease(t, cache, ctx, bucket)
+	}
+	return token, err
+}
+func schedulerTestGroupLease(t *testing.T, cache service.SchedulerCache, ctx context.Context, groupID int64) service.SchedulerGroupLifecycleLease {
+	t.Helper()
+	concrete := cache.(*schedulerCache)
+	owner, err := concrete.rdb.Get(ctx, schedulerGroupLifecycleLockKey(groupID)).Result()
+	if err == nil {
+		return service.SchedulerGroupLifecycleLease{GroupID: groupID, OwnerToken: owner}
+	}
+	lease, ok, err := cache.TryAcquireGroupLifecycleLease(ctx, groupID, time.Hour)
+	require.NoError(t, err)
+	require.True(t, ok)
+	return lease
+}
+func reopenLeasedSchedulerToken(t *testing.T, cache service.SchedulerCache, ctx context.Context, bucket service.SchedulerBucket) (service.SchedulerBucketWriteToken, error) {
+	token, err := cache.ReopenBucket(ctx, bucket, schedulerTestGroupLease(t, cache, ctx, bucket.GroupID))
+	if err == nil {
+		token.Lease = schedulerTestBucketLease(t, cache, ctx, bucket)
+	}
+	return token, err
+}
+
+func TestSchedulerCacheBucketLeaseExpiryFencesEveryPublicationMutation(t *testing.T) {
+	ctx := context.Background()
+	cache, mr := newSchedulerCacheUnitWithRedis(t)
+	bucket := service.SchedulerBucket{GroupID: 951, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+	old, ok, err := cache.TryLockBucket(ctx, bucket, time.Second)
+	require.NoError(t, err)
+	require.True(t, ok)
+	token, err := cache.CaptureBucketWriteToken(ctx, bucket)
+	require.NoError(t, err)
+	token.Lease = old
+	version, err := cache.allocateSnapshotVersion(ctx, bucket, token)
+	require.NoError(t, err)
+	mr.FastForward(2 * time.Second)
+	successor, ok, err := cache.TryLockBucket(ctx, bucket, time.Minute)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NotEqual(t, old.OwnerToken, successor.OwnerToken)
+	before := mr.Dump()
+	require.ErrorIs(t, cache.UnlockBucket(ctx, old), service.ErrSchedulerBucketLeaseLost)
+	require.ErrorIs(t, cache.SetSnapshot(ctx, bucket, token, []service.Account{{ID: 9511}}), service.ErrSchedulerBucketLeaseLost)
+	_, err = cache.writeLeasedSnapshotAccounts(ctx, bucket, token, []service.Account{{ID: 9511}})
+	require.ErrorIs(t, err, service.ErrSchedulerBucketLeaseLost)
+	require.ErrorIs(t, cache.writeSnapshotMembers(ctx, bucket, token, version, []redis.Z{{Score: 0, Member: "9511"}}), service.ErrSchedulerBucketLeaseLost)
+	require.ErrorIs(t, cache.activateSnapshotVersion(ctx, bucket, token, version), service.ErrSchedulerBucketLeaseLost)
+	require.Equal(t, before, mr.Dump(), "stale owner must not alter any key, revision, or TTL")
+	require.NoError(t, cache.UnlockBucket(ctx, successor))
+	require.ErrorIs(t, cache.UnlockBucket(ctx, successor), service.ErrSchedulerBucketLeaseLost)
+}
+
+func TestSchedulerCacheGroupLeaseExpiryFencesRetireAndReopenBeforeAnyMutation(t *testing.T) {
+	for _, retired := range []bool{false, true} {
+		t.Run(fmt.Sprintf("retired=%t", retired), func(t *testing.T) {
+			ctx := context.Background()
+			cache, mr := newSchedulerCacheUnitWithRedis(t)
+			bucket := service.SchedulerBucket{GroupID: 952, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+			token, err := captureLeasedSchedulerToken(t, cache, ctx, bucket)
+			require.NoError(t, err)
+			require.NoError(t, cache.SetSnapshot(ctx, bucket, token, []service.Account{{ID: 9521}}))
+			old, ok, err := cache.TryAcquireGroupLifecycleLease(ctx, bucket.GroupID, time.Second)
+			require.NoError(t, err)
+			require.True(t, ok)
+			if retired {
+				require.NoError(t, cache.RetireBucket(ctx, bucket, old))
+			}
+			mr.FastForward(2 * time.Second)
+			successor, ok, err := cache.TryAcquireGroupLifecycleLease(ctx, bucket.GroupID, time.Minute)
+			require.NoError(t, err)
+			require.True(t, ok)
+			before := mr.Dump()
+			require.ErrorIs(t, cache.RetireBucket(ctx, bucket, old), service.ErrSchedulerGroupLifecycleLeaseLost)
+			_, err = cache.ReopenBucket(ctx, bucket, old)
+			require.ErrorIs(t, err, service.ErrSchedulerGroupLifecycleLeaseLost)
+			require.Equal(t, before, mr.Dump(), "expired owner must not alter epoch, tombstone, registry, pointers, or TTL")
+			require.NoError(t, cache.ReleaseGroupLifecycleLease(ctx, successor))
+			before = mr.Dump()
+			require.ErrorIs(t, cache.RetireBucket(ctx, bucket, successor), service.ErrSchedulerGroupLifecycleLeaseLost)
+			_, err = cache.ReopenBucket(ctx, bucket, successor)
+			require.ErrorIs(t, err, service.ErrSchedulerGroupLifecycleLeaseLost)
+			require.Equal(t, before, mr.Dump())
+		})
+	}
 }

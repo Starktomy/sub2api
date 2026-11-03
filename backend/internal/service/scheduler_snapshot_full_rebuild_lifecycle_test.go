@@ -59,7 +59,7 @@ func (c *fullRebuildLifecycleCache) ListBuckets(ctx context.Context) ([]Schedule
 	return registered, nil
 }
 
-func (c *fullRebuildLifecycleCache) TryLockBucket(ctx context.Context, bucket SchedulerBucket, ttl time.Duration) (bool, error) {
+func (c *fullRebuildLifecycleCache) TryLockBucket(ctx context.Context, bucket SchedulerBucket, ttl time.Duration) (SchedulerBucketLease, bool, error) {
 	c.mu.Lock()
 	busy := c.lockBusyOnce[bucket.String()]
 	if busy {
@@ -67,7 +67,7 @@ func (c *fullRebuildLifecycleCache) TryLockBucket(ctx context.Context, bucket Sc
 	}
 	c.mu.Unlock()
 	if busy {
-		return false, nil
+		return SchedulerBucketLease{}, false, nil
 	}
 	return c.groupLifecycleTestCache.TryLockBucket(ctx, bucket, ttl)
 }
@@ -265,7 +265,7 @@ func TestSchedulerFullRebuildActiveTombstoneDoesNotBlockFollowingGroupEvent(t *t
 	const groupID int64 = 101
 	canonical := schedulerBucketsForGroup(groupID)
 	cache := newFullRebuildLifecycleCache()
-	require.NoError(t, cache.retirementRaceCache.RetireBucket(context.Background(), canonical[0]))
+	require.NoError(t, cache.retirementRaceCache.RetireBucket(context.Background(), canonical[0], SchedulerGroupLifecycleLease{GroupID: canonical[0].GroupID, OwnerToken: "fixture"}))
 	groups := &fullRebuildLifecycleGroupRepo{
 		activeIDs: []int64{groupID},
 		fresh: map[int64]*Group{
@@ -443,7 +443,7 @@ func TestSchedulerFullRebuildActiveTombstoneFreshInactiveOrMissingFiltersAllGrou
 			canonical := schedulerBucketsForGroup(groupID)
 			historical := SchedulerBucket{GroupID: groupID, Platform: "legacy", Mode: "unknown"}
 			cache := newFullRebuildLifecycleCache(historical)
-			require.NoError(t, cache.retirementRaceCache.RetireBucket(context.Background(), canonical[5]))
+			require.NoError(t, cache.retirementRaceCache.RetireBucket(context.Background(), canonical[5], SchedulerGroupLifecycleLease{GroupID: canonical[5].GroupID, OwnerToken: "fixture"}))
 			groups := &fullRebuildLifecycleGroupRepo{
 				activeIDs: []int64{groupID},
 				fresh:     make(map[int64]*Group),
@@ -548,7 +548,7 @@ func TestSchedulerFullRebuildActiveTombstoneLazyRecoveryDiscardsPartialCaptureTa
 	canonical := schedulerBucketsForGroup(groupID)
 	historical := SchedulerBucket{GroupID: groupID, Platform: "legacy", Mode: "unknown"}
 	cache := newFullRebuildLifecycleCache(canonical[0], canonical[4], historical)
-	require.NoError(t, cache.retirementRaceCache.RetireBucket(context.Background(), canonical[5]))
+	require.NoError(t, cache.retirementRaceCache.RetireBucket(context.Background(), canonical[5], SchedulerGroupLifecycleLease{GroupID: canonical[5].GroupID, OwnerToken: "fixture"}))
 	groups := &fullRebuildLifecycleGroupRepo{
 		activeIDs: []int64{groupID},
 		fresh: map[int64]*Group{
@@ -617,7 +617,7 @@ func TestSchedulerFullRebuildFreshReopenLockBusyRetriesWithoutBlockingOrdinaryTa
 	const groupID int64 = 107
 	canonical := schedulerBucketsForGroup(groupID)
 	cache := newFullRebuildLifecycleCache()
-	require.NoError(t, cache.retirementRaceCache.RetireBucket(context.Background(), canonical[0]))
+	require.NoError(t, cache.retirementRaceCache.RetireBucket(context.Background(), canonical[0], SchedulerGroupLifecycleLease{GroupID: canonical[0].GroupID, OwnerToken: "fixture"}))
 	cache.lockBusyOnce[canonical[0].String()] = true
 	groups := &fullRebuildLifecycleGroupRepo{
 		activeIDs: []int64{groupID},

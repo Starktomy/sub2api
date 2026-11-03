@@ -209,17 +209,17 @@ func (c *batchSnapshotCache) CaptureBucketWriteToken(_ context.Context, bucket S
 	return token, nil
 }
 
-func (c *batchSnapshotCache) TryLockBucket(_ context.Context, bucket SchedulerBucket, _ time.Duration) (bool, error) {
+func (c *batchSnapshotCache) TryLockBucket(_ context.Context, bucket SchedulerBucket, _ time.Duration) (SchedulerBucketLease, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.locks[bucket]++
 	if err := c.lockErrors[bucket]; err != nil {
-		return false, err
+		return SchedulerBucketLease{}, false, err
 	}
-	return !c.lockBusy[bucket], nil
+	return SchedulerBucketLease{Bucket: bucket, OwnerToken: "fixture-bucket"}, !c.lockBusy[bucket], nil
 }
 
-func (c *batchSnapshotCache) UnlockBucket(context.Context, SchedulerBucket) error {
+func (c *batchSnapshotCache) UnlockBucket(context.Context, SchedulerBucketLease) error {
 	return nil
 }
 
@@ -230,7 +230,7 @@ func (c *batchSnapshotCache) SetSnapshot(_ context.Context, bucket SchedulerBuck
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.setAttempts[bucket]++
-	if token != c.captured[bucket] || !token.ValidFor(bucket) {
+	if token.Bucket != c.captured[bucket].Bucket || token.Epoch != c.captured[bucket].Epoch || !token.ValidFor(bucket) {
 		return ErrSchedulerBucketWriteFenced
 	}
 	if err := c.setErrors[bucket]; err != nil {
@@ -737,11 +737,11 @@ func (c *batchQueryBenchmarkCache) CaptureBucketWriteToken(_ context.Context, bu
 	return SchedulerBucketWriteToken{Bucket: bucket, Epoch: 1}, nil
 }
 
-func (c *batchQueryBenchmarkCache) TryLockBucket(context.Context, SchedulerBucket, time.Duration) (bool, error) {
-	return true, nil
+func (c *batchQueryBenchmarkCache) TryLockBucket(_ context.Context, bucket SchedulerBucket, _ time.Duration) (SchedulerBucketLease, bool, error) {
+	return SchedulerBucketLease{Bucket: bucket, OwnerToken: "fixture-bucket"}, true, nil
 }
 
-func (c *batchQueryBenchmarkCache) UnlockBucket(context.Context, SchedulerBucket) error {
+func (c *batchQueryBenchmarkCache) UnlockBucket(context.Context, SchedulerBucketLease) error {
 	return nil
 }
 

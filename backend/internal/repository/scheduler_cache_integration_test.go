@@ -67,7 +67,7 @@ func TestSchedulerCacheSnapshotUsesSlimMetadataButKeepsFullAccount(t *testing.T)
 		},
 	}
 
-	token, err := cache.CaptureBucketWriteToken(ctx, bucket)
+	token, err := captureIntegrationLeasedSchedulerToken(t, cache, ctx, bucket)
 	require.NoError(t, err)
 	require.NoError(t, cache.SetSnapshot(ctx, bucket, token, []service.Account{account}))
 
@@ -112,20 +112,20 @@ func TestSchedulerCacheRetireAndReopenFencesOldEpochIntegration(t *testing.T) {
 	bucket := service.SchedulerBucket{GroupID: 77, Platform: service.PlatformAntigravity, Mode: service.SchedulerModeForced}
 	account := service.Account{ID: 7701, Platform: service.PlatformAntigravity, Type: service.AccountTypeOAuth}
 
-	oldToken, err := cache.CaptureBucketWriteToken(ctx, bucket)
+	oldToken, err := captureIntegrationLeasedSchedulerToken(t, cache, ctx, bucket)
 	require.NoError(t, err)
 	require.NoError(t, cache.SetSnapshot(ctx, bucket, oldToken, []service.Account{account}))
-	require.NoError(t, cache.RetireBucket(ctx, bucket))
-	require.NoError(t, cache.RetireBucket(ctx, bucket))
+	require.NoError(t, cache.RetireBucket(ctx, bucket, schedulerIntegrationTestGroupLease(t, cache, ctx, bucket.GroupID)))
+	require.NoError(t, cache.RetireBucket(ctx, bucket, schedulerIntegrationTestGroupLease(t, cache, ctx, bucket.GroupID)))
 
 	_, hit, err := cache.GetSnapshot(ctx, bucket)
 	require.NoError(t, err)
 	require.False(t, hit)
-	_, err = cache.CaptureBucketWriteToken(ctx, bucket)
+	_, err = captureIntegrationLeasedSchedulerToken(t, cache, ctx, bucket)
 	require.ErrorIs(t, err, service.ErrSchedulerBucketRetired)
 	require.ErrorIs(t, cache.SetSnapshot(ctx, bucket, oldToken, []service.Account{account}), service.ErrSchedulerBucketRetired)
 
-	newToken, err := cache.ReopenBucket(ctx, bucket)
+	newToken, err := reopenIntegrationLeasedSchedulerToken(t, cache, ctx, bucket)
 	require.NoError(t, err)
 	require.Greater(t, newToken.Epoch, oldToken.Epoch)
 	require.ErrorIs(t, cache.SetSnapshot(ctx, bucket, oldToken, []service.Account{account}), service.ErrSchedulerBucketWriteFenced)
@@ -173,4 +173,42 @@ func TestSchedulerCacheGroupLifecycleLeaseOwnerAndTTLIntegration(t *testing.T) {
 	require.True(t, acquired)
 	require.True(t, third.ValidFor(groupID))
 	require.NoError(t, cache.ReleaseGroupLifecycleLease(ctx, third))
+}
+
+func captureIntegrationLeasedSchedulerToken(t *testing.T, cache service.SchedulerCache, ctx context.Context, bucket service.SchedulerBucket) (service.SchedulerBucketWriteToken, error) {
+	token, err := cache.CaptureBucketWriteToken(ctx, bucket)
+	if err != nil {
+		return token, err
+	}
+	concrete := cache.(*schedulerCache)
+	owner, getErr := concrete.rdb.Get(ctx, schedulerBucketKey(schedulerLockPrefix, bucket)).Result()
+	if getErr == nil {
+		token.Lease = service.SchedulerBucketLease{Bucket: bucket, OwnerToken: owner}
+		return token, nil
+	}
+	lease, ok, err := cache.TryLockBucket(ctx, bucket, time.Hour)
+	require.NoError(t, err)
+	require.True(t, ok)
+	token.Lease = lease
+	return token, nil
+}
+func schedulerIntegrationTestGroupLease(t *testing.T, cache service.SchedulerCache, ctx context.Context, groupID int64) service.SchedulerGroupLifecycleLease {
+	concrete := cache.(*schedulerCache)
+	owner, err := concrete.rdb.Get(ctx, schedulerGroupLifecycleLockKey(groupID)).Result()
+	if err == nil {
+		return service.SchedulerGroupLifecycleLease{GroupID: groupID, OwnerToken: owner}
+	}
+	lease, ok, err := cache.TryAcquireGroupLifecycleLease(ctx, groupID, time.Hour)
+	require.NoError(t, err)
+	require.True(t, ok)
+	return lease
+}
+func reopenIntegrationLeasedSchedulerToken(t *testing.T, cache service.SchedulerCache, ctx context.Context, bucket service.SchedulerBucket) (service.SchedulerBucketWriteToken, error) {
+	token, err := cache.ReopenBucket(ctx, bucket, schedulerIntegrationTestGroupLease(t, cache, ctx, bucket.GroupID))
+	if err != nil {
+		return token, err
+	}
+	captured, err := captureIntegrationLeasedSchedulerToken(t, cache, ctx, bucket)
+	token.Lease = captured.Lease
+	return token, err
 }

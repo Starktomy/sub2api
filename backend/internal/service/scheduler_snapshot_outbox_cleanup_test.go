@@ -32,11 +32,11 @@ func (c *outboxCleanupCache) SetSnapshot(ctx context.Context, bucket SchedulerBu
 	return nil
 }
 
-func (c *outboxCleanupCache) RetireBucket(ctx context.Context, bucket SchedulerBucket) error {
+func (c *outboxCleanupCache) RetireBucket(ctx context.Context, bucket SchedulerBucket, lease SchedulerGroupLifecycleLease) error {
 	return nil
 }
 
-func (c *outboxCleanupCache) ReopenBucket(ctx context.Context, bucket SchedulerBucket) (SchedulerBucketWriteToken, error) {
+func (c *outboxCleanupCache) ReopenBucket(ctx context.Context, bucket SchedulerBucket, lease SchedulerGroupLifecycleLease) (SchedulerBucketWriteToken, error) {
 	return SchedulerBucketWriteToken{Bucket: bucket, Epoch: 1}, nil
 }
 
@@ -64,11 +64,11 @@ func (c *outboxCleanupCache) UpdateLastUsed(ctx context.Context, updates map[int
 	return c.updateErr
 }
 
-func (c *outboxCleanupCache) TryLockBucket(ctx context.Context, bucket SchedulerBucket, ttl time.Duration) (bool, error) {
-	return true, nil
+func (c *outboxCleanupCache) TryLockBucket(ctx context.Context, bucket SchedulerBucket, ttl time.Duration) (SchedulerBucketLease, bool, error) {
+	return SchedulerBucketLease{Bucket: bucket, OwnerToken: "fixture-bucket"}, true, nil
 }
 
-func (c *outboxCleanupCache) UnlockBucket(ctx context.Context, bucket SchedulerBucket) error {
+func (c *outboxCleanupCache) UnlockBucket(ctx context.Context, lease SchedulerBucketLease) error {
 	return nil
 }
 
