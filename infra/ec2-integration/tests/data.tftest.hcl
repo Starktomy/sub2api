@@ -35,6 +35,27 @@ run "weak_password_is_rejected" {
   variables { valkey_password = "weak" }
   expect_failures = [var.valkey_password]
 }
+run "explicit_low_cost_test_mode" {
+  command = plan
+  variables { low_cost_test_mode = true }
+  assert {
+    condition = (
+      aws_db_instance.postgres.instance_class == "db.t4g.micro" &&
+      !aws_db_instance.postgres.multi_az &&
+      aws_db_instance.postgres.allocated_storage == 20 &&
+      aws_db_instance.postgres.storage_encrypted &&
+      !aws_db_instance.postgres.publicly_accessible &&
+      aws_db_instance.postgres.deletion_protection &&
+      aws_elasticache_replication_group.valkey.node_type == "cache.t4g.micro" &&
+      aws_elasticache_replication_group.valkey.num_cache_clusters == 1 &&
+      !aws_elasticache_replication_group.valkey.multi_az_enabled &&
+      !aws_elasticache_replication_group.valkey.automatic_failover_enabled &&
+      aws_elasticache_replication_group.valkey.transit_encryption_enabled &&
+      aws_elasticache_replication_group.valkey.at_rest_encryption_enabled
+    )
+    error_message = "Explicit test mode reduces redundancy, never encryption, private networking or database deletion protection."
+  }
+}
 run "invalid_extra_runtime_group_rejected" {
   command = plan
   variables { additional_runtime_security_group_ids = ["0.0.0.0/0"] }
