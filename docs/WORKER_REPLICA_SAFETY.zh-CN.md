@@ -20,6 +20,7 @@
 |SubscriptionExpiryService|只执行 active 且 expires_at 到期的原子条件 UPDATE；取消与 join|此模式明确关闭提醒邮件；未实现 durable send claim|
 |UserMessageQueueCleanup|Lua 删除前重新检查 PTTL，只删除无 TTL 的异常孤儿锁；取消与 join|索引修复为辅助信息，非财务账本|
 |AuthCacheInvalidationWorker|PG SKIP LOCKED 持久化 claim、UUID worker ownership 条件 ack/retry；Redis DEL/pubsub 重复安全；Stop 取消并 join 整批|重复失效通知允许；不是 exactly-once 消息；仅协调此后台 worker，不修改请求侧行为|
+|ConcurrencySlotCleanup|Lua 在写入时重查 regular/live/wait，保留更新的索引分数及原 TTL；清理协程取消并 join|仅周期清理；split worker 不运行 legacy 跨进程 prefix 启动清扫；独立主节点 Redis/Valkey（CMD），不声明跨 key cluster 支持|
 
 ## 明确禁用清单
 
@@ -33,8 +34,7 @@
 |OpenAICodexVersionSyncService / ClaudeCodeVersionSyncService|外部查询后设置写入缺版本 fence|
 |ProxyExpiryService|源代理 UPDATE 有快照条件，但备用代理链目标由旧快照决定，未对并发目标变更做同事务 fence|
 |PaymentOrderExpiryService|支付 reconciliation 会调用外部平台，现有 TTL leader lock 不等于 durable attempt claim|
-|ConcurrencySlotCleanup|已有取消及 join，但索引 reconcile 为读负载后无条件 ZADD/ZREM，可能覆盖新活跃索引；不能把幂等误当无陈旧写|
-|SchedulerSnapshotService|已有 bucket write token；整个后台 outbox cursor、ack、全量 rebuild 的 owner generation 和取消尚未完整验证|
+|SchedulerSnapshotService|pending/exact-ack 与生命周期取消已修复；共享账号/metadata、group 生命周期及 bucket lock 尚缺完整 leader-generation fence|
 |OpsAggregationService / ChannelMonitorV2Aggregator|聚合/backfill 写入没有统一 owner generation|
 |OpsAlertEvaluatorService / OpsScheduledReportService|邮件或其他外部通知没有 durable delivery claim|
 |OpsCleanupService|cron Stop 三秒后放弃等待，且 Reload 可重建 cron，不能证明停止后无回调|
@@ -49,3 +49,14 @@ Process-local / request-local / gateway-local / control-local 不由此 coordina
 ## 验证与未验证
 
 新增单元测试覆盖双 coordinator standby、旧任务 join 前禁止主动移交、接管、锁丢失取消、不重启旧实例、Stop 失败保留 session、调用方 Stop 超时、未知任务默认拒绝以及 gate 未注入 PG 时失败。SQL mock 覆盖 dedicated connection、standby 返还连接、查锁与异常解锁丢弃连接。这些不是网络分区证明，也不覆盖真实 SMTP、支付、OAuth、对象存储或模型副作用。真实 PostgreSQL 进程 kill/standby 接管 smoke 的命令和结果由本次集成验证记录单独报告；未运行的能力不得写为通过。无新增 schema migration，未应用数据库迁移。
+
+## 后续加固（2026-11-03，仍有阻断）
+
+- 调度 outbox 改为扫描待处理行、先释放 dedup、成功后只确认本批精确 ID。自增 ID 是分配顺序而非提交顺序，不再用 watermark 决定扫描/删除范围；watermark 仅单调诊断信息，支持超过 Lua 精确整数范围的 int64。
+- SchedulerSnapshot 启动 bootstrap/poll/rebuild 使用 owned context，StopContext 取消并等待；metadata revision 修复不再启动脱离生命周期的协程。
+- **SchedulerSnapshot 仍禁用**：bucket epoch 不能排序 PG leader generation，共享账号/metadata 写入和 group retire/reopen 尚未完整 fencing，bucket lock release 也还不是 owner 条件删除。
+- TokenRefresh 的多副本防护模式强制 durable API，禁用陈旧快照账号缓存覆盖、无 fence 的状态修正和 privacy/enrichment 后动作；Start/Stop 串行化。五个平台名的 stub 测试证明歧义后不重放，但不是五个真实 provider 的端到端证明。其他 provider 内部副作用尚需审计，**仍不加入允许清单**。
+- 并发清理仓储单元测试通过，确定性第二 Redis 客户端交错测试重复 20 次通过；这里的第二客户端使用 miniredis，不等同真实 ElastiCache 故障演练。Docker PostgreSQL/Redis 的 outbox 晚提交、同 key 再生产、snapshot replay 三项集成测试通过（10.775s）。
+- 额外确认的 Token 阻断：AntigravityOAuthService.RefreshToken 内部仍有最多四次调用及不可取消的 sleep；外层一次 executor 的 stub 断言无法覆盖内部上游重试。必须先统一 provider 单次尝试/取消语义，再考虑放行。
+- GeminiOAuthService.RefreshToken 也存在同类内部四次重试和 sleep；不是只修 Antigravity 就能放行所有 provider。
+- 实际调用链只读审计进一步确认：Gemini account refresh 有 alternate-client fallback、项目发现/OnboardUser、tier 查询；Antigravity account refresh 在轮换后继续 LoadCodeAssist/onboarding。维护刷新应只返回新 token 和保留的本地 metadata，不能因后续补全失败丢失新凭据。还须限制刷新 POST 的重定向及底层 transport replay；只设置应用 retry=0 不足以声称一次网络发送。未据此放行任务。
