@@ -54,6 +54,23 @@
 - 最终两账户/测试Key/user均停用、原组与无代理状态恢复、故障代理inactive，账务保留，四服务健康。本批费用按本地配置0.001070美元。
 - 管理员刷新尚无统一CAS；单次成功不代表并发刷新安全。尚未验证真实429、部分流恢复、WS或跨平台调度。
 
+## 接续更新：刷新硬化与加密组件（未部署）
+
+- 当前未提交改动：OpenAI统一管理员刷新、JSON/proxy CAS、owner租约Lua释放与lease内超时、受限管理员安全拒绝；Wire已生成。
+- 新credentialcrypto包test/vet通过，仅抽象KMS信封组件，没有数据库/KMS适配或真实凭据迁移，不能称现有token已加密。
+- 仓储CAS/lease聚焦单测0.041秒、管理员unit0.058秒、服务协调器聚焦unit0.159秒通过。PostgreSQL integration因Docker缺失跳过。server build通过，未安装/启动，最终状态见IMPLEMENTATION_STATUS第七批。
+- 恢复会话后发现四集成服务均inactive，未enable自启；未启动或更新安装binary。本批无真实OAuth刷新、无模型调用、无AWS资源变更。
+- 后续仍需：受限管理员事务外授权CAS、平台/type比较/持久fencing、lease failover治理、真实PostgreSQL条件写入、KMS适配/DB接线/迁移。
+
+## 接续更新：用户要求1–3已实现并验证（未部署）
+
+- Docker已安装可用29.9.2，不再按缺Docker跳过；最终PG18/Redis8.4容器集成通过5.618秒，包括权限撤销/轮换/策略/解绑、generation/owner、平台/type、迟到提交、本地幂等完成及显式歧义恢复。
+- RDS真实TLS回滚夹具CAS已通过0.161秒，无DDL/真实账号修改。
+- 受限通用refresh已支持事务外实时授权；提交时再次锁校验，带Key授权必走持久路径。split角色自动强制持久模式。
+- 新250迁移只在Docker应用，未更新RDS或运行binary；四服务仍inactive。无新增真实模型调用/刷新。
+- 不明结果禁止自动重新消费token；本地completion可幂等重试。显式恢复方法需停旧holder、重新授权、inactive/不可调度、changed refresh token及匹配generation，推进fence；无加密spool、无公开恢复CLI/HTTP。
+- service/repo/handler单测、Wire/build/vet通过。用户授权完成后分批commit push；加密组件c80c6110f已推送，刷新及文档另批。最新完整状态见IMPLEMENTATION_STATUS第八批，取代第七批历史缺口。
+
 ## 权威文档与证据位置
 
 - `AGENTS.md`：操作约束。
