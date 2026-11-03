@@ -46,6 +46,16 @@ variable "ec2_security_group_id" {
     error_message = "Supply the existing integration EC2 security-group ID."
   }
 }
+variable "additional_runtime_security_group_ids" {
+  description = "Explicitly approved private application SGs; empty preserves the original integration topology."
+  type        = set(string)
+  default     = []
+  validation {
+    condition     = alltrue([for id in var.additional_runtime_security_group_ids : can(regex("^sg-[0-9a-f]+$", id))])
+    error_message = "Additional runtime sources must be explicit security-group IDs, never CIDRs."
+  }
+}
+
 variable "deployment_enabled" {
   type    = bool
   default = false
@@ -126,6 +136,25 @@ resource "aws_vpc_security_group_ingress_rule" "valkey" {
   from_port                    = 6379
   to_port                      = 6379
 }
+resource "aws_vpc_security_group_ingress_rule" "additional_postgres" {
+  for_each                     = var.additional_runtime_security_group_ids
+  security_group_id            = aws_security_group.postgres.id
+  referenced_security_group_id = each.value
+  ip_protocol                  = "tcp"
+  from_port                    = 5432
+  to_port                      = 5432
+  description                  = "Multi-host-private-runtime"
+}
+resource "aws_vpc_security_group_ingress_rule" "additional_valkey" {
+  for_each                     = var.additional_runtime_security_group_ids
+  security_group_id            = aws_security_group.valkey.id
+  referenced_security_group_id = each.value
+  ip_protocol                  = "tcp"
+  from_port                    = 6379
+  to_port                      = 6379
+  description                  = "Multi-host-private-runtime"
+}
+
 resource "aws_vpc_security_group_ingress_rule" "replication" {
   security_group_id            = aws_security_group.valkey.id
   referenced_security_group_id = aws_security_group.valkey.id

@@ -35,6 +35,29 @@ run "weak_password_is_rejected" {
   variables { valkey_password = "weak" }
   expect_failures = [var.valkey_password]
 }
+run "invalid_extra_runtime_group_rejected" {
+  command = plan
+  variables { additional_runtime_security_group_ids = ["0.0.0.0/0"] }
+  expect_failures = [var.additional_runtime_security_group_ids]
+}
+run "additional_runtime_groups_private_ports_only" {
+  command = plan
+  variables { additional_runtime_security_group_ids = ["sg-87654321"] }
+  assert {
+    condition = (
+      length(aws_vpc_security_group_ingress_rule.additional_postgres) == 1 &&
+      length(aws_vpc_security_group_ingress_rule.additional_valkey) == 1 &&
+      aws_vpc_security_group_ingress_rule.additional_postgres["sg-87654321"].referenced_security_group_id == "sg-87654321" &&
+      aws_vpc_security_group_ingress_rule.additional_postgres["sg-87654321"].from_port == 5432 &&
+      aws_vpc_security_group_ingress_rule.additional_postgres["sg-87654321"].to_port == 5432 &&
+      aws_vpc_security_group_ingress_rule.additional_valkey["sg-87654321"].from_port == 6379 &&
+      aws_vpc_security_group_ingress_rule.additional_valkey["sg-87654321"].to_port == 6379 &&
+      aws_vpc_security_group_ingress_rule.additional_postgres["sg-87654321"].cidr_ipv4 == null &&
+      aws_vpc_security_group_ingress_rule.additional_valkey["sg-87654321"].cidr_ipv4 == null
+    )
+    error_message = "Additional runtimes must use SG references and only the exact private database/cache ports."
+  }
+}
 run "managed_data_security_contract" {
   command = plan
   assert {
