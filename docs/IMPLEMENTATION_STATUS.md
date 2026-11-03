@@ -226,3 +226,17 @@ go test -p=1 ./internal/repository -run 'TestConcurrencyIndex|TestLiveLease' -co
 - refreshpolicy 包 PASS0.003s；`go vet -p=1 ./internal/pkg/refreshpolicy ./internal/pkg/antigravity ./internal/repository ./internal/service` PASS。
 
 均为loopback假provider/假client，没有真实OAuth刷新、模型调用、AWS部署或schema变更。完整scheduler fencing仍未实现，下一批先bucket/group owner-safe slice，不解除任务门禁。
+
+另新增 `TestAccountRepoSuite/TestOAuthRefreshConcreteHTTPDurableNoReplay`，拟覆盖真实 disposable PG durable barrier→实际 OpenAI service/refresher→具体 HTTP client→loopback fake provider，success/disconnect 后重建协调器不重放。第一次命令 `go test -p=1 -tags=integration ./internal/repository -run 'TestAccountRepoSuite/TestOAuthRefreshConcreteHTTPDurableNoReplay' -count=1 -timeout=4m -v` 在并发进行的 scheduler lease API 迁移中编译失败（undefined SchedulerBucketLease），没有进入断言；等待接口稳定后重跑，不记录为测试通过。
+
+TLS补充回归发现严格维护的 Chrome preset 即使 ForceHTTP1，ALPN仍协商h2，导致服务端读到HTTP/1前言后EOF。`TestMaintenanceRefreshForcesHTTP1OverTLS/impersonated`失败（仓储0.364s），中断后续链。已在维护专用ClientHello限定ALPN=http/1.1并移除h2 application settings，legacy客户端不变；重跑中，不删除失败用例。
+
+第二种共享自定义ClientHello spec尝试仍在impersonated TLS用例失败（local tls internal error，仓储0.372s）；已改成每连接独立uTLS握手状态修改ALPN，先单独验证TLS，不将未通过修复写作完成。两轮仓储输出未显示lease断言失败，但整条链均失败，后续service/integration/build/vet尚未执行。
+
+每连接uTLS版本首次单测失败为callback收到hostname却按host:port解析；兼容hostname后TLS单项 PASS0.034s（plain/impersonated，两次请求，h2-enabled loopback）。最终完整链已重新启动。此前TLS失败均保留记录，未以绕过TLS校验的生产配置修复；自签证书跳过校验仅存在于本地测试客户端。
+
+所有权首批当前验证：repository unit PASS0.370s；service聚焦独立重跑PASS0.223s。原后台service编译残留主动终止exit144后，仅运行剩余链。integration-tag先因scheduler_cache_integration_test残留redis未使用import编译失败，已移除重跑；无断言执行。build/vet/smoke-04仍待最终结果。
+
+真实 Docker PG/Redis 集成最终PASS6.731s：`TestAccountRepoSuite/TestOAuthRefreshConcreteHTTPDurableNoReplay` success/disconnect 两项均执行，重建协调器后上游计数仍1；`TestSchedulerSnapshotOutboxReplay`及`TestSchedulerOutboxLateLowerIDRemainsPending`通过。不是stub-only覆盖，不使用真实provider。handler/build/vet/smoke-04仍待结果。
+
+最终剩余链exit0：Docker6.731s、handler warmup0.027s、server build、相关vet均PASS；smoke-04 passed=true，kill worker-a→worker-b实际暂停过期fixture，live_slot_and_wait_preserved=true，Control A session在B及重启后可见，provider_calls=0，临时进程退出。结合此前repository unit0.370s/service0.223s，owner-lease首批可提交。没有PG generation/namespace/outbox generation fencing实现，仍禁用SchedulerSnapshot/TokenRefresh HA。无迁移或AWS部署。

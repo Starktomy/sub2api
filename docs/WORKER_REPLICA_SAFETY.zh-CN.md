@@ -70,3 +70,9 @@ Process-local / request-local / gateway-local / control-local 不由此 coordina
 不能只加 Redis generation marker：Valkey rollback 可恢复旧 marker/lease；PG check 后 Redis write 不是跨存储原子 fence。拟采用 PG 持久 generation+随机 owner、按 generation 隔离的 scheduler namespace、PG 选择 active generation；新 leader fresh rebuild 后发布 namespace。每个 payload/metadata/revision/member chunk、activate/retire/reopen、lease acquire/release 都需同 Lua 内校验原始 capability，missing guard 不得重建。Bucket API 改 owner lease，group transition 同时校验 group lease；outbox dedup release/exact ack 需在 dedicated PG session 的事务内核验锁和 generation。Gateway 不得拿 worker 写权限；保留 DB fallback、停止 fallback 发布并将请求冷却状态拆为窄 overlay。需要新 forward migration、权限/wire、reader namespace/memo 接线和旧 leader/lease expiry/Redis rollback/partial pipeline 确定性交错测试。
 
 此方案也不承诺 PG 断连瞬时撤销在飞 Redis 命令；旧 namespace 在新 namespace 发布前仍有窗口，读侧 authority 与恢复策略必须明确。当前未加迁移、未改 reader/namespace、未开放 SchedulerSnapshot，不能把设计当作实现。
+
+### Bucket/group 所有权首批实现（验证中）
+
+所有三类快照发布 API 现在必须带 bucket lease；随机 owner、条件释放，allocation、payload/metadata/revision chunk、member chunk、activation 同 Lua 内验证当前 lease；epoch capture 不再初始化 Redis。Gateway fallback 在 DB load 前尝试 lease，busy 仍可 DB 返回但不发布。Group retire/reopen 要求原 group lease，脚本第一步验证 owner。新增 expired holder 不能改 successor keyspace/TTL 和两类 chunk 间过期用例。此批没有 PG generation、命名空间、outbox generation ack 或 gateway overlay 改造，SchedulerSnapshot 继续禁用。正在跑 unit/integration/build/vet，尚不把实现当通过。
+
+所有权首批最终验证通过：repository0.370s、service0.223s、Docker实际HTTP durable/outbox6.731s、handler0.027s、build/vet、六进程smoke-04。上述只证明owner lease slice与保守六任务模式，不证明完整PG leadership fencing。
