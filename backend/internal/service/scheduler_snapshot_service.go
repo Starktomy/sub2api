@@ -247,6 +247,15 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 		} else if hit {
 			return derefAccounts(cached), useMixed, nil
 		}
+		if _, readOnly := s.cache.(SchedulerPublicationCache); readOnly {
+			if err := s.guardFallback(ctx); err != nil {
+				return nil, useMixed, err
+			}
+			fallbackCtx, cancel := s.withFallbackTimeout(ctx)
+			defer cancel()
+			accounts, err := s.loadAccountsFromDB(fallbackCtx, bucket, useMixed)
+			return accounts, useMixed, err
+		}
 		lease, acquired, lockErr := s.cache.TryLockBucket(ctx, bucket, 30*time.Second)
 		if lockErr == nil && acquired {
 			defer func() {
@@ -356,6 +365,9 @@ func (s *SchedulerSnapshotService) GetGroupByIDLite(ctx context.Context, groupID
 // UpdateAccountInCache 立即更新 Redis 中单个账号的数据（用于模型限流后立即生效）
 func (s *SchedulerSnapshotService) UpdateAccountInCache(ctx context.Context, account *Account) error {
 	if s.cache == nil || account == nil {
+		return nil
+	}
+	if _, readOnly := s.cache.(SchedulerPublicationCache); readOnly {
 		return nil
 	}
 	return s.cache.SetAccount(ctx, account)

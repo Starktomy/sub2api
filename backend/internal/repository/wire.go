@@ -49,7 +49,10 @@ func ProvideSessionLimitCache(rdb *redis.Client, cfg *config.Config) service.Ses
 }
 
 // ProvideSchedulerCache 创建调度快照缓存，并注入快照分块参数。
-func ProvideSchedulerCache(rdb *redis.Client, cfg *config.Config) service.SchedulerCache {
+func ProvideSchedulerCache(rdb *redis.Client, cfg *config.Config, db *sql.DB) service.SchedulerCache {
+	if cfg != nil && cfg.Runtime.SchedulerPublications {
+		return NewPublicationSchedulerCache(db, rdb)
+	}
 	mgetChunkSize := defaultSchedulerSnapshotMGetChunkSize
 	writeChunkSize := defaultSchedulerSnapshotWriteChunkSize
 	if cfg != nil {
@@ -63,7 +66,10 @@ func ProvideSchedulerCache(rdb *redis.Client, cfg *config.Config) service.Schedu
 	return newSchedulerCacheWithChunkSizes(rdb, mgetChunkSize, writeChunkSize)
 }
 
-func ProvideMaintenanceLocker(db *sql.DB) service.MaintenanceLocker {
+func ProvideMaintenanceLocker(db *sql.DB, cfg *config.Config) service.MaintenanceLocker {
+	if cfg != nil && cfg.Runtime.SchedulerPublications {
+		return NewFencedMaintenanceLockRepository(db)
+	}
 	return NewMaintenanceLockRepository(db)
 }
 

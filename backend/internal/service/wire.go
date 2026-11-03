@@ -567,7 +567,11 @@ func ProvideSchedulerSnapshotService(
 	cfg *config.Config,
 ) *SchedulerSnapshotService {
 	svc := NewSchedulerSnapshotService(cache, outboxRepo, accountRepo, groupRepo, cfg)
-	registerRuntimeService(lifecycle, "SchedulerSnapshotService", RuntimeScopeWorker, svc)
+	if cfg != nil && cfg.Runtime.SchedulerPublications {
+		lifecycle.Register(RuntimeTask{Name: "SchedulerPublicationService", Scope: RuntimeScopeWorker, RequiresMaintenanceFence: true, AcquiredFactory: svc.PublicationTask})
+	} else {
+		registerRuntimeService(lifecycle, "SchedulerSnapshotService", RuntimeScopeWorker, svc)
+	}
 	return svc
 }
 
