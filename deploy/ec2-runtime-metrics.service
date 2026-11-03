@@ -1,0 +1,22 @@
+[Unit]
+Description=Sub2API host and role CloudWatch runtime collector
+Wants=network-online.target
+After=network-online.target docker.service
+# Deliberately no Requires on application/Docker: outages must still be reported.
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+ExecStart=/usr/bin/python3 -I /opt/sub2api-runtime-metrics/ec2-runtime-metrics.py --config /etc/sub2api-runtime-metrics/config.json
+TimeoutStartSec=180
+Environment=AWS_DEFAULT_REGION=us-west-2 AWS_MAX_ATTEMPTS=1 AWS_PAGER=
+# Avoid root's local credential files; use the separately approved instance profile.
+Environment=AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+PrivateTmp=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+StandardOutput=journal
+StandardError=journal

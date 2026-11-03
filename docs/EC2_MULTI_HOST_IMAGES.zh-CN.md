@@ -95,6 +95,65 @@ python3 -I tools/smoke_cloud_image.py --image sub2api-cloud:local-amd64 \
 这是单机Docker网络测试，不证明真实跨主机、TLS或AWS故障切换；两个Control仅验证路由，不验证OAuth共享session。此前process smoke另有session跨Control/重启覆盖，不能将其混记成本脚本结果。
 
 
+## 两台现有 EC2：本地发布/回滚与开机启动资产（未安装）
+
+`deploy/ec2-role-deploy.py` 与 `ec2-roles*.service`/`ec2-roles-imds.nft` 是另一条**替代现有手工 Compose 生命周期**的 host-local 路径，不要同时运行。每台运行 gateway/control/guarded-worker，各角色一个固定名称容器。没有 build/pull/login/push、SSH/SSM、AWS 操作、迁移或基础设施修改。生产流量接入、ALB 排空/重新注册、SG 修复与 AWS monitoring 接入由外层流程负责。
+
+### 安装前置与配置接口
+
+本批只落盘资产，以下是操作者审核后在每台目标主机执行的集成步骤，**不是本批已执行命令**：
+
+1. 准备 root-owned `/opt/sub2api-roles`、`/var/lib/sub2api-roles`（0700），将脚本安装为 `/opt/sub2api-roles/ec2-role-deploy.py`（root 只读、0755）；Python3 >=3.9、Docker Engine、nftables 和 systemd 必须可用。Docker 不得禁用 bridge netfilter，启动之前验证 IPv4/IPv6 metadata 拦截实际生效。
+2. 将 `ec2-roles.service` 安装为 `/etc/systemd/system/sub2api-roles.service`，`ec2-roles-imds.service` 安装为 `/etc/systemd/system/sub2api-roles-imds.service`，nft 文件安装为 `/etc/nftables.d/sub2api-roles.nft`。`systemctl daemon-reload` 后 enable Docker 和这两个 unit；**首次不要先启动 application unit**，由 deploy 写入初始 state 后启动。防火墙仅修改独立 inet table，不改现有 native UID 规则，不 flush host ruleset。使用专属 IPv4 bridge `sub2api0`；没有 worker 端口发布。若其它防火墙管理器重载删除此 table，必须停止应用、恢复并重新验证，不依赖 oneshot active 状态证明规则还存在。
+3. 手工排空、停止并禁用旧 Compose/native 启动入口，包括旧容器的 Docker restart policy。控制器拒绝仍运行的 split/all 容器与 active integration native units；不能发现任意自定义 native 进程，因此必须额外审核 host process/unit inventory。不要在本控制器之外重新拉起旧 worker，也不要 `docker start` 历史容器。
+4. registry/image 分发由独立审核流程完成。仅接受**本机已加载的完整 `repository@sha256:<64 hex>`**，不接受 tag、裸 image ID，也不会联网补拉。固定宿主架构，并保留新旧两个 digest 和镜像层供回滚。不要将 image ID 误当 registry manifest digest。
+5. 外部 release JSON 必须为 root-owned 0600 绝对路径，不能放仓库；runtime env 为 root-owned 0600、CA 为 root-owned 且不可 group/world 写的绝对路径。release 只允许下面这些字段，不包含秘密：
+
+```json
+{
+  "image": "registry.example/sub2api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "env_file": "/etc/sub2api-roles/runtime.env",
+  "ca_file": "/etc/sub2api-roles/postgres-ca.pem",
+  "scheduler_publications": true,
+  "bind_ip": "127.0.0.1",
+  "gateway_port": 18080,
+  "control_port": 18081
+}
+```
+
+以上 digest 是无效示例，必须替换为审核通过的真实 digest。两个主机可以端口不同，只能显式 loopback/private IPv4；不要用 `0.0.0.0`。ALB 接入时使用实际私网地址、仅允许 LB SG；control 管理面另设访问控制，不与公开 gateway 混用。env 内容契约沿用前文，拒绝 `DATABASE_DSN`，脚本最后显式覆盖角色、TLS、check-only、publication 等安全参数。由于 unit 设置 `ProtectHome=true`，runtime env/CA 不得留在 `/root` 或其它 home 路径；main 安装阶段须先将现有 root-only runtime env 迁到 `/etc/sub2api-roles/runtime.env`（0600），确认服务可读。每次启动以 UID10001 在私有 tmpfs 内用固定、不插值的 shell 常量写入 `/app/data/config.yaml`，强制 `CONFIG_FILE` 指向该文件，禁用 remote pricing/hash URL、使用镜像内 pricing fallback 并只输出 stdout，然后 exec 原 `/app/cloud-entrypoint` 保留角色门禁。文件指针应指向不可变 release-specific env/CA；**只保存指针，不复制秘密，不回滚外部文件内容**。不要原地修改旧 release 的 env/CA，否则无法确定性回滚。持久 state 是 root-only JSON，包含 current/previous，不含 env 内容。
+
+当前 rollout 已完成 schema252，并显式 `RUNTIME_SCHEDULER_PUBLICATIONS=true`。此版本发布 JSON 必须显式 true；脚本不默认启用/禁用，不退回 legacy all、普通 full worker 或旧 SchedulerSnapshot/TokenRefresh。false 只供另外审核过的版本，不可用于当前252回滚来静默降低语义。回滚镜像必须仍能安全使用当前 DB schema；控制器不执行反向迁移。
+
+### 按主机滚动与故障处理
+
+```sh
+# 在已经完成外部排空的单台目标主机上，由 root 执行；不是跨主机编排命令。
+python3 -I /opt/sub2api-roles/ec2-role-deploy.py deploy /etc/sub2api-roles/release.json
+# 只回退该宿主到已保存的 previous digest/config。
+python3 -I /opt/sub2api-roles/ec2-role-deploy.py rollback
+```
+
+外层流程必须串行：先确认 B 可承载整站、健康和 worker standby/leadership 正常 → 从入口摘除 A 并等待现有请求/stream 排空 → A deploy → 验证 A 依赖/路由/业务只读探针/PG publication generation/Valkey manifest → 重新接流并观察 → 再以相同方式更新 B。**本地 flock 只防止同宿主并发发布，不是两宿主分布式发布锁**；必须由单一外层发布任务锁定整个 rollout。切勿同时更新两台或将 HTTP200 当作容量、依赖 readiness、worker leadership 证据。
+
+systemd 接管唯一生命周期，Docker restart=no；每次启动都先 graceful stop/remove 自己的三个容器，再从保存的 digest recreate，worker 最先停止，最多每个容器120秒。旧 candidate 全部停止后才允许恢复 previous，绝不启动停留的旧容器；两宿主间 worker 并存仅依赖既有 PG session leadership/fencing 机制，本工具不替代它。首次启动失败没有 previous 时 fail closed。candidate 启动180秒内未全部 health healthy 时，supervisor 自动尝试 previous；deploy 返回非0，操作者必须观察恢复，不能继续更新 peer。运行中 health 失败退出后由 systemd 限速重建当前版本，不自动在历史版本间反复切换；超过启动限额需人工介入。state 在启动前 fsync/atomic replace，断电重启也先清理残留再启动选定版本。deploy 仅在 supervisor 将 pending=false 持久化提交且三角色仍健康后才报告成功，避免 health 先于 state 提交的竞态。systemd stop 最多420秒，避免120秒容器排空被默认90秒 timeout 截断。
+
+健康源是镜像原有 Docker healthcheck `/health`，并检查三角色运行状态和请求 digest。监控集成读取 `sub2api-roles.service` journal/failed state、Docker health/OOM/restart/CPU/memory、宿主 MemAvailable/disk/CPU credit，以及业务端 DB/Valkey/PG publication generation；无额外公网 metrics listener。Docker json-file 每角色 3×10MiB 轮转。HTTP健康不是依赖或领导权检查，任何自动接流前仍须外部 readiness gate。
+
+### 2 vCPU / 4 GiB 共置预算与单机验收门禁
+
+| 角色 | memory cap | soft reservation | CPU cap | Go soft target |
+| --- | --- | --- | --- | --- |
+| gateway | 1024MiB | 512MiB | 1.0 | 768MiB |
+| control | 768MiB | 384MiB | 0.4 | 512MiB |
+| guarded worker | 512MiB | 256MiB | 0.3 | 320MiB |
+
+总 cap 2304MiB / 1.7 vCPU，为 OS/Docker/SSM/日志与监控留下约1792MiB和0.3 vCPU的名义余量；实际可用内存小于标称4GiB。每容器 pids256，禁用额外 swap；tmpfs 64+128MiB 是按需占用并计入容器内存，不是额外免费内存。Go GOMEMLIMIT 是软目标，不约束非Go/内核/全部 RSS。memory reservation 只是软回收提示，**不是 admission/保留保证**；CPU cap 是上限不是保证或严格宿主预留，宿主/其它容器仍可争抢资源。此保守初值不是性能结论，固定 cap 可能限制低负载时借用闲置 CPU。
+
+单宿主容量测试由外层独立流量机执行，不能在这台2核机器并发编译/压测生成器。先停接另一台流量，保留其可回退能力；在预先批准的测试账号/预算下，对剩余单机分阶段 ramp+steady（建议每阶10分钟、目标并发持续30分钟），覆盖长流式请求、control/OAuth读路径、usage drain、worker publication，记录 offered/completed RPS、并发、p50/p95/p99、5xx/429、OOM、CPU throttling/credits、内存与 DB pool/Valkey latency。禁止未授权真实模型调用；先用受控测试 upstream，真实 provider 另行授权。验收至少要求目标负载无OOM/非预期重启、无publication leadership错误、请求错误率/延迟满足预先约定SLO，且有恢复余量；再做单宿主摘除/重接验证。**本批未执行容量测试，不能据预算宣称任一单机已能承载整站。**
+
+离线测试：`python3 -I deploy/tests/ec2-role-deploy-test.py`（mock Docker/systemd，11项，含固定配置生成与 pending 提交成功门禁），以及既有 `bash deploy/tests/cloud-image-contract-test.sh`；不以这些替代实际安装、重启、metadata拒绝、ALB排空或负载验收。
+
 ### 2026-11-03 本机验收结果
 
 - 官方 golangci-lint v2.14.0 最终 **0 issues**；完整 integration 与 unit 均通过（repository integration41.127s、service integration149.757s、repository unit10.110s、service unit251.324s）。

@@ -21,6 +21,8 @@ jobs:
           /bin/sh deploy/tests/docker-runtime-resources-test.sh
           /bin/sh deploy/test-caddyfile-cache.sh
           /bin/bash deploy/tests/cloud-image-contract-test.sh
+          python3 -I deploy/tests/ec2-role-deploy-test.py
+          python3 -I deploy/tests/ec2-runtime-metrics-test.py
 
   test:
     runs-on: ubuntu-latest

@@ -2,6 +2,87 @@
 
 This directory contains files for deploying Sub2API on Linux servers and Apple-silicon Macs.
 
+## EC2 runtime metric collector (local assets; not installed)
+
+`ec2-runtime-metrics.py`, `.service`, `.timer` and
+`tests/ec2-runtime-metrics-test.py` provide a stdlib-only host collector for the
+new `sub2api-roles-{gateway,control,worker}` supervisor, not old Compose names.
+No backend/deployment lifecycle changes or AWS resources are included.
+
+Operator-reviewed integration prerequisites (not executed by this change):
+
+- Python >=3.9, Docker, AWS CLI and systemd must already exist. Install the script
+  root-owned and non-writable by other users under `/opt/sub2api-runtime-metrics/`.
+  Install the supplied units with their exact filenames under `/etc/systemd/system/`.
+- Create `/etc/sub2api-runtime-metrics/config.json` **outside Git**, root-owned
+  mode 0600, in a root-owned directory not writable by others. Its only fields
+  are `instance_id` and `region`; set the former to this host's approved identity
+  (`i-04225834295350402` or `i-07f2c0ba4744915e4`) and the latter to `us-west-2`.
+  This is a fixed operator assertion, not automatic identity discovery. Never copy
+  one host's configuration onto its peer. No credentials belong in that JSON.
+- Independently approve instance-profile permission for `cloudwatch:PutMetricData`
+  restricted to namespace `Sub2API/Runtime`. The unit avoids root's local AWS
+  credential/config files and uses the host profile; do not add root access keys
+  or a deployer profile. IAM authoring/attachment belongs to the outer workflow.
+- Review the unit, then use daemon-reload and enable/start the timer only after
+  those gates. Nothing here performs installation or enables any service.
+  Docker socket access is root-equivalent despite systemd hardening.
+- Safe collection preview (local proc/disk and read-only Docker commands only):
+  `python3 -I /opt/sub2api-runtime-metrics/ec2-runtime-metrics.py --dry-run`.
+  This never invokes AWS, including on failure. No full inspect, environment,
+  healthcheck log, credentials, container IDs or request IDs are printed.
+
+Metric contract, namespace `Sub2API/Runtime`, standard resolution, approximately
+one batched PutMetricData call per minute per host. Publication passes the
+nonsecret metric JSON through an exclusive 0600 temporary file, flushed before
+AWS CLI reads it and removed on both success and failure. This avoids the target
+host's unreliable CLIv2 `file:///dev/stdin` handling:
+
+| Dimensions | Metrics | Series per host |
+| --- | --- | --- |
+| InstanceId | MemoryAvailableBytes, MemoryUsedPercent, RootDiskUsedPercent, Heartbeat, CollectionSuccess | 5 |
+| InstanceId + Role (gateway/control/worker) | ContainerCount, HealthyCount, OOMKilledCount, ResourceCapDrift | 4 x 3 = 12 |
+
+Exactly **17 custom metric series per configured host, 34 for the two approved
+hosts**, without extra dimension rollups. One successful sample carries 17 data
+points; collection failures carry only Heartbeat=1 and CollectionSuccess=0 and
+exit nonzero. Config failures cannot safely publish; publish failures also exit
+nonzero. Missing containers are valid observed zero counts, not collection
+errors, with drift=1 because their limits cannot be certified. Unknown Docker
+state/inspect races fail the entire collection rather than certify health.
+Heartbeat means execution, not application health or proof of publication until
+CloudWatch actually receives it. The timer keeps attempting after failed runs;
+inspect the service exit status/journal as well as missing-data alarms.
+
+Root disk use includes reserved blocks as unavailable (`f_bavail`); other mounts
+are intentionally not collected. Memory use is `(MemTotal-MemAvailable)/MemTotal`.
+Drift compares the documented supervisor memory/reservation/swap, NanoCPU limits,
+absence of additional quota/period overrides and pids=256. It does not audit Go
+soft limits or secrets. OOMKilledCount is a **current Docker state gauge**, not an
+OOM event counter: restarts/recreation between polls can erase evidence. A running
+container with no Docker healthcheck never counts healthy. These signals do not
+prove DB/Valkey readiness, worker leadership, or single-host capacity.
+
+Alarm recommendations for outer resource authoring (not created or live-validated):
+
+- Heartbeat missing: treat missing as breaching, after an explicitly chosen
+  multi-minute window to tolerate timer jitter/brief Docker timeouts. CollectionSuccess
+  Minimum <1 catches reported errors; missing must also breach, not become OK.
+- Per role: HealthyCount Minimum <1 or ContainerCount Minimum <1;
+  ResourceCapDrift Maximum >0; OOMKilledCount Maximum >0. Treat missing as
+  breaching or pair explicitly with collector-liveness alarms. Require the
+  InstanceId and Role dimensions exactly; don't sum across hosts to hide a failed peer.
+- MemoryUsedPercent / RootDiskUsedPercent Maximum and MemoryAvailableBytes Minimum
+  need operator-approved sustained thresholds and evaluation windows based on a
+  measured baseline. These assets do not claim any capacity threshold validated.
+- Keep AWS-native EC2 CPU/status/CPU credit, RDS and Valkey metric/alarm resources
+  in the outer workflow; they are not duplicated into this custom namespace.
+  Native RDS/Valkey metrics do not increase the 34 custom-series count.
+
+Offline verification: `python3 -I deploy/tests/ec2-runtime-metrics-test.py`.
+No package install, real Docker invocation, AWS call, network access, systemd
+activation, or live threshold/capacity validation is part of that test.
+
 ## Deployment Methods
 
 | Method | Best For | Setup Wizard |

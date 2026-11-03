@@ -1,0 +1,11 @@
+# Dedicated container bridge only. Existing native UID rules remain separate.
+# Requires nftables; idempotent reload without flushing any other host rules.
+add table inet sub2api_roles
+flush table inet sub2api_roles
+table inet sub2api_roles {
+    chain forward {
+        type filter hook forward priority -10; policy accept;
+        iifname "sub2api0" ip daddr 169.254.169.254 reject
+        iifname "sub2api0" ip6 daddr fd00:ec2::254 reject
+    }
+}
