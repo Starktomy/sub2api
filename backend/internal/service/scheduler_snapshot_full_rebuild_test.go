@@ -28,11 +28,11 @@ func (c *schedulerFullRebuildTestCache) ListBuckets(context.Context) ([]Schedule
 	return nil, c.listErr
 }
 
-func (c *schedulerFullRebuildTestCache) TryLockBucket(context.Context, SchedulerBucket, time.Duration) (bool, error) {
+func (c *schedulerFullRebuildTestCache) TryLockBucket(_ context.Context, bucket SchedulerBucket, _ time.Duration) (SchedulerBucketLease, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.lockCalls++
-	return false, nil
+	return SchedulerBucketLease{}, false, nil
 }
 
 func (c *schedulerFullRebuildTestCache) CaptureBucketWriteToken(_ context.Context, bucket SchedulerBucket) (SchedulerBucketWriteToken, error) {
@@ -42,7 +42,7 @@ func (c *schedulerFullRebuildTestCache) CaptureBucketWriteToken(_ context.Contex
 	return SchedulerBucketWriteToken{Bucket: bucket, Epoch: 1}, nil
 }
 
-func (c *schedulerFullRebuildTestCache) ReopenBucket(_ context.Context, bucket SchedulerBucket) (SchedulerBucketWriteToken, error) {
+func (c *schedulerFullRebuildTestCache) ReopenBucket(_ context.Context, bucket SchedulerBucket, lease SchedulerGroupLifecycleLease) (SchedulerBucketWriteToken, error) {
 	return SchedulerBucketWriteToken{Bucket: bucket, Epoch: 1}, nil
 }
 

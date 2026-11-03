@@ -38,10 +38,10 @@ func (f *fakeSchedulerCache) CaptureBucketWriteToken(_ context.Context, bucket s
 func (f *fakeSchedulerCache) SetSnapshot(_ context.Context, _ service.SchedulerBucket, _ service.SchedulerBucketWriteToken, _ []service.Account) error {
 	return nil
 }
-func (f *fakeSchedulerCache) RetireBucket(_ context.Context, _ service.SchedulerBucket) error {
+func (f *fakeSchedulerCache) RetireBucket(_ context.Context, _ service.SchedulerBucket, lease service.SchedulerGroupLifecycleLease) error {
 	return nil
 }
-func (f *fakeSchedulerCache) ReopenBucket(_ context.Context, bucket service.SchedulerBucket) (service.SchedulerBucketWriteToken, error) {
+func (f *fakeSchedulerCache) ReopenBucket(_ context.Context, bucket service.SchedulerBucket, lease service.SchedulerGroupLifecycleLease) (service.SchedulerBucketWriteToken, error) {
 	return service.SchedulerBucketWriteToken{Bucket: bucket, Epoch: 1}, nil
 }
 func (f *fakeSchedulerCache) TryAcquireGroupLifecycleLease(_ context.Context, _ int64, _ time.Duration) (service.SchedulerGroupLifecycleLease, bool, error) {
@@ -63,10 +63,10 @@ func (f *fakeSchedulerCache) DeleteAccount(_ context.Context, _ int64) error    
 func (f *fakeSchedulerCache) UpdateLastUsed(_ context.Context, _ map[int64]time.Time) error {
 	return nil
 }
-func (f *fakeSchedulerCache) TryLockBucket(_ context.Context, _ service.SchedulerBucket, _ time.Duration) (bool, error) {
-	return true, nil
+func (f *fakeSchedulerCache) TryLockBucket(_ context.Context, _ service.SchedulerBucket, _ time.Duration) (service.SchedulerBucketLease, bool, error) {
+	return service.SchedulerBucketLease{}, true, nil
 }
-func (f *fakeSchedulerCache) UnlockBucket(_ context.Context, _ service.SchedulerBucket) error {
+func (f *fakeSchedulerCache) UnlockBucket(_ context.Context, _ service.SchedulerBucketLease) error {
 	return nil
 }
 func (f *fakeSchedulerCache) ListBuckets(_ context.Context) ([]service.SchedulerBucket, error) {

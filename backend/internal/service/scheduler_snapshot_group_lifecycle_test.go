@@ -89,11 +89,11 @@ func (c *groupLifecycleTestCache) ReleaseGroupLifecycleLease(ctx context.Context
 	return nil
 }
 
-func (c *groupLifecycleTestCache) RetireBucket(ctx context.Context, bucket SchedulerBucket) error {
+func (c *groupLifecycleTestCache) RetireBucket(ctx context.Context, bucket SchedulerBucket, lease SchedulerGroupLifecycleLease) error {
 	c.stateMu.Lock()
 	c.retireCalls = append(c.retireCalls, bucket)
 	c.retireHeld = append(c.retireHeld, c.leaseHeld)
-	held := c.leaseHeld
+	held := c.leaseHeld && lease == c.lease
 	call := len(c.retireCalls)
 	err := c.retireErr
 	errAt := c.retireErrAt
@@ -104,16 +104,16 @@ func (c *groupLifecycleTestCache) RetireBucket(ctx context.Context, bucket Sched
 	if err != nil && (errAt <= 0 || call == errAt) {
 		return err
 	}
-	return c.retirementRaceCache.RetireBucket(ctx, bucket)
+	return c.retirementRaceCache.RetireBucket(ctx, bucket, lease)
 }
 
-func (c *groupLifecycleTestCache) ReopenBucket(ctx context.Context, bucket SchedulerBucket) (SchedulerBucketWriteToken, error) {
+func (c *groupLifecycleTestCache) ReopenBucket(ctx context.Context, bucket SchedulerBucket, lease SchedulerGroupLifecycleLease) (SchedulerBucketWriteToken, error) {
 	if err := ctx.Err(); err != nil {
 		return SchedulerBucketWriteToken{}, err
 	}
 	c.stateMu.Lock()
 	c.reopenHeld = append(c.reopenHeld, c.leaseHeld)
-	held := c.leaseHeld
+	held := c.leaseHeld && lease == c.lease
 	call := len(c.reopenHeld)
 	reopenErr := c.reopenErr
 	reopenErrAt := c.reopenErrAt
@@ -124,7 +124,7 @@ func (c *groupLifecycleTestCache) ReopenBucket(ctx context.Context, bucket Sched
 	if reopenErr != nil && (reopenErrAt <= 0 || call == reopenErrAt) {
 		return SchedulerBucketWriteToken{}, reopenErr
 	}
-	token, err := c.retirementRaceCache.ReopenBucket(ctx, bucket)
+	token, err := c.retirementRaceCache.ReopenBucket(ctx, bucket, lease)
 	if err != nil {
 		return SchedulerBucketWriteToken{}, err
 	}
@@ -145,17 +145,17 @@ func (c *groupLifecycleTestCache) ListBuckets(ctx context.Context) ([]SchedulerB
 	return c.retirementRaceCache.ListBuckets(ctx)
 }
 
-func (c *groupLifecycleTestCache) TryLockBucket(_ context.Context, _ SchedulerBucket, ttl time.Duration) (bool, error) {
+func (c *groupLifecycleTestCache) TryLockBucket(_ context.Context, bucket SchedulerBucket, ttl time.Duration) (SchedulerBucketLease, bool, error) {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	c.bucketLockTTLs = append(c.bucketLockTTLs, ttl)
 	if c.bucketLockErr != nil {
-		return false, c.bucketLockErr
+		return SchedulerBucketLease{}, false, c.bucketLockErr
 	}
-	return !c.bucketLockBusy, nil
+	return SchedulerBucketLease{Bucket: bucket, OwnerToken: "fixture-bucket"}, !c.bucketLockBusy, nil
 }
 
-func (c *groupLifecycleTestCache) UnlockBucket(context.Context, SchedulerBucket) error {
+func (c *groupLifecycleTestCache) UnlockBucket(context.Context, SchedulerBucketLease) error {
 	c.stateMu.Lock()
 	c.unlockCalls++
 	c.stateMu.Unlock()
@@ -434,7 +434,7 @@ func TestSchedulerGroupLifecycleActiveReopensAndRebuildsAllCurrentBuckets(t *tes
 	historical := SchedulerBucket{GroupID: groupID, Platform: "legacy", Mode: "obsolete"}
 	cache := newGroupLifecycleTestCache(historical)
 	for _, bucket := range current {
-		require.NoError(t, cache.retirementRaceCache.RetireBucket(context.Background(), bucket))
+		require.NoError(t, cache.retirementRaceCache.RetireBucket(context.Background(), bucket, SchedulerGroupLifecycleLease{GroupID: bucket.GroupID, OwnerToken: "fixture"}))
 	}
 	groups := &groupLifecycleTestGroupRepo{group: &Group{ID: groupID, Platform: PlatformOpenAI, Status: StatusActive, Hydrated: true}}
 	accounts := &groupLifecycleTestAccountRepo{}

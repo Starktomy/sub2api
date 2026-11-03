@@ -27,11 +27,11 @@ func (c *snapshotHydrationCache) SetSnapshot(ctx context.Context, bucket Schedul
 	return nil
 }
 
-func (c *snapshotHydrationCache) RetireBucket(ctx context.Context, bucket SchedulerBucket) error {
+func (c *snapshotHydrationCache) RetireBucket(ctx context.Context, bucket SchedulerBucket, lease SchedulerGroupLifecycleLease) error {
 	return nil
 }
 
-func (c *snapshotHydrationCache) ReopenBucket(ctx context.Context, bucket SchedulerBucket) (SchedulerBucketWriteToken, error) {
+func (c *snapshotHydrationCache) ReopenBucket(ctx context.Context, bucket SchedulerBucket, lease SchedulerGroupLifecycleLease) (SchedulerBucketWriteToken, error) {
 	return SchedulerBucketWriteToken{Bucket: bucket, Epoch: 1}, nil
 }
 
@@ -62,11 +62,11 @@ func (c *snapshotHydrationCache) UpdateLastUsed(ctx context.Context, updates map
 	return nil
 }
 
-func (c *snapshotHydrationCache) TryLockBucket(ctx context.Context, bucket SchedulerBucket, ttl time.Duration) (bool, error) {
-	return true, nil
+func (c *snapshotHydrationCache) TryLockBucket(ctx context.Context, bucket SchedulerBucket, ttl time.Duration) (SchedulerBucketLease, bool, error) {
+	return SchedulerBucketLease{Bucket: bucket, OwnerToken: "fixture-bucket"}, true, nil
 }
 
-func (c *snapshotHydrationCache) UnlockBucket(ctx context.Context, bucket SchedulerBucket) error {
+func (c *snapshotHydrationCache) UnlockBucket(ctx context.Context, lease SchedulerBucketLease) error {
 	return nil
 }
 

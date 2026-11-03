@@ -26,6 +26,7 @@ type schedulerCacheCommandRecorder struct {
 	batches        [][]string
 	pipelines      int
 	failPipelineAt int
+	afterProcess   func(redis.Cmder)
 }
 
 func (r *schedulerCacheCommandRecorder) DialHook(next redis.DialHook) redis.DialHook { return next }
@@ -35,7 +36,11 @@ func (r *schedulerCacheCommandRecorder) ProcessHook(next redis.ProcessHook) redi
 		if !isSchedulerCacheHandshakeCommand(cmd) {
 			r.record(cmd)
 		}
-		return next(ctx, cmd)
+		err := next(ctx, cmd)
+		if err == nil && r.afterProcess != nil {
+			r.afterProcess(cmd)
+		}
+		return err
 	}
 }
 
@@ -166,7 +171,7 @@ func memoTestAccountOn(platform string, id int64, name string) service.Account {
 func memoPublish(t *testing.T, cache *schedulerCache, bucket service.SchedulerBucket, accounts ...service.Account) {
 	t.Helper()
 	ctx := context.Background()
-	token, err := cache.CaptureBucketWriteToken(ctx, bucket)
+	token, err := captureLeasedSchedulerToken(t, cache, ctx, bucket)
 	require.NoError(t, err)
 	require.NoError(t, cache.SetSnapshot(ctx, bucket, token, accounts))
 }
@@ -367,7 +372,7 @@ func TestSchedulerCacheSnapshotMemoMembershipChangeByAccountIDs(t *testing.T) {
 	ctx := context.Background()
 	cache, _, _ := newSchedulerCacheMemoUnit(t, defaultSchedulerSnapshotWriteChunkSize)
 	bucket := memoTestBucket(108)
-	token, err := cache.CaptureBucketWriteToken(ctx, bucket)
+	token, err := captureLeasedSchedulerToken(t, cache, ctx, bucket)
 	require.NoError(t, err)
 	ids, err := cache.SetSnapshotAndReturnAccountIDs(ctx, bucket, token, []service.Account{memoTestAccount(61, "a"), memoTestAccount(62, "b")})
 	require.NoError(t, err)
@@ -377,7 +382,7 @@ func TestSchedulerCacheSnapshotMemoMembershipChangeByAccountIDs(t *testing.T) {
 	globalBefore := memoRevision(t, cache, schedulerAccountMetaRevisionKey)
 	platformBefore := memoRevision(t, cache, memoAnthropicRevisionKey)
 	activeBefore := cache.rdb.Get(ctx, schedulerBucketKey(schedulerActivePrefix, bucket)).Val()
-	token, err = cache.CaptureBucketWriteToken(ctx, bucket)
+	token, err = captureLeasedSchedulerToken(t, cache, ctx, bucket)
 	require.NoError(t, err)
 	require.NoError(t, cache.SetSnapshotByAccountIDs(ctx, bucket, token, []int64{62}))
 
@@ -394,11 +399,11 @@ func TestSchedulerCacheSnapshotMemoRetireReopenAndRepublish(t *testing.T) {
 	memoPublish(t, cache, bucket, memoTestAccount(71, "before"))
 	memoRead(t, cache, bucket)
 
-	require.NoError(t, cache.RetireBucket(ctx, bucket))
+	require.NoError(t, cache.RetireBucket(ctx, bucket, schedulerTestGroupLease(t, cache, ctx, bucket.GroupID)))
 	memoRequireMiss(t, cache, bucket)
 	require.Zero(t, memoEntryCount(cache))
 
-	token, err := cache.ReopenBucket(ctx, bucket)
+	token, err := reopenLeasedSchedulerToken(t, cache, ctx, bucket)
 	require.NoError(t, err)
 	memoRequireMiss(t, cache, bucket)
 
@@ -977,4 +982,49 @@ func TestSchedulerCacheSnapshotMemoRevisionRepairIsSynchronous(t *testing.T) {
 
 func ptrAccount(account service.Account) *service.Account {
 	return &account
+}
+
+func TestSchedulerCacheLeaseExpiryBetweenPublicationChunks(t *testing.T) {
+	for _, kind := range []string{"accounts", "members"} {
+		t.Run(kind, func(t *testing.T) {
+			ctx := context.Background()
+			cache, mr, recorder := newSchedulerCacheMemoUnit(t, 1)
+			bucket := memoTestBucket(953)
+			lease, ok, err := cache.TryLockBucket(ctx, bucket, time.Second)
+			require.NoError(t, err)
+			require.True(t, ok)
+			token, err := cache.CaptureBucketWriteToken(ctx, bucket)
+			require.NoError(t, err)
+			token.Lease = lease
+			version, err := cache.allocateSnapshotVersion(ctx, bucket, token)
+			require.NoError(t, err)
+			script := writeLeasedSnapshotAccountsScript
+			if kind == "members" {
+				script = writeLeasedSnapshotMembersScript
+			}
+			require.NoError(t, script.Load(ctx, cache.rdb).Err())
+			fired := false
+			recorder.afterProcess = func(cmd redis.Cmder) {
+				args := cmd.Args()
+				if !fired && len(args) > 1 && fmt.Sprint(args[1]) == script.Hash() {
+					fired = true
+					mr.FastForward(2 * time.Second)
+				}
+			}
+			if kind == "accounts" {
+				_, err = cache.writeLeasedSnapshotAccounts(ctx, bucket, token, []service.Account{memoTestAccount(9531, "first"), memoTestAccount(9532, "second")})
+				require.ErrorIs(t, err, service.ErrSchedulerBucketLeaseLost)
+				require.True(t, mr.Exists(schedulerAccountKey("9531")))
+				require.False(t, mr.Exists(schedulerAccountKey("9532")))
+				require.False(t, mr.Exists(schedulerAccountMetaKey("9532")))
+			} else {
+				err = cache.writeSnapshotMembers(ctx, bucket, token, version, []redis.Z{{Score: 0, Member: "9531"}, {Score: 1, Member: "9532"}})
+				require.ErrorIs(t, err, service.ErrSchedulerBucketLeaseLost)
+				ids, readErr := cache.rdb.ZRange(ctx, schedulerSnapshotKey(bucket, version), 0, -1).Result()
+				require.NoError(t, readErr)
+				require.Equal(t, []string{"9531"}, ids)
+			}
+			require.True(t, fired)
+		})
+	}
 }

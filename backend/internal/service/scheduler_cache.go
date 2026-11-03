@@ -16,6 +16,8 @@ const (
 )
 
 var (
+	ErrSchedulerBucketLeaseInvalid         = errors.New("scheduler bucket lease invalid")
+	ErrSchedulerBucketLeaseLost            = errors.New("scheduler bucket lease lost")
 	ErrSchedulerBucketRetired              = errors.New("scheduler bucket retired")
 	ErrSchedulerBucketWriteFenced          = errors.New("scheduler bucket write fenced")
 	ErrSchedulerGroupLifecycleLeaseInvalid = errors.New("scheduler group lifecycle lease invalid")
@@ -27,10 +29,21 @@ var (
 type SchedulerBucketWriteToken struct {
 	Bucket SchedulerBucket
 	Epoch  int64
+	Lease  SchedulerBucketLease
 }
 
 func (t SchedulerBucketWriteToken) ValidFor(bucket SchedulerBucket) bool {
 	return t.Epoch > 0 && t.Bucket == bucket
+}
+
+// SchedulerBucketLease identifies one short-lived rebuild/publication owner.
+type SchedulerBucketLease struct {
+	Bucket     SchedulerBucket
+	OwnerToken string
+}
+
+func (l SchedulerBucketLease) ValidFor(bucket SchedulerBucket) bool {
+	return l.Bucket == bucket && l.OwnerToken != ""
 }
 
 // SchedulerGroupLifecycleLease identifies one owner of a group's short-lived
@@ -82,18 +95,19 @@ type SchedulerCache interface {
 	// CaptureBucketWriteToken captures the current open epoch without changing
 	// retirement state. A tombstoned bucket returns ErrSchedulerBucketRetired.
 	CaptureBucketWriteToken(ctx context.Context, bucket SchedulerBucket) (SchedulerBucketWriteToken, error)
-	// SetSnapshot 写入快照并切换激活版本。token 必须在 DB load/任务排队前取得。
+	// SetSnapshot requires the captured epoch and a live matching bucket lease.
+	// Capture the epoch before DB load/queueing; acquire the lease before DB load.
 	SetSnapshot(ctx context.Context, bucket SchedulerBucket, token SchedulerBucketWriteToken, accounts []Account) error
 	// RetireBucket persistently tombstones a bucket and fences every older writer.
 	// Readers that captured the active version before retirement may finish; new
 	// readers observe ready/active as absent.
-	RetireBucket(ctx context.Context, bucket SchedulerBucket) error
+	RetireBucket(ctx context.Context, bucket SchedulerBucket, lease SchedulerGroupLifecycleLease) error
 	// ReopenBucket is the only operation allowed to clear a tombstone. It returns
 	// the retirement generation established by RetireBucket; repeated calls for
 	// the same generation are idempotent. Callers must serialize a fresh authority
 	// check through ReopenBucket with RetireBucket under the same group lifecycle
 	// lease; ordinary rebuild paths never call ReopenBucket.
-	ReopenBucket(ctx context.Context, bucket SchedulerBucket) (SchedulerBucketWriteToken, error)
+	ReopenBucket(ctx context.Context, bucket SchedulerBucket, lease SchedulerGroupLifecycleLease) (SchedulerBucketWriteToken, error)
 	// TryAcquireGroupLifecycleLease serializes authoritative retirement/reopen
 	// decisions for one non-zero group across instances.
 	TryAcquireGroupLifecycleLease(ctx context.Context, groupID int64, ttl time.Duration) (SchedulerGroupLifecycleLease, bool, error)
@@ -111,9 +125,9 @@ type SchedulerCache interface {
 	// UpdateLastUsed 批量更新账号的最后使用时间。
 	UpdateLastUsed(ctx context.Context, updates map[int64]time.Time) error
 	// TryLockBucket 尝试获取分桶重建锁。
-	TryLockBucket(ctx context.Context, bucket SchedulerBucket, ttl time.Duration) (bool, error)
-	// UnlockBucket 释放分桶重建锁。
-	UnlockBucket(ctx context.Context, bucket SchedulerBucket) error
+	TryLockBucket(ctx context.Context, bucket SchedulerBucket, ttl time.Duration) (SchedulerBucketLease, bool, error)
+	// UnlockBucket atomically releases only the captured owner; expired/mismatched leases return ErrSchedulerBucketLeaseLost.
+	UnlockBucket(ctx context.Context, lease SchedulerBucketLease) error
 	// ListBuckets 返回已注册的分桶集合。
 	ListBuckets(ctx context.Context) ([]SchedulerBucket, error)
 	// GetOutboxWatermark 读取 outbox 水位。

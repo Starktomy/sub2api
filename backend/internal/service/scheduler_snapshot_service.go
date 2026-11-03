@@ -247,7 +247,23 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 		} else if hit {
 			return derefAccounts(cached), useMixed, nil
 		}
-		token, err := s.cache.CaptureBucketWriteToken(ctx, bucket)
+		lease, acquired, lockErr := s.cache.TryLockBucket(ctx, bucket, 30*time.Second)
+		if lockErr == nil && acquired {
+			defer func() {
+				releaseCtx, cancel := context.WithTimeout(context.Background(), schedulerGroupLifecycleReleaseTimeout)
+				defer cancel()
+				_ = s.cache.UnlockBucket(releaseCtx, lease)
+			}()
+		}
+		var token SchedulerBucketWriteToken
+		err = lockErr
+		if err == nil && acquired {
+			token, err = s.cache.CaptureBucketWriteToken(ctx, bucket)
+		}
+		if err == nil && !acquired {
+			err = ErrSchedulerBucketRebuildBusy
+		}
+		token.Lease = lease
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, useMixed, ctxErr
 		}
@@ -767,7 +783,7 @@ func (s *SchedulerSnapshotService) prepareGroupLifecycle(ctx context.Context, gr
 		buckets := schedulerBucketsForGroup(groupID)
 		plan.tasks = make([]schedulerBucketWriteTask, 0, len(buckets))
 		for _, bucket := range buckets {
-			token, err := s.cache.ReopenBucket(lifecycleCtx, bucket)
+			token, err := s.cache.ReopenBucket(lifecycleCtx, bucket, lease)
 			if err != nil {
 				return schedulerGroupLifecyclePlan{}, err
 			}
@@ -788,7 +804,7 @@ func (s *SchedulerSnapshotService) prepareGroupLifecycle(ctx context.Context, gr
 			}
 		}
 		for _, bucket := range dedupeBuckets(buckets) {
-			if err := s.cache.RetireBucket(lifecycleCtx, bucket); err != nil {
+			if err := s.cache.RetireBucket(lifecycleCtx, bucket, lease); err != nil {
 				return schedulerGroupLifecyclePlan{}, err
 			}
 		}
@@ -977,7 +993,7 @@ func (s *SchedulerSnapshotService) rebuildBucketWithTokenPolicyAndQueryCache(
 		return ErrSchedulerCacheNotReady
 	}
 	bucket := task.bucket
-	ok, err := s.cache.TryLockBucket(ctx, bucket, 30*time.Second)
+	lease, ok, err := s.cache.TryLockBucket(ctx, bucket, 30*time.Second)
 	if err != nil {
 		return err
 	}
@@ -988,9 +1004,12 @@ func (s *SchedulerSnapshotService) rebuildBucketWithTokenPolicyAndQueryCache(
 		return nil
 	}
 	defer func() {
-		_ = s.cache.UnlockBucket(ctx, bucket)
+		releaseCtx, cancel := context.WithTimeout(context.Background(), schedulerGroupLifecycleReleaseTimeout)
+		defer cancel()
+		_ = s.cache.UnlockBucket(releaseCtx, lease)
 	}()
 
+	task.token.Lease = lease
 	rebuildCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 

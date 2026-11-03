@@ -96,6 +96,7 @@ return updated
 
 var (
 	// epoch 标识 bucket writer 的代际，retired key 是持久退休标记。
+	// Capture is read-only (a missing epoch denotes 1); allocate persists it only under the bucket lease.
 	// Capture、allocate、activate 都在 Lua 内同时校验两者：-1 表示已退休，-2 表示 epoch 无效或与 token 代际不匹配；
 	// allocate 与 activate 的双重校验可拦截快照写入期间发生的 Retire。
 	// Retire 仅在首次退休时推进 epoch，Reopen 只清除标记并沿用该代际，因此重复调用保持幂等。
@@ -106,7 +107,6 @@ end
 
 local currentEpoch = redis.call('GET', KEYS[1])
 if currentEpoch == false then
-    redis.call('SET', KEYS[1], '1')
     return 1
 end
 
@@ -118,22 +118,26 @@ return parsedEpoch
 `)
 
 	allocateSnapshotVersionScript = redis.NewScript(`
+if redis.call('GET', KEYS[4]) ~= ARGV[2] then return -3 end
 if redis.call('EXISTS', KEYS[2]) == 1 then
     return -1
 end
 
-local currentEpoch = tonumber(redis.call('GET', KEYS[1]))
+local currentEpochRaw = redis.call('GET', KEYS[1])
+local currentEpoch = currentEpochRaw == false and 1 or tonumber(currentEpochRaw)
 local expectedEpoch = tonumber(ARGV[1])
 if currentEpoch == nil or expectedEpoch == nil or currentEpoch ~= expectedEpoch then
     return -2
 end
 
+redis.call('SET', KEYS[1], tostring(currentEpoch))
 return redis.call('INCR', KEYS[3])
 `)
 
 	retireBucketScript = redis.NewScript(`
+if redis.call('GET', KEYS[6]) ~= ARGV[4] then return -3 end
 local retired = redis.call('GET', KEYS[2])
-local currentEpoch = tonumber(redis.call('GET', KEYS[1])) or 0
+local currentEpoch = tonumber(redis.call('GET', KEYS[1])) or 1
 
 if retired == false then
     currentEpoch = currentEpoch + 1
@@ -157,6 +161,7 @@ return currentEpoch
 `)
 
 	reopenBucketScript = redis.NewScript(`
+if redis.call('GET', KEYS[6]) ~= ARGV[4] then return -3 end
 local currentEpochRaw = redis.call('GET', KEYS[1])
 local currentEpoch = tonumber(currentEpochRaw)
 local retiredEpochRaw = redis.call('GET', KEYS[2])
@@ -217,6 +222,7 @@ return 0
 	//
 	// 返回 1 = 已激活, 0 = 版本过旧未激活
 	activateSnapshotScript = redis.NewScript(`
+if redis.call('GET', KEYS[7]) ~= ARGV[6] then return -3 end
 if redis.call('EXISTS', KEYS[6]) == 1 then
     redis.call('DEL', KEYS[4])
     return -1
@@ -251,6 +257,35 @@ end
 return 1
 `)
 )
+
+var writeLeasedSnapshotMembersScript = redis.NewScript(`
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return -3 end
+if redis.call('EXISTS', KEYS[3]) == 1 then return -1 end
+if redis.call('GET', KEYS[2]) ~= ARGV[2] then return -2 end
+for i = 3, #ARGV, 2 do redis.call('ZADD', KEYS[4], ARGV[i], ARGV[i+1]) end
+return 1
+`)
+
+var writeLeasedSnapshotAccountsScript = redis.NewScript(`
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return -3 end
+if redis.call('EXISTS', KEYS[3]) == 1 then return -1 end
+if redis.call('GET', KEYS[2]) ~= ARGV[2] then return -2 end
+for i = 5, #KEYS, 2 do
+ local a = 5 + (i - 5) * 3 / 2
+ local previous = redis.call('GET', KEYS[i+1])
+ local platform = ARGV[a+2]
+ local global = platform == ''
+ if previous ~= false then
+  local ok, old = pcall(cjson.decode, previous)
+  if not ok or type(old) ~= 'table' or old.Platform ~= platform then global = true end
+ end
+ redis.call('SET', KEYS[i], ARGV[a])
+ redis.call('SET', KEYS[i+1], ARGV[a+1])
+ redis.call('SET', ARGV[3] .. platform, ARGV[4])
+ if global then redis.call('SET', KEYS[4], ARGV[4]) end
+end
+return 1
+`)
 
 type schedulerCache struct {
 	rdb            *redis.Client
@@ -513,7 +548,10 @@ func (c *schedulerCache) CaptureBucketWriteToken(ctx context.Context, bucket ser
 	return service.SchedulerBucketWriteToken{Bucket: bucket, Epoch: result}, nil
 }
 
-func (c *schedulerCache) RetireBucket(ctx context.Context, bucket service.SchedulerBucket) error {
+func (c *schedulerCache) RetireBucket(ctx context.Context, bucket service.SchedulerBucket, lease service.SchedulerGroupLifecycleLease) error {
+	if !lease.ValidFor(bucket.GroupID) {
+		return service.ErrSchedulerGroupLifecycleLeaseInvalid
+	}
 	snapshotKeyPrefix := fmt.Sprintf("%s%d:%s:%s:v", schedulerSnapshotPrefix, bucket.GroupID, bucket.Platform, bucket.Mode)
 	result, err := retireBucketScript.Run(ctx, c.rdb, []string{
 		schedulerBucketKey(schedulerEpochPrefix, bucket),
@@ -521,9 +559,13 @@ func (c *schedulerCache) RetireBucket(ctx context.Context, bucket service.Schedu
 		schedulerBucketSetKey,
 		schedulerBucketKey(schedulerReadyPrefix, bucket),
 		schedulerBucketKey(schedulerActivePrefix, bucket),
-	}, bucket.String(), snapshotKeyPrefix, snapshotGraceTTLSeconds).Int64()
+		schedulerGroupLifecycleLockKey(bucket.GroupID),
+	}, bucket.String(), snapshotKeyPrefix, snapshotGraceTTLSeconds, lease.OwnerToken).Int64()
 	if err != nil {
 		return err
+	}
+	if result == -3 {
+		return service.ErrSchedulerGroupLifecycleLeaseLost
 	}
 	if result < 1 {
 		return fmt.Errorf("retire scheduler bucket %s returned invalid epoch %d", bucket.String(), result)
@@ -531,7 +573,10 @@ func (c *schedulerCache) RetireBucket(ctx context.Context, bucket service.Schedu
 	return nil
 }
 
-func (c *schedulerCache) ReopenBucket(ctx context.Context, bucket service.SchedulerBucket) (service.SchedulerBucketWriteToken, error) {
+func (c *schedulerCache) ReopenBucket(ctx context.Context, bucket service.SchedulerBucket, lease service.SchedulerGroupLifecycleLease) (service.SchedulerBucketWriteToken, error) {
+	if !lease.ValidFor(bucket.GroupID) {
+		return service.SchedulerBucketWriteToken{}, service.ErrSchedulerGroupLifecycleLeaseInvalid
+	}
 	snapshotKeyPrefix := fmt.Sprintf("%s%d:%s:%s:v", schedulerSnapshotPrefix, bucket.GroupID, bucket.Platform, bucket.Mode)
 	result, err := reopenBucketScript.Run(ctx, c.rdb, []string{
 		schedulerBucketKey(schedulerEpochPrefix, bucket),
@@ -539,9 +584,13 @@ func (c *schedulerCache) ReopenBucket(ctx context.Context, bucket service.Schedu
 		schedulerBucketSetKey,
 		schedulerBucketKey(schedulerReadyPrefix, bucket),
 		schedulerBucketKey(schedulerActivePrefix, bucket),
-	}, bucket.String(), snapshotKeyPrefix, snapshotGraceTTLSeconds).Int64()
+		schedulerGroupLifecycleLockKey(bucket.GroupID),
+	}, bucket.String(), snapshotKeyPrefix, snapshotGraceTTLSeconds, lease.OwnerToken).Int64()
 	if err != nil {
 		return service.SchedulerBucketWriteToken{}, err
+	}
+	if result == -3 {
+		return service.SchedulerBucketWriteToken{}, service.ErrSchedulerGroupLifecycleLeaseLost
 	}
 	if err := schedulerBucketWriteResultError(result, bucket); err != nil {
 		return service.SchedulerBucketWriteToken{}, err
@@ -601,17 +650,17 @@ func newSchedulerGroupLifecycleOwnerToken() (string, error) {
 }
 
 func (c *schedulerCache) SetSnapshot(ctx context.Context, bucket service.SchedulerBucket, token service.SchedulerBucketWriteToken, accounts []service.Account) error {
-	if !token.ValidFor(bucket) {
+	if !token.ValidFor(bucket) || !token.Lease.ValidFor(bucket) {
 		return fmt.Errorf("%w: bucket=%s", service.ErrSchedulerBucketWriteFenced, bucket.String())
 	}
-	// 分配版本与激活指针是两个 fencing 边界；中间写入的数据只有通过第二次校验才能发布。
+	// Every publication mutation checks the same live lease; epoch checks additionally reject retired work.
 	version, err := c.allocateSnapshotVersion(ctx, bucket, token)
 	if err != nil {
 		return err
 	}
 	// 快照成员最终只依赖可编码账号的有序 ID；直接复用 ID 路径，避免为
 	// 随后立即丢弃的完整 Account 再分配一份临时切片。
-	if _, err := c.writeSnapshotVersionAndReturnAccountIDs(ctx, bucket, version, accounts); err != nil {
+	if _, err := c.writeSnapshotVersionAndReturnAccountIDs(ctx, bucket, token, version, accounts); err != nil {
 		return err
 	}
 	return c.activateSnapshotVersion(ctx, bucket, token, version)
@@ -620,15 +669,15 @@ func (c *schedulerCache) SetSnapshot(ctx context.Context, bucket service.Schedul
 // SetSnapshotAndReturnAccountIDs 完整发布快照，并返回实际成功编码并写入的有序账号 ID。
 // 该可选能力只供同一重建批次复用，返回前仍会完成版本激活与 fencing 校验。
 func (c *schedulerCache) SetSnapshotAndReturnAccountIDs(ctx context.Context, bucket service.SchedulerBucket, token service.SchedulerBucketWriteToken, accounts []service.Account) ([]int64, error) {
-	if !token.ValidFor(bucket) {
+	if !token.ValidFor(bucket) || !token.Lease.ValidFor(bucket) {
 		return nil, fmt.Errorf("%w: bucket=%s", service.ErrSchedulerBucketWriteFenced, bucket.String())
 	}
-	// 分配版本与激活指针是两个 fencing 边界；中间写入的数据只有通过第二次校验才能发布。
+	// Every publication mutation checks the same live lease; epoch checks additionally reject retired work.
 	version, err := c.allocateSnapshotVersion(ctx, bucket, token)
 	if err != nil {
 		return nil, err
 	}
-	accountIDs, err := c.writeSnapshotVersionAndReturnAccountIDs(ctx, bucket, version, accounts)
+	accountIDs, err := c.writeSnapshotVersionAndReturnAccountIDs(ctx, bucket, token, version, accounts)
 	if err != nil {
 		return nil, err
 	}
@@ -641,14 +690,14 @@ func (c *schedulerCache) SetSnapshotAndReturnAccountIDs(ctx context.Context, buc
 // SetSnapshotByAccountIDs 复用同批次首次完整写入后得到的账号成员。
 // 每个桶仍独立分配版本、写入有序集合并执行激活 fencing，只省略重复的账号 JSON 与全局键写入。
 func (c *schedulerCache) SetSnapshotByAccountIDs(ctx context.Context, bucket service.SchedulerBucket, token service.SchedulerBucketWriteToken, accountIDs []int64) error {
-	if !token.ValidFor(bucket) {
+	if !token.ValidFor(bucket) || !token.Lease.ValidFor(bucket) {
 		return fmt.Errorf("%w: bucket=%s", service.ErrSchedulerBucketWriteFenced, bucket.String())
 	}
 	version, err := c.allocateSnapshotVersion(ctx, bucket, token)
 	if err != nil {
 		return err
 	}
-	if err := c.writeSnapshotAccountIDs(ctx, bucket, version, accountIDs); err != nil {
+	if err := c.writeSnapshotAccountIDs(ctx, bucket, token, version, accountIDs); err != nil {
 		return err
 	}
 	return c.activateSnapshotVersion(ctx, bucket, token, version)
@@ -659,7 +708,8 @@ func (c *schedulerCache) allocateSnapshotVersion(ctx context.Context, bucket ser
 		schedulerBucketKey(schedulerEpochPrefix, bucket),
 		schedulerBucketKey(schedulerRetiredPrefix, bucket),
 		schedulerBucketKey(schedulerVersionPrefix, bucket),
-	}, token.Epoch).Int64()
+		schedulerBucketKey(schedulerLockPrefix, bucket),
+	}, token.Epoch, token.Lease.OwnerToken).Int64()
 	if err != nil {
 		return "", err
 	}
@@ -669,20 +719,20 @@ func (c *schedulerCache) allocateSnapshotVersion(ctx context.Context, bucket ser
 	return strconv.FormatInt(result, 10), nil
 }
 
-func (c *schedulerCache) writeSnapshotVersionAndReturnAccountIDs(ctx context.Context, bucket service.SchedulerBucket, version string, accounts []service.Account) ([]int64, error) {
-	accountIDs, err := c.writeAccountIDs(ctx, accounts)
+func (c *schedulerCache) writeSnapshotVersionAndReturnAccountIDs(ctx context.Context, bucket service.SchedulerBucket, token service.SchedulerBucketWriteToken, version string, accounts []service.Account) ([]int64, error) {
+	accountIDs, err := c.writeLeasedSnapshotAccounts(ctx, bucket, token, accounts)
 	if err != nil {
 		return nil, err
 	}
-	if err := c.writeSnapshotAccountIDs(ctx, bucket, version, accountIDs); err != nil {
+	if err := c.writeSnapshotAccountIDs(ctx, bucket, token, version, accountIDs); err != nil {
 		return nil, err
 	}
 	return accountIDs, nil
 }
 
-func (c *schedulerCache) writeSnapshotAccountIDs(ctx context.Context, bucket service.SchedulerBucket, version string, accountIDs []int64) error {
+func (c *schedulerCache) writeSnapshotAccountIDs(ctx context.Context, bucket service.SchedulerBucket, token service.SchedulerBucketWriteToken, version string, accountIDs []int64) error {
 	members := schedulerSnapshotMembers(accountIDs)
-	return c.writeSnapshotMembers(ctx, bucket, version, members)
+	return c.writeSnapshotMembers(ctx, bucket, token, version, members)
 }
 
 func schedulerSnapshotMembers(accountIDs []int64) []redis.Z {
@@ -701,21 +751,51 @@ func schedulerSnapshotMembers(accountIDs []int64) []redis.Z {
 	return members
 }
 
-func (c *schedulerCache) writeSnapshotMembers(ctx context.Context, bucket service.SchedulerBucket, version string, members []redis.Z) error {
-	if len(members) == 0 {
-		return nil
-	}
-	snapshotKey := schedulerSnapshotKey(bucket, version)
-	pipe := c.rdb.Pipeline()
-	for start := 0; start < len(members); start += c.writeChunkSize {
-		end := start + c.writeChunkSize
-		if end > len(members) {
-			end = len(members)
+func (c *schedulerCache) writeLeasedSnapshotAccounts(ctx context.Context, bucket service.SchedulerBucket, token service.SchedulerBucketWriteToken, accounts []service.Account) ([]int64, error) {
+	ids := make([]int64, 0, len(accounts))
+	for start := 0; start < len(accounts); start += c.writeChunkSize {
+		end := min(start+c.writeChunkSize, len(accounts))
+		keys := []string{schedulerBucketKey(schedulerLockPrefix, bucket), schedulerBucketKey(schedulerEpochPrefix, bucket), schedulerBucketKey(schedulerRetiredPrefix, bucket), schedulerAccountMetaRevisionKey}
+		args := []any{token.Lease.OwnerToken, token.Epoch, schedulerAccountMetaPlatformRevisionPrefix, newSchedulerAccountMetaRevision()}
+		for _, account := range accounts[start:end] {
+			full, meta, err := marshalSchedulerCacheAccount(account)
+			if err != nil {
+				slog.Warn("scheduler cache skips account with unencodable payload", "account_id", account.ID, "error", err)
+				continue
+			}
+			id := strconv.FormatInt(account.ID, 10)
+			keys = append(keys, schedulerAccountKey(id), schedulerAccountMetaKey(id))
+			args = append(args, full, meta, account.Platform)
+			ids = append(ids, account.ID)
 		}
-		pipe.ZAdd(ctx, snapshotKey, members[start:end]...)
+		result, err := writeLeasedSnapshotAccountsScript.Run(ctx, c.rdb, keys, args...).Int64()
+		if err != nil {
+			return nil, err
+		}
+		if err := schedulerBucketWriteResultError(result, bucket); err != nil {
+			return nil, err
+		}
 	}
-	_, err := pipe.Exec(ctx)
-	return err
+	return ids, nil
+}
+
+func (c *schedulerCache) writeSnapshotMembers(ctx context.Context, bucket service.SchedulerBucket, token service.SchedulerBucketWriteToken, version string, members []redis.Z) error {
+	for start := 0; start < len(members); start += c.writeChunkSize {
+		end := min(start+c.writeChunkSize, len(members))
+		keys := []string{schedulerBucketKey(schedulerLockPrefix, bucket), schedulerBucketKey(schedulerEpochPrefix, bucket), schedulerBucketKey(schedulerRetiredPrefix, bucket), schedulerSnapshotKey(bucket, version)}
+		args := []any{token.Lease.OwnerToken, token.Epoch}
+		for _, member := range members[start:end] {
+			args = append(args, member.Score, member.Member)
+		}
+		result, err := writeLeasedSnapshotMembersScript.Run(ctx, c.rdb, keys, args...).Int64()
+		if err != nil {
+			return err
+		}
+		if err := schedulerBucketWriteResultError(result, bucket); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *schedulerCache) activateSnapshotVersion(ctx context.Context, bucket service.SchedulerBucket, token service.SchedulerBucketWriteToken, version string) error {
@@ -735,8 +815,9 @@ func (c *schedulerCache) activateSnapshotVersion(ctx context.Context, bucket ser
 		snapshotKey,
 		schedulerBucketKey(schedulerEpochPrefix, bucket),
 		schedulerBucketKey(schedulerRetiredPrefix, bucket),
+		schedulerBucketKey(schedulerLockPrefix, bucket),
 	}
-	args := []any{version, bucket.String(), snapshotKeyPrefix, snapshotGraceTTLSeconds, token.Epoch}
+	args := []any{version, bucket.String(), snapshotKeyPrefix, snapshotGraceTTLSeconds, token.Epoch, token.Lease.OwnerToken}
 
 	result, err := activateSnapshotScript.Run(ctx, c.rdb, keys, args...).Int64()
 	if err != nil {
@@ -747,6 +828,8 @@ func (c *schedulerCache) activateSnapshotVersion(ctx context.Context, bucket ser
 
 func schedulerBucketWriteResultError(result int64, bucket service.SchedulerBucket) error {
 	switch result {
+	case -3:
+		return fmt.Errorf("%w: bucket=%s", service.ErrSchedulerBucketLeaseLost, bucket.String())
 	case -1:
 		return fmt.Errorf("%w: bucket=%s", service.ErrSchedulerBucketRetired, bucket.String())
 	case -2:
@@ -857,14 +940,33 @@ func (c *schedulerCache) UpdateLastUsed(ctx context.Context, updates map[int64]t
 	return err
 }
 
-func (c *schedulerCache) TryLockBucket(ctx context.Context, bucket service.SchedulerBucket, ttl time.Duration) (bool, error) {
-	key := schedulerBucketKey(schedulerLockPrefix, bucket)
-	return c.rdb.SetNX(ctx, key, time.Now().UnixNano(), ttl).Result()
+func (c *schedulerCache) TryLockBucket(ctx context.Context, bucket service.SchedulerBucket, ttl time.Duration) (service.SchedulerBucketLease, bool, error) {
+	if ttl <= 0 {
+		return service.SchedulerBucketLease{}, false, service.ErrSchedulerBucketLeaseInvalid
+	}
+	owner, err := newSchedulerGroupLifecycleOwnerToken()
+	if err != nil {
+		return service.SchedulerBucketLease{}, false, err
+	}
+	acquired, err := c.rdb.SetNX(ctx, schedulerBucketKey(schedulerLockPrefix, bucket), owner, ttl).Result()
+	if err != nil || !acquired {
+		return service.SchedulerBucketLease{}, false, err
+	}
+	return service.SchedulerBucketLease{Bucket: bucket, OwnerToken: owner}, true, nil
 }
 
-func (c *schedulerCache) UnlockBucket(ctx context.Context, bucket service.SchedulerBucket) error {
-	key := schedulerBucketKey(schedulerLockPrefix, bucket)
-	return c.rdb.Del(ctx, key).Err()
+func (c *schedulerCache) UnlockBucket(ctx context.Context, lease service.SchedulerBucketLease) error {
+	if !lease.ValidFor(lease.Bucket) {
+		return service.ErrSchedulerBucketLeaseInvalid
+	}
+	result, err := releaseGroupLifecycleLeaseScript.Run(ctx, c.rdb, []string{schedulerBucketKey(schedulerLockPrefix, lease.Bucket)}, lease.OwnerToken).Int64()
+	if err != nil {
+		return err
+	}
+	if result != 1 {
+		return service.ErrSchedulerBucketLeaseLost
+	}
+	return nil
 }
 
 func (c *schedulerCache) ListBuckets(ctx context.Context) ([]service.SchedulerBucket, error) {
