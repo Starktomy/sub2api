@@ -110,6 +110,9 @@ func (c *MaintenanceCoordinator) run(ctx context.Context, tasks []RuntimeTask) {
 	}
 	slog.Info("maintenance PostgreSQL session leadership acquired")
 	workCtx, cancelWork := context.WithCancel(ctx)
+	if fenced, ok := session.(FencedMaintenanceSession); ok && fenced.Fence().Valid() {
+		workCtx = ContextWithMaintenanceFence(workCtx, fenced.Fence())
+	}
 	var started []RuntimeTask
 	var result error
 	for _, task := range tasks {

@@ -76,3 +76,7 @@ Process-local / request-local / gateway-local / control-local 不由此 coordina
 所有三类快照发布 API 现在必须带 bucket lease；随机 owner、条件释放，allocation、payload/metadata/revision chunk、member chunk、activation 同 Lua 内验证当前 lease；epoch capture 不再初始化 Redis。Gateway fallback 在 DB load 前尝试 lease，busy 仍可 DB 返回但不发布。Group retire/reopen 要求原 group lease，脚本第一步验证 owner。新增 expired holder 不能改 successor keyspace/TTL 和两类 chunk 间过期用例。此批没有 PG generation、命名空间、outbox generation ack 或 gateway overlay 改造，SchedulerSnapshot 继续禁用。正在跑 unit/integration/build/vet，尚不把实现当通过。
 
 所有权首批最终验证通过：repository0.370s、service0.223s、Docker实际HTTP durable/outbox6.731s、handler0.027s、build/vet、六进程smoke-04。上述只证明owner lease slice与保守六任务模式，不证明完整PG leadership fencing。
+
+### PG 持久代次基础（进行中，默认未接线）
+
+新增未部署的 forward migration251：singleton generation/随机owner，active_scheduler_generation 独立可空。显式 NewFencedMaintenanceLockRepository 在 dedicated session 已持有 advisory lock 后分配代次；默认构造器不访问新表。分配事务先检查同session exclusive锁，commit不明不返回capability并丢弃连接。短SQL guard在同session事务内验证锁、FOR UPDATE匹配代次和owner后才执行callback；禁止跨provider/network等待。不可变fence经context传给任务，Check/guard/release串行。尚未接outbox、namespace、active发布和reader，不能据此放行SchedulerSnapshot。runtime无DDL/seed，未应用真实RDS。

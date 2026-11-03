@@ -240,3 +240,11 @@ TLS补充回归发现严格维护的 Chrome preset 即使 ForceHTTP1，ALPN仍�
 真实 Docker PG/Redis 集成最终PASS6.731s：`TestAccountRepoSuite/TestOAuthRefreshConcreteHTTPDurableNoReplay` success/disconnect 两项均执行，重建协调器后上游计数仍1；`TestSchedulerSnapshotOutboxReplay`及`TestSchedulerOutboxLateLowerIDRemainsPending`通过。不是stub-only覆盖，不使用真实provider。handler/build/vet/smoke-04仍待结果。
 
 最终剩余链exit0：Docker6.731s、handler warmup0.027s、server build、相关vet均PASS；smoke-04 passed=true，kill worker-a→worker-b实际暂停过期fixture，live_slot_and_wait_preserved=true，Control A session在B及重启后可见，provider_calls=0，临时进程退出。结合此前repository unit0.370s/service0.223s，owner-lease首批可提交。没有PG generation/namespace/outbox generation fencing实现，仍禁用SchedulerSnapshot/TokenRefresh HA。无迁移或AWS部署。
+
+## PG持久领导代次基础（2026-11-03，opt-in未接生产wire）
+
+新增migration251，仅迁移seed且幂等不重置代次；runtime没有DDL/seed。显式fenced构造器持session advisory lock后分配PG generation+随机owner，commit不明丢弃连接不启动任务；默认六任务模式不访问新表。不可变fence传至任务context，短SQL guard在同session事务内验exclusive锁、FOR UPDATE匹配owner/generation；Check/guard/release串行，不能以PG preflight+Redis write冒充原子fence。outbox/namespace/active发布/reader尚未接入，SchedulerSnapshot继续禁用。
+
+验证：`go test -p=1 ./internal/repository -run TestMaintenance -count=1 -timeout=3m` PASS0.086s；service同regex PASS0.052s；`go test -p=1 -tags=integration ./internal/repository -run TestMaintenanceGeneration -count=1 -timeout=4m -v` Docker PG实际断言PASS5.852s（递增、伪造owner、错误session、失锁、旧代次重获锁仍拒绝、active不发布）。后补session测试/build/vet结果待最终记录。新迁移未应用真实RDS；新二进制check要求数据库具备新迁移，禁止直接替换永久服务。
+
+最终PG基础链exit0，server build通过；后补 `go test -p=1 ./internal/repository -run 'TestMaintenance|TestAllocateMaintenance|TestWithMaintenance|TestFencedMaintenance' -count=1 -timeout=3m` 与 repository/service vet通过。此批没有运行新版六进程（新增migration251未同步到旧私有fixture），Docker fresh迁移实际验证已通过。默认运行仍使用旧构造器，未启用新能力。
