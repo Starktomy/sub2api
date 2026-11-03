@@ -23,10 +23,16 @@ func NewSchedulerOutboxRepository(db *sql.DB) service.SchedulerOutboxRepository 
 }
 
 func (r *schedulerOutboxRepository) ListPendingAndReleaseDedup(ctx context.Context, limit int) ([]service.SchedulerOutboxEvent, error) {
+	return listPendingSchedulerOutboxAndReleaseDedup(ctx, r.db, limit)
+}
+
+// listPendingSchedulerOutboxAndReleaseDedup shares the mutation and scanner
+// between the legacy pooled repository and the fenced session transaction.
+func listPendingSchedulerOutboxAndReleaseDedup(ctx context.Context, q sqlQueryer, limit int) ([]service.SchedulerOutboxEvent, error) {
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := r.db.QueryContext(ctx, `
+	rows, err := q.QueryContext(ctx, `
 		WITH selected AS MATERIALIZED (
 			SELECT id, event_type, account_id, group_id, payload, created_at
 			FROM scheduler_outbox

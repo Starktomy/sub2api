@@ -37,11 +37,14 @@ const (
 // complete. Start must clean up its own partial work on error; Stop is called
 // only after a successful Start. Legacy Stop methods may ignore context.
 type RuntimeTask struct {
-	Name      string
-	Scope     RuntimeScope
-	StopPhase RuntimeStopPhase
-	Start     func(context.Context) error
-	Stop      func(context.Context) error
+	Name string
+	// RequiresMaintenanceFence is reserved for generation-aware tasks. It must
+	// never silently execute under a legacy session or without the coordinator.
+	RequiresMaintenanceFence bool
+	Scope                    RuntimeScope
+	StopPhase                RuntimeStopPhase
+	Start                    func(context.Context) error
+	Stop                     func(context.Context) error
 }
 
 // RuntimeLifecycle makes task ownership explicit without a second scheduler.
@@ -137,6 +140,10 @@ func (l *RuntimeLifecycle) Start(ctx context.Context) error {
 		}
 		if !runtimeScopeEnabled(l.role, task.Scope) {
 			continue
+		}
+		if task.RequiresMaintenanceFence {
+			l.setState("failed")
+			return fmt.Errorf("runtime task %s requires fenced maintenance coordination", task.Name)
 		}
 		if err := ctx.Err(); err != nil {
 			l.setState("failed")

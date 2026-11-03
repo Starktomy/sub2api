@@ -110,12 +110,21 @@ func (c *MaintenanceCoordinator) run(ctx context.Context, tasks []RuntimeTask) {
 	}
 	slog.Info("maintenance PostgreSQL session leadership acquired")
 	workCtx, cancelWork := context.WithCancel(ctx)
+	// Never trust an inherited capability: only this acquired session may
+	// authorize task startup, even if a caller supplied a fenced context.
+	workCtx = ContextWithMaintenanceFence(workCtx, MaintenanceFence{})
 	if fenced, ok := session.(FencedMaintenanceSession); ok && fenced.Fence().Valid() {
 		workCtx = ContextWithMaintenanceFence(workCtx, fenced.Fence())
 	}
 	var started []RuntimeTask
 	var result error
 	for _, task := range tasks {
+		if task.RequiresMaintenanceFence {
+			if _, ok := MaintenanceFenceFromContext(workCtx); !ok {
+				result = fmt.Errorf("maintenance task %s requires a durable generation", task.Name)
+				break
+			}
+		}
 		if err := workCtx.Err(); err != nil {
 			result = err
 			break
