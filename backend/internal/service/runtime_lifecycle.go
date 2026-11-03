@@ -37,7 +37,9 @@ const (
 // complete. Start must clean up its own partial work on error; Stop is called
 // only after a successful Start. Legacy Stop methods may ignore context.
 type RuntimeTask struct {
-	Name string
+	// AcquiredFactory binds a new task to exactly the session acquired by the coordinator.
+	AcquiredFactory func(MaintenanceSession) (RuntimeTask, error)
+	Name            string
 	// RequiresMaintenanceFence is reserved for generation-aware tasks. It must
 	// never silently execute under a legacy session or without the coordinator.
 	RequiresMaintenanceFence bool
@@ -80,7 +82,7 @@ func (l *RuntimeLifecycle) Register(task RuntimeTask) {
 		l.configErr = errors.Join(l.configErr, fmt.Errorf("runtime task %q registered after startup", task.Name))
 		return
 	}
-	if strings.TrimSpace(task.Name) == "" || task.Start == nil || task.Stop == nil {
+	if strings.TrimSpace(task.Name) == "" || (task.AcquiredFactory == nil && (task.Start == nil || task.Stop == nil)) || (task.AcquiredFactory != nil && (!task.RequiresMaintenanceFence || task.Start != nil || task.Stop != nil)) {
 		l.configErr = errors.Join(l.configErr, fmt.Errorf("runtime task %q requires a name, Start and Stop", task.Name))
 		return
 	}
@@ -130,7 +132,7 @@ func (l *RuntimeLifecycle) Start(ctx context.Context) error {
 	var maintenance []RuntimeTask
 	for _, task := range tasks {
 		if l.multiReplica && task.Scope == RuntimeScopeWorker && l.OwnsScope(RuntimeScopeWorker) {
-			if reason := MaintenanceTaskPolicy(task.Name); reason != "" {
+			if reason := maintenanceRuntimeTaskPolicy(task); reason != "" {
 				slog.Warn("maintenance task disabled in multi-replica mode", "task", task.Name, "reason", reason)
 			} else {
 				maintenance = append(maintenance, task)

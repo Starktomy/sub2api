@@ -29,6 +29,7 @@ func LoadStartupPolicy() (StartupPolicy, error) {
 	v.SetDefault("runtime.shutdown_timeout_seconds", DefaultRuntimeShutdownTimeoutSeconds)
 	v.SetDefault("runtime.enable_split_roles", false)
 	v.SetDefault("runtime.multi_replica_workers", false)
+	v.SetDefault("runtime.scheduler_publications", false)
 	v.SetDefault("database.migration_mode", DatabaseMigrationModeAuto)
 	if err := v.ReadInConfig(); err != nil {
 		var notFound viper.ConfigFileNotFoundError

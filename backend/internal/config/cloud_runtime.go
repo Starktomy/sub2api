@@ -25,6 +25,8 @@ const (
 // RuntimeConfig selects the process role and HTTP shutdown budget. Split roles
 // require an explicit experimental opt-in and check-only database startup.
 type RuntimeConfig struct {
+	// SchedulerPublications opts into immutable, PG-authoritative scheduler snapshots.
+	SchedulerPublications  bool   `mapstructure:"scheduler_publications"`
 	Role                   string `mapstructure:"role"`
 	ShutdownTimeoutSeconds int    `mapstructure:"shutdown_timeout_seconds"`
 	// EnableSplitRoles is an explicit preproduction opt-in. The shared Wire
@@ -44,6 +46,9 @@ func (c *RuntimeConfig) Validate() error {
 		return err
 	}
 	c.Role = role
+	if c.SchedulerPublications && (!c.EnableSplitRoles || role == RuntimeRoleAll || (role == RuntimeRoleWorker && !c.MultiReplicaWorkers)) {
+		return fmt.Errorf("runtime.scheduler_publications requires split roles and coordinated workers")
+	}
 	if c.MultiReplicaWorkers && (role != RuntimeRoleWorker || !c.EnableSplitRoles) {
 		return fmt.Errorf("runtime.multi_replica_workers requires experimental split worker role")
 	}

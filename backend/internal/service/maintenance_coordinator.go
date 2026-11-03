@@ -52,7 +52,7 @@ func (c *MaintenanceCoordinator) Start(ctx context.Context, tasks []RuntimeTask)
 		return errors.New("multi-replica maintenance requires PostgreSQL session coordination")
 	}
 	for _, task := range tasks {
-		if reason := MaintenanceTaskPolicy(task.Name); reason != "" {
+		if reason := maintenanceRuntimeTaskPolicy(task); reason != "" {
 			return fmt.Errorf("unsafe maintenance task %s: %s", task.Name, reason)
 		}
 	}
@@ -137,6 +137,18 @@ func (c *MaintenanceCoordinator) run(ctx context.Context, tasks []RuntimeTask) {
 		if err != nil {
 			result = fmt.Errorf("maintenance session lost before start: %w", err)
 			break
+		}
+		if task.AcquiredFactory != nil {
+			bound, err := task.AcquiredFactory(session)
+			if err != nil {
+				result = fmt.Errorf("bind maintenance task %s: %w", task.Name, err)
+				break
+			}
+			if bound.Name != task.Name || !bound.RequiresMaintenanceFence || bound.AcquiredFactory != nil || bound.Start == nil || bound.Stop == nil || bound.StopPhase < RuntimeStopProducers || bound.StopPhase > RuntimeStopStores {
+				result = errors.New("invalid bound maintenance task")
+				break
+			}
+			task = bound
 		}
 		if err := task.Start(workCtx); err != nil {
 			result = fmt.Errorf("start maintenance task %s: %w", task.Name, err)
@@ -240,4 +252,11 @@ func MaintenanceTaskPolicy(name string) string {
 	default:
 		return "task has not been audited for multi-replica maintenance"
 	}
+}
+
+func maintenanceRuntimeTaskPolicy(task RuntimeTask) string {
+	if task.Name == "SchedulerPublicationService" && task.RequiresMaintenanceFence && task.AcquiredFactory != nil {
+		return ""
+	}
+	return MaintenanceTaskPolicy(task.Name)
 }
