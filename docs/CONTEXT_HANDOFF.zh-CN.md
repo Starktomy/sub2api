@@ -96,3 +96,7 @@
 最终修复两项 rebuild 测试的零值构造后，service 聚焦0.707s、repository聚焦0.918s、server build/vet全部通过。六进程 smoke-03 passed=true：kill worker-a→worker-b 实际暂停过期账号，陈旧索引下活跃槽位和等待计数保留，Control A session 在 B 与重启后可见，provider_calls=0；临时进程退出。下一阶段先 provider 真实调用链单次刷新（含 transport replay/redirect 与禁止轮换后 enrichment），再完整 scheduler leader fencing；均未放开 HA。
 
 Provider 维护刷新已完成单次服务路径与隔离HTTP策略，legacy对照、五类具体HTTP客户端fake failure/redirect/cancel、重复3次及build/vet通过，详见 IMPLEMENTATION_STATUS。HA TokenRefresh仍未准入；完整scheduler fencing仍待实现，不能将bucket/group owner改造当作PG generation+namespace完整方案。
+
+后续未提交ownership slice：强制bucket owner lease保护allocation/payload+metadata+revision/member chunks/activation，group retire/reopen先验lease，gateway busy DB fallback不发布。unit仓储0.370s/service0.223s通过；Docker durable实际HTTP集成与outbox6.731s通过、handler warmup0.027s通过。TLS补充用例发现Chrome ALPN h2与HTTP1不一致，最终用每连接uTLS修改ALPN修复，TLS单项0.034s；原失败过程记录在status。最终build/vet/smoke-04仍等结果，未声明完整PG fencing，未开放Scheduler/Token HA。
+
+最终补充：build/vet/smoke-04全部PASS，provider_calls=0、接管和活跃槽位保留通过；TLS+durable HTTP测试已提交f0c6cec7c。ownership slice可分批提交，完整PG fencing仍未实现，禁止提前放行。
