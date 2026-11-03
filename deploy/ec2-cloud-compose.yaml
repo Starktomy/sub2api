@@ -1,0 +1,87 @@
+# Headless, opt-in preproduction roles; no PostgreSQL/Valkey provisioning.
+# Each EC2 runs only its selected profile(s). Services bind loopback by default.
+# All env/CA files must already exist OUTSIDE the repository on the host.
+x-cloud: &cloud
+  image: ${CLOUD_IMAGE:?Set CLOUD_IMAGE to a locally built tag or reviewed immutable digest}
+  user: '10001:10001'
+  read_only: true
+  init: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  restart: unless-stopped
+  stop_grace_period: 120s
+  env_file:
+    - ${CLOUD_ENV_FILE:?Set CLOUD_ENV_FILE to an absolute runtime env file outside this repository}
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+    - /app/data:rw,noexec,nosuid,nodev,size=128m,uid=10001,gid=10001,mode=0700
+  volumes:
+    - type: bind
+      source: ${CLOUD_CA_FILE:?Set CLOUD_CA_FILE to a verified PostgreSQL CA PEM outside this repository}
+      target: /run/certs/postgres-ca.pem
+      read_only: true
+      bind:
+        create_host_path: false
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: '3'
+
+x-server-env: &server-env
+  RUNTIME_ENABLE_SPLIT_ROLES: 'true'
+  DATABASE_MIGRATION_MODE: check
+  DATABASE_SSLMODE: verify-full
+  DATABASE_SSLROOTCERT: /run/certs/postgres-ca.pem
+  REDIS_ENABLE_TLS: 'true'
+  SERVER_HOST: 0.0.0.0
+  SERVER_PORT: '8080'
+  DATA_DIR: /app/data
+  AUTO_SETUP: 'false'
+  RUNTIME_SHUTDOWN_TIMEOUT_SECONDS: '90'
+  RUNTIME_MULTI_REPLICA_WORKERS: 'false'
+
+services:
+  gateway:
+    <<: *cloud
+    profiles: [gateway]
+    environment:
+      <<: *server-env
+      RUNTIME_ROLE: gateway
+    ports:
+      - '${GATEWAY_BIND_IP:-127.0.0.1}:${GATEWAY_PORT:-18080}:8080'
+
+  control:
+    <<: *cloud
+    profiles: [control]
+    environment:
+      <<: *server-env
+      RUNTIME_ROLE: control
+    ports:
+      - '${CONTROL_BIND_IP:-127.0.0.1}:${CONTROL_PORT:-18081}:8080'
+
+  worker:
+    <<: *cloud
+    profiles: [worker]
+    environment:
+      <<: *server-env
+      RUNTIME_ROLE: worker
+      # Conservative six-task allowlist with PG session leadership, not full HA.
+      RUNTIME_MULTI_REPLICA_WORKERS: 'true'
+    # Health remains container-local. No worker HTTP publication.
+
+  migrate:
+    <<: *cloud
+    profiles: [migrate]
+    restart: 'no'
+    env_file:
+      - ${CLOUD_MIGRATOR_ENV_FILE:?Set CLOUD_MIGRATOR_ENV_FILE to a separate external migration credential file}
+    environment:
+      RUNTIME_ROLE: migrate
+      DATABASE_SSLMODE: verify-full
+      DATABASE_SSLROOTCERT: /run/certs/postgres-ca.pem
+    healthcheck:
+      disable: true
+    # Even an accidental --profile migrate up is check-only, never schema apply.
+    command: ['-check']
+    # Explicit run --rm migrate -timeout 10m overrides this command to apply.

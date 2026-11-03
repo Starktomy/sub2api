@@ -170,6 +170,7 @@ issues/
 !docs/CONTEXT_HANDOFF.zh-CN.md
 !docs/OAUTH_POOL_VALIDATION.zh-CN.md
 !docs/WORKER_REPLICA_SAFETY.zh-CN.md
+!docs/EC2_MULTI_HOST_IMAGES.zh-CN.md
 
 # Python operational tooling creates no versioned bytecode.
 __pycache__/

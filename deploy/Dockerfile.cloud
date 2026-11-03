@@ -1,0 +1,67 @@
+# syntax=docker/dockerfile:1.7
+# Headless preproduction image: existing Sub2API server + independent migrator.
+# Build ONLY via build_cloud_image.sh's allowlisted context (never repository .).
+ARG GO_IMAGE=golang:1.27.3-alpine
+ARG RUNTIME_IMAGE=alpine:3.21
+FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS backend-builder
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+ARG BUILD_GOMAXPROCS=1
+ARG BUILD_GOMEMLIMIT=1400MiB
+ARG BUILD_GOGC=20
+WORKDIR /src/backend
+COPY backend/go.mod backend/go.sum ./
+RUN --mount=type=cache,id=sub2api-cloud-mod,target=/go/pkg/mod go mod download
+COPY backend/ ./
+RUN --mount=type=cache,id=sub2api-cloud-mod,target=/go/pkg/mod \
+    --mount=type=cache,id=sub2api-cloud-build,target=/root/.cache/go-build \
+    export CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+      GOMAXPROCS=$BUILD_GOMAXPROCS GOMEMLIMIT=$BUILD_GOMEMLIMIT GOGC=$BUILD_GOGC; \
+    go build -p=1 -trimpath -ldflags='-s -w' -o /out/server ./cmd/server && \
+    go build -p=1 -trimpath -ldflags='-s -w' -o /out/migrate ./cmd/migrate
+
+FROM ${RUNTIME_IMAGE} AS runtime-base
+RUN apk add --no-cache ca-certificates tzdata && \
+    addgroup -g 10001 sub2api && \
+    adduser -D -H -u 10001 -G sub2api sub2api && \
+    mkdir -p /app/data && chown 10001:10001 /app/data
+WORKDIR /app
+COPY LICENSE /app/LICENSE
+COPY backend/resources/ /app/resources/
+# No setup wizard, root permission repair, shell command override or all-in-one.
+COPY --chmod=0555 <<'ENTRYPOINT' /app/cloud-entrypoint
+#!/bin/sh
+set -eu
+case "${RUNTIME_ROLE:-}" in
+  migrate) exec /app/migrate "$@" ;;
+  gateway|control|worker)
+    if [ "${RUNTIME_ENABLE_SPLIT_ROLES:-false}" != true ]; then
+      echo 'cloud image: split roles require explicit RUNTIME_ENABLE_SPLIT_ROLES=true' >&2
+      exit 64
+    fi
+    if [ "${DATABASE_MIGRATION_MODE:-}" != check ]; then
+      echo 'cloud image: server roles require DATABASE_MIGRATION_MODE=check' >&2
+      exit 64
+    fi
+    exec /app/server "$@"
+    ;;
+  *) echo 'cloud image: RUNTIME_ROLE must be gateway, control, worker or migrate; all is forbidden' >&2; exit 64 ;;
+esac
+ENTRYPOINT
+ENV DATA_DIR=/app/data HOME=/app/data SERVER_HOST=0.0.0.0 SERVER_PORT=8080
+USER 10001:10001
+EXPOSE 8080
+# Health is process HTTP only, not leader/readiness or external dependency proof.
+HEALTHCHECK --interval=30s --timeout=6s --start-period=30s --retries=3 \
+    CMD wget -q -T 5 -O /dev/null "http://127.0.0.1:${SERVER_PORT:-8080}/health" || exit 1
+ENTRYPOINT ["/app/cloud-entrypoint"]
+
+# Local CGO_ENABLED=0 Linux binaries avoid recompiling an already-built server.
+FROM runtime-base AS prebuilt
+COPY --chmod=0555 prebuilt/server /app/server
+COPY --chmod=0555 prebuilt/migrate /app/migrate
+
+# Default source-build target. No frontend/embed tag: deliberately headless.
+FROM runtime-base AS cloud
+COPY --from=backend-builder --chmod=0555 /out/server /app/server
+COPY --from=backend-builder --chmod=0555 /out/migrate /app/migrate

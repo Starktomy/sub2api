@@ -104,3 +104,5 @@ Provider 维护刷新已完成单次服务路径与隔离HTTP策略，legacy对�
 PG持久代次基础新增migration251（未应用RDS），opt-in构造器分配generation+随机owner，withGeneration同dedicated session事务验锁+row owner/generation；不可变fence传任务。默认wire不切换，outbox/namespace/reader未接线，Scheduler仍禁用。仓储/服务/真实Docker PG集成5.852s、build/vet通过；未在旧fixture运行新六进程，需先迁移测试库。下一步接受保护outbox dedup release/exact ack，再做namespace/reader。
 
 2026-11-03：PG generation基础9dc909d69已push。session-bound outbox adapter及RequiresMaintenanceFence门禁测试/Docker/build/vet通过，最终旧context继承capability拒绝通过；默认不接线。用户追加：当前任务完成后修CI并准备多机器镜像测试。CI确认fork Starktomy/sub2api（gh默认指向upstream需显式--repo）：cloud health-cmd单引号runner误解析、integration共享夹具污染、16项lint；修复进行中。不得将镜像准备视作ECR发布/新AWS资源授权。
+
+CI3f39bed33已push，本机完整unit/integration和golangci2.14 0issues通过。headless amd64 local image构建、offline contract、internal network六容器image-smoke-04通过（无host ports，docker exec内部HTTP）；前三次binding检查失败已记录。真实跨机/TLS/arm64/UI未验，未ECR发布。远端CI/Cloud foundation新run仍待结果，务必显式gh --repo Starktomy/sub2api。完整scheduler namespace/reader仍待实现，禁用门禁不变。
