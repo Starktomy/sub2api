@@ -55,6 +55,19 @@
 - 新 generation 未完成构建不得被选为 active；取消/丢锁时不能继续激活；旧 namespace 垃圾回收不得删除当前 namespace。
 - 先通过真实本地 PG/Redis 故障测试，再允许 SchedulerSnapshot 进入多副本维护任务；TokenRefresh 不因 scheduler 门禁解除而自动放行。
 
-## 跨宿主验收（待执行）
+## 2026-11-03 scheduler publication 实现与本地验收
+
+- 实现提交 `aad3bd278`：显式 `runtime.scheduler_publications` 默认false，保持旧行为；新worker任务名SchedulerPublicationService，绑定实际取得的PG session，不解禁legacy SchedulerSnapshotService或TokenRefresh。
+- 每次publication使用generation+随机ID的不可变namespace；PG指针固定manifest SHA256，manifest固定full/slim payload哈希。所有reader（含GetAccount）每次读取PG权威，不信Redis全局指针或旧本地memo；缺失/损坏回退DB，gateway不写快照。
+- Account/Group通过同一read-only REPEATABLE READ事务复用既有仓储查询。PG短事务原子激活指针+exact-ID ack；其中无Redis网络调用，COMMIT结果不明不重用ID。
+- 空outbox健康时只校验全部payload，不产生新publication。新generation或缺失数据重建。active不设TTL；PG先永久retire再清Redis，obsolete2分钟grace、abandoned staging5分钟；反复轮转清理处理Redis回滚后旧数据复活。
+- 元数据不是硬有界：每次attempt保留PG lifecycle记录及Redis retirement marker；凭据payload可回收，故障/积压时回收延迟增长。未做production负载定容；真实网络注入COMMIT结果不明尚未验，仅sqlmock覆盖。
+- 默认config/service/repository测试通过0.669s/148.721s/7.963s；unit-tag聚焦service0.319s/repository0.400s；server build/vet通过。最终真实PG18/Redis8 publication套件6.644s通过，包含RR并发更新、空outbox无写、full payload缺失恢复、stale leader、GC竞争及回滚复活、exact ack事务失败；精确CI golangci-lint v2.14.0为0 issues。
+- 候选镜像重新构建及network-none加固契约通过，已发布it-aad3bd278-amd64，固定index digest sha256:d084e14bd2dcb0fd057bedf9a06ac4f27aa8394f735ee45901115e9bc01909b8。252已通过独立migrator apply/check exit0；runtime pointer/lifecycle所需权限均true，manifest写/schema CREATE仍false。
+- 两主机六角色已切换该固定镜像并显式开启RUNTIME_SCHEDULER_PUBLICATIONS=true。原主机先获得generation1并发布，远端Worker为standby；SIGKILL原主机leader后远端激活generation2，返回CROSS_HOST_PUBLICATION_TAKEOVER_OK，PG pointer generation等于maintenance generation。远端日志确认新task/leader存在且无cycle error；原主机随后恢复standby。
+- 真实Valkey定点故障：只删除PG当前publication的精确manifest键；远端leader在generation2发布新ID并恢复，返回REAL_VALKEY_PUBLICATION_RECOVERY_OK，outbox_before=0/outbox_after=0。未FLUSH、未删除其它缓存；这是缺失恢复，不冒称真实Valkey整库回滚。
+- 旧六容器以previous名称停止保留用于受控回退，不自动启动或混跑。新版本跨AZhealth200及角色路由401/404隔离通过。TokenRefresh仍未放行。
+
+## 跨宿主完整验收（部分已执行，剩余见上）
 
 固定镜像 digest；核验两主机不同 instance ID。验证角色路由、Control 共享单次 OAuth session（不调用真实 provider）、RDS verify-full、Valkey TLS、非 root/只读容器、IMDS 隔离、主 Worker 容器终止与宿主停止后的接管、活跃槽位保留、scheduler 旧 leader/Redis rollback fencing。所有日志脱敏，测试 fixture 与生产/已停用真实 OAuth 账号分离，不调用真实模型/支付。
