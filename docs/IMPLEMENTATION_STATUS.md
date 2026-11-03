@@ -187,3 +187,30 @@
 | AWS 写入（前3批） | 当时未创建资源；第四批按新增明确授权创建EC2集成数据层，见上方；未推镜像/更改DNS/销毁 |
 
 注意：本表前3批是历史验证记录，不能覆盖第四批新增真实RDS16/Valkey结果。首次离线config缺依赖、后续回归失败和修复均保留说明。仍未运行全仓所有测试、前端构建、真实上游/支付、ECS或PITR恢复，不宣称完整云原生/生产验收。
+
+## 后台多副本第二轮加固（2026-11-03）
+
+- 周期 ConcurrencySlotCleanup 已通过原子 Lua 陈旧写修复，加入 PostgreSQL 维护协调允许清单（共六项）；split worker 仍不执行 legacy prefix startup sweep。验证边界见 WORKER_REPLICA_SAFETY.zh-CN.md。
+- SchedulerSnapshot 已修复 outbox ID 分配/提交乱序丢事件、精确确认、取消/join；仍缺 leader-generation 全路径 fencing，因此 HA 模式继续禁止启动。
+- TokenRefresh 新增 durable-only 防护、禁止无 fence 后动作；平台 stub 歧义隔离测试通过（service 0.113s），真实 provider 内部路径尚未完成审计，继续禁用。
+- Docker PG18.1/Redis8.4 outbox 三项集成测试通过（10.775s）。测试启动出现一次 ryuk handshake reset 警告，但数据库/Redis正常就绪，三项实际断言均执行并通过。
+- 新一轮综合回归命令首次在仓库根目录失败（cannot find main module），没有执行断言；已切换 backend 模块重跑。无 AWS 资源变更、真实模型/刷新调用或永久服务更新。
+
+本轮已执行的聚焦命令（均在 backend 下，GOMAXPROCS=2）：
+
+```sh
+go test -p=1 -tags=unit ./internal/service -run 'TestTokenRefreshMaintenance|TestOAuthRefreshDurable' -count=1 -timeout=3m
+# PASS 0.113s
+go test -p=1 -tags=integration ./internal/repository -run 'TestSchedulerOutboxLateLowerIDRemainsPending|TestSchedulerOutbox_ListPendingAndReleaseDedup_AllowsSameKeyWhileEventInFlight|TestSchedulerSnapshotOutboxReplay' -count=1 -v
+# PASS 10.775s，真实 disposable Docker PG/Redis
+go test -p=1 ./internal/repository -run 'TestConcurrencyIndex|TestLiveLease' -count=20
+# PASS 1.681s，miniredis 确定性交错，不是 AWS failover
+```
+
+综合 service 编译首次重跑触发严重 swap（编译进程 RSS 约 3.2GiB、swap 约 1.6GiB，未进入断言），主动终止（exit 144）。后续串行验证使用 `GOMAXPROCS=1 GOMEMLIMIT=1400MiB GOGC=20`，覆盖 scheduler/service/cleanup、仓储回归、build、vet、六进程 smoke；最终结果另附，不将启动命令等同通过。
+
+最新综合回归在进入断言后失败：`TestSchedulerSnapshotServiceFullRebuildCoalescesConcurrentRequestsIntoTrailingRun` 的直接零值构造未初始化新 runCtx，`coalesceFullRebuild` panic（service 0.659s）。已将两项 rebuild coalescing 测试改为正式构造器并注册 Stop 清理，保持生产取消检查，不通过删掉检查掩盖问题；正在重跑。该失败中断了后续仓储/build/vet/smoke，不能记为已执行。
+
+修复后聚焦回归：service 0.707s PASS（scheduler snapshot/outbox/rebuild、maintenance、runtime lifecycle、token maintenance/durable、concurrency cleanup），repository 0.918s PASS（scheduler、concurrency index、live lease）。使用上述低内存串行参数；build/vet/六进程 smoke 结果待后续记录。
+
+最终验证通过（2026-11-03）：上述串行链 exit 0；`go build -p=1 -o bin/server ./cmd/server`、`go vet -p=1 ./internal/service ./internal/repository ./cmd/server` 均通过。`python3 -I tools/smoke_cloud_roles.py --binary backend/bin/server --multi-replica --keep-logs <private-new-directory>`（DSN 仅环境传入，实际由私有 launcher 调用）通过：2 gateway＋2 control＋2 worker 路由隔离；两 worker 均接纳原子并发清理；kill worker-a 后 worker-b 获锁并实际暂停过期 fixture；旧索引分数已过期的活跃槽位与等待计数保持；Control A OAuth session 在 B 及 B 重启后可查询，provider_calls=0。日志位于私有 `replica-test-f0b2bad6/smoke-03`；临时角色进程全部退出。未部署真实 AWS 或修改永久 systemd。
