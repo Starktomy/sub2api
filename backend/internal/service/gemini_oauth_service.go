@@ -165,7 +165,9 @@ func (s *GeminiOAuthService) GenerateAuthURL(ctx context.Context, proxyID *int64
 		OAuthType:    oauthType,
 		CreatedAt:    time.Now(),
 	}
-	s.sessionStore.Set(sessionID, session)
+	if err := s.sessionStore.Save(ctx, sessionID, session); err != nil {
+		return nil, fmt.Errorf("oauth session storage unavailable")
+	}
 
 	effectiveCfg, err := geminicli.EffectiveOAuthConfig(oauthCfg, oauthType)
 	if err != nil {
@@ -188,7 +190,9 @@ func (s *GeminiOAuthService) GenerateAuthURL(ctx context.Context, proxyID *int64
 		redirectURI = geminicli.AIStudioOAuthRedirectURI
 	}
 	session.RedirectURI = redirectURI
-	s.sessionStore.Set(sessionID, session)
+	if err := s.sessionStore.Save(ctx, sessionID, session); err != nil {
+		return nil, fmt.Errorf("oauth session storage unavailable")
+	}
 
 	authURL, err := geminicli.BuildAuthorizationURL(effectiveCfg, state, codeChallenge, redirectURI, session.ProjectID, oauthType)
 	if err != nil {
@@ -463,7 +467,6 @@ func (s *GeminiOAuthService) RefreshAccountGoogleOneTier(
 
 func (s *GeminiOAuthService) ExchangeCode(ctx context.Context, input *GeminiExchangeCodeInput) (*GeminiTokenInfo, error) {
 	logger.LegacyPrintf("service.gemini_oauth", "[GeminiOAuth] ========== ExchangeCode START ==========")
-	logger.LegacyPrintf("service.gemini_oauth", "[GeminiOAuth] SessionID: %s", input.SessionID)
 
 	session, ok := s.sessionStore.Get(input.SessionID)
 	if !ok {
@@ -482,7 +485,6 @@ func (s *GeminiOAuthService) ExchangeCode(ctx context.Context, input *GeminiExch
 			proxyURL = proxy.URL()
 		}
 	}
-	logger.LegacyPrintf("service.gemini_oauth", "[GeminiOAuth] ProxyURL: %s", proxyURL)
 
 	redirectURI := session.RedirectURI
 
@@ -492,7 +494,6 @@ func (s *GeminiOAuthService) ExchangeCode(ctx context.Context, input *GeminiExch
 		oauthType = "code_assist"
 	}
 	logger.LegacyPrintf("service.gemini_oauth", "[GeminiOAuth] OAuth Type: %s", oauthType)
-	logger.LegacyPrintf("service.gemini_oauth", "[GeminiOAuth] Project ID from session: %s", session.ProjectID)
 
 	// If the session was created for AI Studio OAuth, ensure a custom OAuth client is configured.
 	if oauthType == "ai_studio" {
@@ -515,6 +516,10 @@ func (s *GeminiOAuthService) ExchangeCode(ctx context.Context, input *GeminiExch
 		redirectURI = geminicli.GeminiCLIRedirectURI
 	}
 
+	// Claim after validation and before upstream I/O. Failed exchanges consume the session.
+	if !s.sessionStore.TryConsumeSession(input.SessionID) {
+		return nil, fmt.Errorf("oauth session unavailable or already consumed")
+	}
 	tokenResp, err := s.oauthClient.ExchangeCode(ctx, oauthType, input.Code, session.CodeVerifier, redirectURI, proxyURL)
 	if err != nil {
 		logger.LegacyPrintf("service.gemini_oauth", "[GeminiOAuth] ERROR: Failed to exchange code: %v", err)

@@ -30,6 +30,9 @@ type RuntimeConfig struct {
 	// EnableSplitRoles is an explicit preproduction opt-in. The shared Wire
 	// graph and legacy external-side-effect contracts are not production ready.
 	EnableSplitRoles bool `mapstructure:"enable_split_roles"`
+	// MultiReplicaWorkers enables the conservative, audited maintenance task
+	// subset under PostgreSQL leadership. It does not make every legacy job HA.
+	MultiReplicaWorkers bool `mapstructure:"multi_replica_workers"`
 }
 
 // Validate normalizes defaults and validates configuration syntax. Executables
@@ -41,6 +44,9 @@ func (c *RuntimeConfig) Validate() error {
 		return err
 	}
 	c.Role = role
+	if c.MultiReplicaWorkers && (role != RuntimeRoleWorker || !c.EnableSplitRoles) {
+		return fmt.Errorf("runtime.multi_replica_workers requires experimental split worker role")
+	}
 	if c.ShutdownTimeoutSeconds == 0 {
 		c.ShutdownTimeoutSeconds = DefaultRuntimeShutdownTimeoutSeconds
 	}

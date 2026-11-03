@@ -3,26 +3,7 @@ package service
 import (
 	"github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/config"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
 )
-
-func ProvideOAuthService(lifecycle *RuntimeLifecycle, proxies ProxyRepository, client ClaudeOAuthClient) *OAuthService {
-	svc := NewManagedOAuthService(proxies, client)
-	registerRuntimeService(lifecycle, "OAuthService", RuntimeScopeControl, svc)
-	return svc
-}
-
-func ProvideGeminiOAuthService(lifecycle *RuntimeLifecycle, proxies ProxyRepository, client GeminiOAuthClient, codeAssist GeminiCliCodeAssistClient, drive geminicli.DriveClient, cfg *config.Config) *GeminiOAuthService {
-	svc := NewManagedGeminiOAuthService(proxies, client, codeAssist, drive, cfg)
-	registerRuntimeService(lifecycle, "GeminiOAuthService", RuntimeScopeControl, svc)
-	return svc
-}
-
-func ProvideAntigravityOAuthService(lifecycle *RuntimeLifecycle, proxies ProxyRepository) *AntigravityOAuthService {
-	svc := NewManagedAntigravityOAuthService(proxies)
-	registerRuntimeService(lifecycle, "AntigravityOAuthService", RuntimeScopeControl, svc)
-	return svc
-}
 
 func ProvideSubscriptionService(lifecycle *RuntimeLifecycle, groups GroupRepository, subscriptions UserSubscriptionRepository, billing *BillingCacheService, client *ent.Client, cfg *config.Config) *SubscriptionService {
 	svc := NewManagedSubscriptionService(groups, subscriptions, billing, client, cfg)

@@ -39,6 +39,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--keep-logs", type=Path, help="Copy non-secret application logs to this new directory")
+    parser.add_argument("--multi-replica", action="store_true", help="Run two controls and two guarded workers; verify leader termination takeover")
     args = parser.parse_args()
     binary = args.binary.resolve(strict=True)
     backend = binary.parent.parent
@@ -124,7 +125,12 @@ def main():
             redis_command("ZADD", "concurrency:account:active_index", now + 900, 900001)
 
             jwt_secret, totp_secret = secrets.token_hex(32), secrets.token_hex(32)
-            for instance, role in (("gateway-a", "gateway"), ("gateway-b", "gateway"), ("control", "control"), ("worker", "worker")):
+            instances = (("gateway-a", "gateway"), ("gateway-b", "gateway"), ("control", "control"), ("worker", "worker"))
+            if args.multi_replica:
+                instances = (("gateway-a", "gateway"), ("gateway-b", "gateway"), ("control-a", "control"), ("control-b", "control"), ("worker-a", "worker"), ("worker-b", "worker"))
+            launched = {}
+            expected_terminated = set()
+            for instance, role in instances:
                 data = root / instance
                 data.mkdir()
                 port = unused_port()
@@ -140,6 +146,7 @@ def main():
                 env.update({
                     "CONFIG_FILE": str(config_file), "DATA_DIR": str(data), "TZ": "UTC",
                     "RUNTIME_ROLE": role, "RUNTIME_ENABLE_SPLIT_ROLES": "true",
+                    "RUNTIME_MULTI_REPLICA_WORKERS": "true" if args.multi_replica and role == "worker" else "false",
                     "RUNTIME_SHUTDOWN_TIMEOUT_SECONDS": "10", "RUN_MODE": "standard",
                     "DATABASE_HOST": fields["host"], "DATABASE_PORT": fields.get("port", "5432"),
                     "DATABASE_USER": fields["user"], "DATABASE_PASSWORD": fields["password"],
@@ -157,6 +164,7 @@ def main():
                 handles.append(log)
                 process = subprocess.Popen([str(binary)], cwd=backend, env=env, stdout=log, stderr=subprocess.STDOUT)
                 processes.append((instance, process))
+                launched[instance] = {"process": process, "port": port, "log": log_path, "env": env}
                 deadline = time.monotonic() + 45
                 while True:
                     if process.poll() is not None:
@@ -193,7 +201,8 @@ def main():
                     raise RuntimeError(f"{instance} did not report its task ownership")
                 tasks = startup["runtime_tasks"]
                 for maintenance in ("TokenRefreshService", "SchedulerSnapshotService", "ChannelMonitorRunner"):
-                    if (maintenance in tasks) != (role == "worker"):
+                    want_maintenance = role == "worker" and not args.multi_replica
+                    if (maintenance in tasks) != want_maintenance:
                         raise RuntimeError(f"{instance} has incorrect maintenance ownership: {maintenance}")
                 if role == "worker":
                     if redis_command("ZSCORE", slot_key, "other-live-gateway:request") == "":
@@ -202,6 +211,114 @@ def main():
                         raise RuntimeError("worker startup deleted another live gateway's wait counter")
                 results.append({"instance": instance, "role": role, "routes": checks, "started_task_count": len(tasks)})
                 print(f"READY {instance}: HTTP routes and maintenance ownership verified", flush=True)
+            if args.multi_replica:
+                marker = "maintenance PostgreSQL session leadership acquired"
+                def leaders():
+                    return [name for name in ("worker-a", "worker-b")
+                            if marker in launched[name]["log"].read_text()]
+                deadline = time.monotonic() + 15
+                while not leaders():
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("no maintenance leader acquired PostgreSQL session lock")
+                    time.sleep(0.1)
+                if len(leaders()) != 1:
+                    raise RuntimeError("both workers reported initial leadership")
+                leader = leaders()[0]
+                standby = "worker-b" if leader == "worker-a" else "worker-a"
+                fixture = subprocess.run([psql, "-X", "-qAt", "-v", "ON_ERROR_STOP=1"], env=probe_env,
+                    input="INSERT INTO accounts(name,platform,type,credentials,status,schedulable,auto_pause_on_expired,expires_at) VALUES ('replica-expired-fixture','openai','oauth','{}','active',true,true,NOW()-INTERVAL '1 minute') RETURNING id;",
+                    capture_output=True, text=True, check=True, timeout=10)
+                expired_id = int(fixture.stdout.strip())
+                launched[leader]["process"].kill()
+                launched[leader]["process"].wait(timeout=10)
+                expected_terminated.add(leader)
+                deadline = time.monotonic() + 20
+                while marker not in launched[standby]["log"].read_text():
+                    if launched[standby]["process"].poll() is not None or time.monotonic() >= deadline:
+                        raise RuntimeError("standby worker failed to acquire after leader process death")
+                    time.sleep(0.1)
+                deadline = time.monotonic() + 10
+                while True:
+                    paused = subprocess.run([psql, "-X", "-qAt", "-v", "ON_ERROR_STOP=1"], env=probe_env,
+                        input=f"SELECT schedulable FROM accounts WHERE id={expired_id};", capture_output=True, text=True, check=True, timeout=10)
+                    if paused.stdout.strip() == "f":
+                        break
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("standby acquired lock but did not pause expired fixture account")
+                    time.sleep(0.1)
+                subprocess.run([psql, "-X", "-q", "-v", "ON_ERROR_STOP=1"], env=probe_env,
+                    input=f"DELETE FROM accounts WHERE id={expired_id};", capture_output=True, text=True, check=True, timeout=10)
+                results.append({"check": "maintenance_leader_killed_and_standby_acquired", "leader": leader, "standby": standby, "expired_fixture_paused": True})
+                # Controls are separate healthy processes. Provider callback
+                # semantics are covered with fake-provider shared-store tests.
+                # Here exercise real HTTP creation on A and state validation on
+                # B, then after B restart, without any provider network call.
+                def http_json(port, path, payload, token=None):
+                    headers = {"Content-Type": "application/json"}
+                    if token:
+                        headers["Authorization"] = "Bearer " + token
+                    req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", data=json.dumps(payload).encode(), headers=headers)
+                    try:
+                        with urllib.request.urlopen(req, timeout=10) as response:
+                            return response.status, json.loads(response.read())
+                    except urllib.error.HTTPError as error:
+                        return error.code, json.loads(error.read())
+                password = secrets.token_hex(24)
+                helper = root / "hash-password.go"
+                helper.write_text('package main\nimport("fmt";"io";"os";"golang.org/x/crypto/bcrypt")\nfunc main(){b,_:=io.ReadAll(os.Stdin);h,e:=bcrypt.GenerateFromPassword(b,bcrypt.DefaultCost);if e!=nil{panic(e)};fmt.Print(string(h))}\n')
+                hashed = subprocess.run(["go", "run", str(helper)], cwd=backend, input=password,
+                    env=dict(os.environ, GOMAXPROCS="2", GOMEMLIMIT="1200MiB"), capture_output=True, text=True, check=True, timeout=90).stdout
+                email = "replica-"+secrets.token_hex(8)+"@integration.invalid"
+                fixture = subprocess.run([psql, "-X", "-qAt", "-v", "ON_ERROR_STOP=1"], env=probe_env,
+                    input=f"INSERT INTO users(email,password_hash,role) VALUES ('{email}','{hashed}','admin') RETURNING id;", capture_output=True, text=True, check=True, timeout=10)
+                admin_id = int(fixture.stdout.strip())
+                try:
+                    status, data = http_json(launched["control-a"]["port"], "/api/v1/auth/login", {"email":email,"password":password})
+                    if status != 200:
+                        raise RuntimeError("control A real admin login failed")
+                    token = data["data"]["access_token"]
+                    status, _ = http_json(launched["control-a"]["port"], "/api/v1/admin/compliance/accept",
+                        {"phrase":"我已阅读、理解并同意 Sub2API 部署与运营合规承诺","language":"zh"}, token)
+                    if status != 200:
+                        raise RuntimeError("disposable automated fixture compliance acceptance failed")
+                    status, data = http_json(launched["control-a"]["port"], "/api/v1/admin/openai/generate-auth-url", {}, token)
+                    if status != 200:
+                        raise RuntimeError("control A authorization session creation failed")
+                    session_id = data["data"]["session_id"]
+                    payload = {"session_id":session_id,"code":"never-send-to-provider","state":"deliberately-wrong-state"}
+                    status, data = http_json(launched["control-b"]["port"], "/api/v1/admin/openai/exchange-code", payload, token)
+                    if status != 400 or data.get("reason") != "OPENAI_OAUTH_INVALID_STATE":
+                        raise RuntimeError("control B did not see A session before state validation")
+                    old = launched["control-b"]["process"]
+                    old.terminate()
+                    if old.wait(timeout=30) != 0:
+                        raise RuntimeError("control B failed graceful restart")
+                    restart_log = launched["control-b"]["log"].open("a")
+                    handles.append(restart_log)
+                    restarted = subprocess.Popen([str(binary)], cwd=backend, env=launched["control-b"]["env"], stdout=restart_log, stderr=subprocess.STDOUT)
+                    processes.append(("control-b-restarted", restarted))
+                    launched["control-b"]["process"] = restarted
+                    deadline = time.monotonic()+30
+                    while True:
+                        try:
+                            if request(launched["control-b"]["port"], "/health")[0] == 200:
+                                break
+                        except OSError:
+                            pass
+                        if restarted.poll() is not None or time.monotonic() >= deadline:
+                            raise RuntimeError("control B restart failed")
+                        time.sleep(0.1)
+                    status, data = http_json(launched["control-b"]["port"], "/api/v1/admin/openai/exchange-code", payload, token)
+                    if status != 400 or data.get("reason") != "OPENAI_OAUTH_INVALID_STATE":
+                        raise RuntimeError("shared OAuth session did not survive control B restart")
+                    results.append({"check":"control_A_session_seen_on_B_and_after_B_restart","provider_calls":0})
+                finally:
+                    subprocess.run([psql,"-X","-q","-v","ON_ERROR_STOP=1"], env=probe_env,
+                        input=f"DELETE FROM users WHERE id={admin_id};",capture_output=True,text=True,timeout=10)
+
+                for name in ("control-a", "control-b"):
+                    if request(launched[name]["port"], "/health")[0] != 200:
+                        raise RuntimeError("control replica lost health during worker takeover")
         except Exception as error:
             failed = str(error)
         finally:
@@ -216,7 +333,7 @@ def main():
                     continue
                 try:
                     code = process.wait(timeout=45)
-                    if code != 0 and failed is None:
+                    if code != 0 and failed is None and name not in locals().get("expected_terminated", set()):
                         failed = f"{name} did not exit cleanly: {code}"
                 except subprocess.TimeoutExpired:
                     process.kill()

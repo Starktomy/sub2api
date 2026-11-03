@@ -227,7 +227,7 @@ func (r *idempotencyRepository) DeleteExpired(ctx context.Context, now time.Time
 			LIMIT $2
 		)
 		DELETE FROM idempotency_records
-		WHERE id IN (SELECT id FROM victims)
+		WHERE id IN (SELECT id FROM victims) AND expires_at <= $1
 	`
 	res, err := r.sql.ExecContext(ctx, query, now, limit)
 	if err != nil {

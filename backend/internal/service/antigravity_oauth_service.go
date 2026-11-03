@@ -73,7 +73,9 @@ func (s *AntigravityOAuthService) GenerateAuthURL(ctx context.Context, proxyID *
 		ProxyURL:     proxyURL,
 		CreatedAt:    time.Now(),
 	}
-	s.sessionStore.Set(sessionID, session)
+	if err := s.sessionStore.Save(ctx, sessionID, session); err != nil {
+		return nil, fmt.Errorf("oauth session storage unavailable")
+	}
 
 	codeChallenge := antigravity.GenerateCodeChallenge(codeVerifier)
 	authURL := antigravity.BuildAuthorizationURL(state, codeChallenge)
@@ -133,6 +135,10 @@ func (s *AntigravityOAuthService) ExchangeCode(ctx context.Context, input *Antig
 	}
 
 	// 交换 token
+	// Claim after validation and before upstream I/O. Failed exchanges consume the session.
+	if !s.sessionStore.TryConsumeSession(input.SessionID) {
+		return nil, fmt.Errorf("oauth session unavailable or already consumed")
+	}
 	tokenResp, err := client.ExchangeCode(ctx, input.Code, session.CodeVerifier)
 	if err != nil {
 		return nil, fmt.Errorf("token 交换失败: %w", err)

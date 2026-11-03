@@ -2072,6 +2072,7 @@ func setDefaults() {
 	viper.SetDefault("runtime.role", RuntimeRoleAll)
 	viper.SetDefault("runtime.shutdown_timeout_seconds", DefaultRuntimeShutdownTimeoutSeconds)
 	viper.SetDefault("runtime.enable_split_roles", false)
+	viper.SetDefault("runtime.multi_replica_workers", false)
 	viper.SetDefault("run_mode", RunModeStandard)
 	viper.SetDefault("gateway.min_output_tokens", 128)
 	viper.SetDefault("simple_mode.auto_create_default_groups", true)

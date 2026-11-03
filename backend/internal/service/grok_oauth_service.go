@@ -108,7 +108,7 @@ func (s *GrokOAuthService) GenerateAuthURL(ctx context.Context, proxyID *int64, 
 		return nil, infraerrors.Newf(http.StatusBadRequest, "GROK_OAUTH_INVALID_AUTHORIZE_URL", "%v", err)
 	}
 
-	s.sessionStore.Set(sessionID, &xai.OAuthSession{
+	if err := s.sessionStore.Save(ctx, sessionID, &xai.OAuthSession{
 		State:         state,
 		CodeVerifier:  codeVerifier,
 		CodeChallenge: codeChallenge,
@@ -117,7 +117,9 @@ func (s *GrokOAuthService) GenerateAuthURL(ctx context.Context, proxyID *int64, 
 		ProxyURL:      proxyURL,
 		RedirectURI:   redirectURI,
 		CreatedAt:     time.Now(),
-	})
+	}); err != nil {
+		return nil, infraerrors.New(http.StatusServiceUnavailable, "GROK_OAUTH_SESSION_UNAVAILABLE", "oauth session storage unavailable")
+	}
 
 	return &GrokAuthURLResult{
 		AuthURL:   authURL,

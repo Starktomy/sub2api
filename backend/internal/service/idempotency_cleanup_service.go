@@ -15,9 +15,13 @@ type IdempotencyCleanupService struct {
 	interval time.Duration
 	batch    int
 
-	startOnce sync.Once
-	stopOnce  sync.Once
-	stopCh    chan struct{}
+	wg           sync.WaitGroup
+	startOnce    sync.Once
+	stopOnce     sync.Once
+	stopCh       chan struct{}
+	workerCtx    context.Context
+	workerCancel context.CancelFunc
+	lifecycleMu  sync.Mutex
 }
 
 func NewIdempotencyCleanupService(repo IdempotencyRepository, cfg *config.Config) *IdempotencyCleanupService {
@@ -39,24 +43,46 @@ func NewIdempotencyCleanupService(repo IdempotencyRepository, cfg *config.Config
 	}
 }
 
-func (s *IdempotencyCleanupService) Start() {
+func (s *IdempotencyCleanupService) Start() { s.StartContext(context.Background()) }
+
+func (s *IdempotencyCleanupService) StartContext(parent context.Context) {
 	if s == nil || s.repo == nil {
 		return
 	}
+	s.lifecycleMu.Lock()
+	if s.workerCancel != nil {
+		s.lifecycleMu.Unlock()
+		return
+	}
+	select {
+	case <-s.stopCh:
+		s.lifecycleMu.Unlock()
+		return
+	default:
+	}
+	s.workerCtx, s.workerCancel = context.WithCancel(parent)
 	s.startOnce.Do(func() {
 		logger.LegacyPrintf("service.idempotency_cleanup", "[IdempotencyCleanup] started interval=%s batch=%d", s.interval, s.batch)
-		go s.runLoop()
+		s.wg.Add(1)
+		go func() { defer s.wg.Done(); s.runLoop() }()
 	})
+	s.lifecycleMu.Unlock()
 }
 
 func (s *IdempotencyCleanupService) Stop() {
 	if s == nil {
 		return
 	}
+	s.lifecycleMu.Lock()
+	if s.workerCancel != nil {
+		s.workerCancel()
+	}
 	s.stopOnce.Do(func() {
 		close(s.stopCh)
 		logger.LegacyPrintf("service.idempotency_cleanup", "[IdempotencyCleanup] stopped")
 	})
+	s.lifecycleMu.Unlock()
+	s.wg.Wait()
 }
 
 func (s *IdempotencyCleanupService) runLoop() {
@@ -70,6 +96,8 @@ func (s *IdempotencyCleanupService) runLoop() {
 		select {
 		case <-ticker.C:
 			s.cleanupOnce()
+		case <-s.workerCtx.Done():
+			return
 		case <-s.stopCh:
 			return
 		}
@@ -77,7 +105,7 @@ func (s *IdempotencyCleanupService) runLoop() {
 }
 
 func (s *IdempotencyCleanupService) cleanupOnce() {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(s.maintenanceContext(), 10*time.Second)
 	defer cancel()
 
 	deleted, err := s.repo.DeleteExpired(ctx, time.Now(), s.batch)
@@ -88,4 +116,13 @@ func (s *IdempotencyCleanupService) cleanupOnce() {
 	if deleted > 0 {
 		logger.LegacyPrintf("service.idempotency_cleanup", "[IdempotencyCleanup] cleaned expired records count=%d", deleted)
 	}
+}
+
+func (s *IdempotencyCleanupService) maintenanceContext() context.Context {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.workerCtx != nil {
+		return s.workerCtx
+	}
+	return context.Background()
 }

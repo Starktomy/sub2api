@@ -63,8 +63,13 @@ func ProvideSchedulerCache(rdb *redis.Client, cfg *config.Config) service.Schedu
 	return newSchedulerCacheWithChunkSizes(rdb, mgetChunkSize, writeChunkSize)
 }
 
+func ProvideMaintenanceLocker(db *sql.DB) service.MaintenanceLocker {
+	return NewMaintenanceLockRepository(db)
+}
+
 // ProviderSet is the Wire provider set for all repositories
 var ProviderSet = wire.NewSet(
+	ProvideMaintenanceLocker,
 	NewUserRepository,
 	NewMCPOAuthRepository,
 	NewAPIKeyRepository,
