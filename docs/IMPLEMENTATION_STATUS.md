@@ -108,6 +108,33 @@
 - unit标签令牌提供器/调度器测试通过0.303秒；未带标签那次no tests to run不计覆盖。管理员手动刷新缺统一CAS，不据单次成功宣称并发刷新安全。
 - 详见 [OAUTH_POOL_VALIDATION.zh-CN.md](OAUTH_POOL_VALIDATION.zh-CN.md)。未测真实429、在飞/部分流恢复、WS、并发刷新或跨平台统一调度。
 
+## 第七批：刷新协调与信封加密基础（代码阶段，未部署）
+
+- 两个普通管理员OpenAI刷新入口接入共享OAuthRefreshAPI，不再在刷新后无条件UpdateAccount；锁占用返回409，缺少协调器/持久结果返回503。
+- OpenAI刷新成功按完整旧credentials和proxy做数据库条件写入，与scheduler outbox同一SQL原子提交；拒绝旧结果覆盖并发凭据变更。成功后重读持久状态，不恢复并发停用状态。Grok原有严格平台/type边界保留。
+- Valkey统一刷新路径使用随机owner租约及Lua比较删除，失败停止刷新；尝试超时限制在租约内。旧缓存接口/其他legacy刷新路径仍存在，不宣称所有入口已完成租约治理；Valkey主从复制也不提供严格分布式互斥保证。
+- 手动刷新重读后若凭据已变化，不再次消费旧refresh token。没有持久CAS能力时在调用上游前拒绝。
+- 受限管理员OpenAI刷新因旧ScopedAdminWrite持有事务，当前安全拒绝（503），不绕过权限；仍需实现事务外授权与条件提交的完整服务路径。
+- 新增credentialcrypto纯Go基础包：整份JSON AES-256-GCM、每文档独立DEK、账号绑定AAD/KMS context、严格版本/大小校验、失败不回退明文。只有抽象KMS接口，**未接真实KMS、数据库、配置开关、迁移或运行时**，不能宣称现有凭据已加密。
+- Wire已重新生成。加密包test/vet通过；仓储条件写入与lease单测通过0.041秒；管理员聚焦unit通过0.058秒。服务层聚焦unit（OAuthRefreshAPI/OpenAI CAS/owner lease/manual snapshot）通过0.159秒；`go build -p=1 -o bin/server ./cmd/server`通过，未安装或启动新binary。
+- PostgreSQL integration标签测试编译成功但Docker缺失而跳过，未真实执行SQL CAS。本轮没有调用真实OAuth、轮换token、应用schema变更或创建AWS资源。
+- 中断恢复后发现四集成systemd服务均inactive（此前未enable自启）；没有启动或更新已安装binary，不能沿用上批健康结论。并行编译造成swap压力，相关测试被主动停止后转串行，不记为测试断言失败。
+- 条件写入接口尚未比较expected platform/type（两种合格类型间并发切换仍有边界），未使用数据库递增fencing版本；lease与JSON CAS不能代替全平台持久刷新状态机、歧义提交恢复。
+
+## 第八批：真实CAS、事务外授权与持久fencing（已验证代码，未部署）
+
+- 第七批中的Docker缺失、受限刷新拒绝、平台/type和持久fencing缺口已由本批后续实现替代；历史记录保留，不代表当前仍缺同一代码能力。
+- 真实RDS verify-full/TLS回滚夹具通过：CAS成功、旧凭据/代理不匹配拒绝、保留停用状态、outbox失败时凭据回滚。测试0.161秒，未写真实账户、无DDL。
+- 受限管理密钥刷新走事务外授权流程：上游调用前短事务校验，Begin/Complete再次锁定并校验实时key/creator/policy/account/有效group membership；密钥轮换或撤销、策略修改、分组解绑、创建者停用会拒绝提交。全权自定义管理Key也校验；专用OpenAI受限路由仍未授予，只开放原有通用accounts.refresh权限路径。
+- 新迁移250_oauth_refresh_state.sql：仅generation、随机owner、pending/completed/ambiguous、输入/输出指纹和租约元信息，不另存token。完整平台/type/credentials/proxy快照在成功提交时比较；账号凭据、completed和scheduler outbox原子提交。
+- split角色Wire自动强制持久刷新，配置文件role也不能绕过；legacy all可用OAUTH_REFRESH_DURABLE_ENABLED=true启用。带管理Key授权的刷新强制持久路径，不能落回legacy CAS。缺schema在调用上游前失败。
+- pending提交后才调用OAuth；过期pending不自动接管。上游结果不明隔离；提交结果不明仅重试同owner/generation、同输出的本地完成操作，不再调用上游，重复完成不重复outbox。
+- 显式ResolveOAuthRefreshAmbiguous需inactive/不可调度、匹配generation和完整账号快照、非空且已变化的refresh token，递增generation、拒绝旧holder迟到提交；恢复前仍必须停旧holder并重新授权。不能靠改metadata或proxy解除隔离。
+- 尚无加密恢复spool：若上游已轮换但进程在持久化前丢失响应，不能重建token；安全行为是隔离并重新授权，不宣称外部exactly-once。尚无公开恢复HTTP/CLI；恢复方法供后续受控运维入口使用。
+- Docker现在可用29.9.2；PG18.1+Redis8.4临时容器实际执行CAS/授权撤销/状态机/显式恢复，最终通过5.618秒；最初套件外层事务导致嵌套事务/FK失败，改为容器非事务client后通过，不改生产事务保证。
+- service聚焦unit0.119秒、repository聚焦0.059秒、handler最终0.025秒通过；Wire/build/相关vet通过。新SQL迁移只在临时Docker数据库执行，**未应用RDS、未安装/启动新binary**，四服务仍inactive，无真实OAuth刷新或模型调用。
+- 按用户要求分批commit/push：独立加密基础包已提交c80c6110f；其余刷新状态机/权限代码及报告随后单独提交。不合并主分支。
+
 ## 尚未实现，禁止按已完成生产部署
 
 - 独立角色仅实验opt-in：共享Wire图/权限最小化、DI失败全资源回收、部分缓存janitor、Control OAuth多副本、维护worker多副本lease仍未完成。AWS下一步见 [AWS_PREPRODUCTION_CHECKLIST.zh-CN.md](AWS_PREPRODUCTION_CHECKLIST.zh-CN.md)。
