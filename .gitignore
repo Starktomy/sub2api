@@ -173,6 +173,7 @@ issues/
 !docs/EC2_MULTI_HOST_IMAGES.zh-CN.md
 !docs/EC2_MULTI_HOST_ROLLOUT.zh-CN.md
 !docs/AURORA_CUTOVER_RUNBOOK.zh-CN.md
+!docs/SUPPLIER_PORTAL_DESIGN.zh-CN.md
 
 # Python operational tooling creates no versioned bytecode.
 __pycache__/
