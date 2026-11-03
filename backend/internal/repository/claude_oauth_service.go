@@ -228,7 +228,7 @@ func (s *claudeOAuthService) ExchangeCodeForToken(ctx context.Context, code, cod
 }
 
 func (s *claudeOAuthService) RefreshToken(ctx context.Context, refreshToken, proxyURL string) (*oauth.TokenResponse, error) {
-	client, err := s.clientFactory(proxyURL)
+	client, err := refreshRequestClient(ctx, proxyURL, 60*time.Second, true, s.clientFactory)
 	if err != nil {
 		return nil, fmt.Errorf("create HTTP client: %w", err)
 	}

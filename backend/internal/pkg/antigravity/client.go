@@ -4,6 +4,7 @@ package antigravity
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyurl"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyutil"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/refreshpolicy"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/servertiming"
 )
 
@@ -275,6 +277,8 @@ func IsPaidPlanType(planType string) bool {
 // Client Antigravity API 客户端
 type Client struct {
 	httpClient *http.Client
+	// Optional endpoint seam for package-local fake-provider tests.
+	tokenURL string
 }
 
 const (
@@ -393,6 +397,27 @@ func (c *Client) ExchangeCode(ctx context.Context, code, codeVerifier string) (*
 
 // RefreshToken 刷新 access_token
 func (c *Client) RefreshToken(ctx context.Context, refreshToken string) (*TokenResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	client := c.httpClient
+	if refreshpolicy.SingleAttempt(ctx) {
+		// Clone rather than mutate the shared legacy client/transport.
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		if existing, ok := client.Transport.(*http.Transport); ok {
+			transport = existing.Clone()
+		} else if client.Transport != nil {
+			return nil, errors.New("strict refresh requires a configurable HTTP transport")
+		}
+		transport.DisableKeepAlives = true
+		transport.ForceAttemptHTTP2 = false
+		transport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+		copyClient := *client
+		copyClient.Transport = transport
+		copyClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		client = &copyClient
+		defer transport.CloseIdleConnections()
+	}
 	clientSecret, err := getClientSecret()
 	if err != nil {
 		return nil, err
@@ -404,13 +429,17 @@ func (c *Client) RefreshToken(ctx context.Context, refreshToken string) (*TokenR
 	params.Set("refresh_token", refreshToken)
 	params.Set("grant_type", "refresh_token")
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, TokenURL, strings.NewReader(params.Encode()))
+	tokenURL := c.tokenURL
+	if tokenURL == "" {
+		tokenURL = TokenURL
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(params.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("创建请求失败: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := servertiming.Do(c.httpClient, req)
+	resp, err := servertiming.Do(client, req)
 	if err != nil {
 		return nil, fmt.Errorf("token 刷新请求失败: %w", err)
 	}

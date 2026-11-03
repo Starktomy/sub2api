@@ -75,7 +75,7 @@ func (c *geminiOAuthClient) ExchangeCode(ctx context.Context, oauthType, code, c
 }
 
 func (c *geminiOAuthClient) RefreshToken(ctx context.Context, oauthType, refreshToken, proxyURL string) (*geminicli.TokenResponse, error) {
-	client, err := createGeminiReqClient(proxyURL)
+	client, err := refreshRequestClient(ctx, proxyURL, 60*time.Second, false, createGeminiReqClient)
 	if err != nil {
 		return nil, fmt.Errorf("create HTTP client: %w", err)
 	}

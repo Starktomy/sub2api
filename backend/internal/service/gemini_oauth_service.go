@@ -698,8 +698,12 @@ func (s *GeminiOAuthService) ExchangeCode(ctx context.Context, input *GeminiExch
 
 func (s *GeminiOAuthService) RefreshToken(ctx context.Context, oauthType, refreshToken, proxyURL string) (*GeminiTokenInfo, error) {
 	var lastErr error
+	maxRetries := 3
+	if isMaintenanceRefresh(ctx) {
+		maxRetries = 0
+	}
 
-	for attempt := 0; attempt <= 3; attempt++ {
+	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
 			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
 			if backoff > 30*time.Second {
@@ -783,7 +787,7 @@ func (s *GeminiOAuthService) RefreshAccountToken(ctx context.Context, account *A
 	// Older versions could refresh Code Assist tokens using a user-provided OAuth client when configured.
 	// If the refresh token was originally issued to that custom client, forcing the built-in client will
 	// fail with "unauthorized_client". In that case, retry with the custom client (ai_studio path) when available.
-	if err != nil && oauthType == "code_assist" && strings.Contains(err.Error(), "unauthorized_client") && s.GetOAuthConfig().AIStudioOAuthEnabled {
+	if !isMaintenanceRefresh(ctx) && err != nil && oauthType == "code_assist" && strings.Contains(err.Error(), "unauthorized_client") && s.GetOAuthConfig().AIStudioOAuthEnabled {
 		if alt, altErr := s.RefreshToken(ctx, "ai_studio", refreshToken, proxyURL); altErr == nil {
 			tokenInfo = alt
 			err = nil
@@ -794,7 +798,7 @@ func (s *GeminiOAuthService) RefreshAccountToken(ctx context.Context, account *A
 	// - Old behavior: google_one always used the built-in Gemini CLI OAuth client.
 	// If an existing account was authorized with the built-in client, refreshing with the custom client
 	// will fail with "unauthorized_client". Retry with the built-in client (code_assist path forces it).
-	if err != nil && oauthType == "google_one" && strings.Contains(err.Error(), "unauthorized_client") && s.GetOAuthConfig().AIStudioOAuthEnabled {
+	if !isMaintenanceRefresh(ctx) && err != nil && oauthType == "google_one" && strings.Contains(err.Error(), "unauthorized_client") && s.GetOAuthConfig().AIStudioOAuthEnabled {
 		if alt, altErr := s.RefreshToken(ctx, "code_assist", refreshToken, proxyURL); altErr == nil {
 			tokenInfo = alt
 			err = nil
@@ -809,6 +813,11 @@ func (s *GeminiOAuthService) RefreshAccountToken(ctx context.Context, account *A
 	}
 
 	tokenInfo.OAuthType = oauthType
+	if isMaintenanceRefresh(ctx) {
+		// Persist rotated credentials without external enrichment or invented metadata.
+		// The refresher merges omitted project/tier/Drive fields from the account.
+		return tokenInfo, nil
+	}
 
 	// Preserve account's project_id when present.
 	existingProjectID := strings.TrimSpace(account.GetCredential("project_id"))

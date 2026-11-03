@@ -214,3 +214,15 @@ go test -p=1 ./internal/repository -run 'TestConcurrencyIndex|TestLiveLease' -co
 修复后聚焦回归：service 0.707s PASS（scheduler snapshot/outbox/rebuild、maintenance、runtime lifecycle、token maintenance/durable、concurrency cleanup），repository 0.918s PASS（scheduler、concurrency index、live lease）。使用上述低内存串行参数；build/vet/六进程 smoke 结果待后续记录。
 
 最终验证通过（2026-11-03）：上述串行链 exit 0；`go build -p=1 -o bin/server ./cmd/server`、`go vet -p=1 ./internal/service ./internal/repository ./cmd/server` 均通过。`python3 -I tools/smoke_cloud_roles.py --binary backend/bin/server --multi-replica --keep-logs <private-new-directory>`（DSN 仅环境传入，实际由私有 launcher 调用）通过：2 gateway＋2 control＋2 worker 路由隔离；两 worker 均接纳原子并发清理；kill worker-a 后 worker-b 获锁并实际暂停过期 fixture；旧索引分数已过期的活跃槽位与等待计数保持；Control A OAuth session 在 B 及 B 重启后可查询，provider_calls=0。日志位于私有 `replica-test-f0b2bad6/smoke-03`；临时角色进程全部退出。未部署真实 AWS 或修改永久 systemd。
+
+## Provider 单次维护刷新（2026-11-03）
+
+已实现 shared refreshpolicy 标记，四类 req 客户端维护专用 HTTP/1/fresh connection/no redirect/no application retry，Antigravity clone transport 同样隔离；不修改 legacy 客户端。Gemini/Antigravity 维护路径一次 refresh、无 alternate client、无轮换后 enrichment，merge 保留既有元数据。TokenRefresh HA 仍禁用，尚缺 actual-service→durable-state→真实HTTP fake 的全链路接管验证等准入审计。
+
+验证（backend 下，GOMAXPROCS=1 GOMEMLIMIT=1400MiB GOGC=20）：
+- `go test -p=1 -tags=unit ./internal/service -run 'Test(Gemini|Antigravity)(MaintenanceRefresh|LegacyRefresh)|TestTokenRefreshMaintenance|TestOAuthRefreshDurable' -count=1 -timeout=3m` PASS 3.335s。
+- `go test -p=1 ./internal/pkg/antigravity ./internal/repository -run 'TestMaintenanceRefreshSingleRequest|TestMaintenanceConcreteOAuthClientsSingleRequest' -count=1 -timeout=3m` PASS 0.005s/0.048s；server build PASS。
+- 最终新增429/308/read后cancel/legacy-client隔离用例重复3次：`go test -p=1 ./internal/pkg/antigravity ./internal/repository -run 'TestMaintenanceRefreshSingleRequest|TestMaintenanceConcreteOAuthClientsSingleRequest|TestMaintenanceRefreshClientDoesNotMutateLegacy' -count=3 -timeout=3m` PASS 0.019s/0.169s。
+- refreshpolicy 包 PASS0.003s；`go vet -p=1 ./internal/pkg/refreshpolicy ./internal/pkg/antigravity ./internal/repository ./internal/service` PASS。
+
+均为loopback假provider/假client，没有真实OAuth刷新、模型调用、AWS部署或schema变更。完整scheduler fencing仍未实现，下一批先bucket/group owner-safe slice，不解除任务门禁。

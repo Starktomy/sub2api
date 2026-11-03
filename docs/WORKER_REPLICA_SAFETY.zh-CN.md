@@ -60,3 +60,13 @@ Process-local / request-local / gateway-local / control-local 不由此 coordina
 - 额外确认的 Token 阻断：AntigravityOAuthService.RefreshToken 内部仍有最多四次调用及不可取消的 sleep；外层一次 executor 的 stub 断言无法覆盖内部上游重试。必须先统一 provider 单次尝试/取消语义，再考虑放行。
 - GeminiOAuthService.RefreshToken 也存在同类内部四次重试和 sleep；不是只修 Antigravity 就能放行所有 provider。
 - 实际调用链只读审计进一步确认：Gemini account refresh 有 alternate-client fallback、项目发现/OnboardUser、tier 查询；Antigravity account refresh 在轮换后继续 LoadCodeAssist/onboarding。维护刷新应只返回新 token 和保留的本地 metadata，不能因后续补全失败丢失新凭据。还须限制刷新 POST 的重定向及底层 transport replay；只设置应用 retry=0 不足以声称一次网络发送。未据此放行任务。
+
+### Provider 单次刷新收敛进行中
+
+维护标记下新增独立 HTTP 请求策略：fresh HTTP/1、禁用 keepalive/redirect/application retry，避免改动 legacy 共享客户端；Gemini/Antigravity 禁止内部重试、替换 client 和轮换后的外部补全，凭据 merge 保留本地 metadata。具体 HTTP 客户端第一轮本机假 provider 测试通过：Antigravity0.004s，四类 repository 客户端0.045s；覆盖 success/503/malformed/disconnect/307/pre-cancel。显式 retry=0 最终版本及 read 后 cancel 新用例、服务层 legacy 对照测试仍待最终结果。未调用真实 provider，未放开 TokenRefresh HA。先前“内部四次重试”阻断描述适用于旧路径，维护路径改造尚未完成整体验证。
+
+### 完整 scheduler fencing 的后续实现契约（尚未实现）
+
+不能只加 Redis generation marker：Valkey rollback 可恢复旧 marker/lease；PG check 后 Redis write 不是跨存储原子 fence。拟采用 PG 持久 generation+随机 owner、按 generation 隔离的 scheduler namespace、PG 选择 active generation；新 leader fresh rebuild 后发布 namespace。每个 payload/metadata/revision/member chunk、activate/retire/reopen、lease acquire/release 都需同 Lua 内校验原始 capability，missing guard 不得重建。Bucket API 改 owner lease，group transition 同时校验 group lease；outbox dedup release/exact ack 需在 dedicated PG session 的事务内核验锁和 generation。Gateway 不得拿 worker 写权限；保留 DB fallback、停止 fallback 发布并将请求冷却状态拆为窄 overlay。需要新 forward migration、权限/wire、reader namespace/memo 接线和旧 leader/lease expiry/Redis rollback/partial pipeline 确定性交错测试。
+
+此方案也不承诺 PG 断连瞬时撤销在飞 Redis 命令；旧 namespace 在新 namespace 发布前仍有窗口，读侧 authority 与恢复策略必须明确。当前未加迁移、未改 reader/namespace、未开放 SchedulerSnapshot，不能把设计当作实现。

@@ -11,6 +11,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/refreshpolicy"
 	"github.com/Wei-Shaw/sub2api/internal/util/logredact"
 )
 
@@ -205,11 +206,8 @@ func (s *TokenRefreshService) notifyAccountSchedulingBlockCleared(accountID int6
 // Start 启动后台刷新服务
 // SetMultiReplicaMaintenance disables unfenced post-refresh mutations and
 // external privacy calls. Durable coordination is mandatory in this mode.
-type maintenanceRefreshContextKey struct{}
-
 func isMaintenanceRefresh(ctx context.Context) bool {
-	value, _ := ctx.Value(maintenanceRefreshContextKey{}).(bool)
-	return value
+	return refreshpolicy.SingleAttempt(ctx)
 }
 
 func (s *TokenRefreshService) SetMultiReplicaMaintenance() { s.maintenanceSafe = true }
@@ -898,7 +896,7 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 		}
 		attemptCtx, cancelAttempt := context.WithTimeout(ctx, s.attemptTimeout())
 		if s.maintenanceSafe {
-			attemptCtx = context.WithValue(attemptCtx, maintenanceRefreshContextKey{}, true)
+			attemptCtx = refreshpolicy.WithSingleAttempt(attemptCtx)
 		}
 		var newCredentials map[string]any
 		var err error
