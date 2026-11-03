@@ -254,3 +254,15 @@ TLS补充回归发现严格维护的 Chrome preset 即使 ForceHTTP1，ALPN仍�
 新增显式adapter绑定仓储maintenance session：dedup release/pending扫描、精确ID ack均在同session.withGeneration事务验exclusive锁和row owner/generation；commit失败不返回events。旧pool仓储只重用scanner，默认wire不变。RequiresMaintenanceFence任务在legacy或无coordinator时拒绝，不允许静默降级。仓储聚焦PASS0.042s；service/Docker/build/vet尚在运行。Redis namespace/active-reader未实现、SchedulerSnapshot继续禁用，未部署AWS。
 
 Session-bound outbox最终链PASS：repository0.042s、service0.098s、Docker PG generation+fenced outbox5.948s、server build/vet均通过；最终继承capability拒绝用例另行重跑通过。outbox未接默认wire、Redis namespace/reader未实现，仍不开放SchedulerSnapshot。后续用户要求修复CI并准备多机器镜像，先修CI再做本地image/role/migrator测试，不发布ECR/创建新AWS资源。
+
+## CI修复与多机镜像准备（2026-11-03，进行中）
+
+已定位fork CI：Cloud foundation health-cmd单引号导致runner docker参数拆分（迁移前失败），改double quote；CI integration因committing夹具泄漏污染列表/唯一性断言，harness新增迁移基线snapshot+checked cleanup，仅disposable容器，保留schema_migrations/atlas_schema_revisions/maintenance_generation且不重置sequence；scheduler-neutral outbox断言改前后差值。已修正lint checked assertions/Close/Rollback、unused、deprecated字段；callback-drain mutex保留并窄范围说明。
+
+精确golangci-lint v2.14.0官方包checksum验证通过。首轮发现新增测试等9项剩余问题，已修正，最终lint仍待结果。完整 `GOMAXPROCS=1 GOMEMLIMIT=1400MiB GOGC=20 go test -p=1 -tags=integration -count=1 ./...` PASS（repository41.127s、service149.757s、handler39.838s）。最终unit/image链仍运行中，不能写CI已绿。最初镜像预构建与集成排队竞态并发编译，已主动停止镜像编译exit144，后续使用单条串行链。
+
+新增headless cloud Dockerfile（server+migrate）、最小build context脚本、外部配置compose（非root10001、readonly、drop caps、no-new-privileges、migrator默认check）、离线contract和六容器internal network smoke脚本。静态contract、bash/Python语法、compose config --quiet通过；实际镜像构建/运行仍待结果。没有registry push、新AWS资源或真实跨机器验证，arm64未验。见EC2_MULTI_HOST_IMAGES.zh-CN.md。
+
+CI修复最终本机验收：golangci-lint v2.14.0 0 issues，完整unit exit0（repository10.110s/service251.324s），完整integration exit0。CI修复3f39bed33已push，远端CI41597223057与Cloud foundation41597223046运行中，Security Scan通过；不能写远端CI已绿。
+
+headless amd64 prebuilt镜像构建及network-none契约通过，local tag sub2api-cloud:local-amd64。六容器烟测前3次失败（binding null TypeError/等待publication超时；独立迁移均成功），修为internal network容器内HTTP探针后image-smoke-04通过：6角色、独立migrator、杀主接管实际暂停fixture、活跃槽位/等待计数保留，临时资源清理，provider_calls=0。没有真实多机/TLS/arm64/UI验证、registry发布或AWS部署。
