@@ -13,6 +13,7 @@ import { useRoutePrefetch } from '@/composables/useRoutePrefetch'
 import { getSetupStatus } from '@/api/setup'
 import { resolveCompletedSetupRedirectPath } from './setupRedirect'
 import { resolveRouteDocumentTitle } from './title'
+import { safeAuthRedirect } from './authRedirect'
 
 /**
  * Route definitions with lazy loading
@@ -29,6 +30,18 @@ const routes: RouteRecordRaw[] = [
     }
   },
 
+  {
+    path: '/supplier',
+    name: 'SupplierEntry',
+    component: () => import('@/views/supplier/SupplierEntryView.vue'),
+    meta: { requiresAuth: false, title: 'Supplier portal', titleKey: 'supplier.title' }
+  },
+  {
+    path: '/supplier/portal',
+    name: 'SupplierPortal',
+    component: () => import('@/views/supplier/SupplierPortalView.vue'),
+    meta: { requiresAuth: true, title: 'Supplier portal', titleKey: 'supplier.title' }
+  },
   // ==================== Public Routes ====================
   {
     path: '/home',
@@ -850,7 +863,7 @@ router.beforeEach(async (to, _from, next) => {
         return
       }
       // Admin users go to admin dashboard, regular users go to user dashboard
-      next(authStore.isAdmin ? '/admin/dashboard' : '/dashboard')
+      next(safeAuthRedirect(to.query?.redirect, authStore.isAdmin ? '/admin/dashboard' : '/dashboard'))
       return
     }
     // Model Plaza:公开路由但受「启用开关 + 可选强制登录」双重控制(后端同口径 fail-closed)

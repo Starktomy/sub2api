@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import RegisterView from '@/views/auth/RegisterView.vue'
 
 const {
+  routeQuery,
   getPublicSettingsMock,
   registerMock,
   showErrorMock,
@@ -10,6 +11,7 @@ const {
   verifyActionMock,
   appStoreMock
 } = vi.hoisted(() => ({
+  routeQuery: {} as Record<string, string>,
   getPublicSettingsMock: vi.fn(),
   registerMock: vi.fn(),
   showErrorMock: vi.fn(),
@@ -42,7 +44,7 @@ const publicSettings = {
 
 vi.mock('vue-router', () => ({
   useRouter: () => ({ push: pushMock }),
-  useRoute: () => ({ query: {} })
+  useRoute: () => ({ query: routeQuery })
 }))
 
 vi.mock('vue-i18n', () => ({
@@ -97,6 +99,7 @@ function mountRegister() {
 
 describe('RegisterView', () => {
   beforeEach(() => {
+    for (const key of Object.keys(routeQuery)) delete routeQuery[key]
     getPublicSettingsMock.mockReset()
     registerMock.mockReset()
     showErrorMock.mockReset()
@@ -206,6 +209,25 @@ describe('RegisterView', () => {
     })
     expect(pushMock).toHaveBeenCalledWith('/email-verify')
     expect(registerMock).not.toHaveBeenCalled()
+  })
+
+  it.each([false, true])('preserves the supplier destination with email verification=%s', async (emailVerify) => {
+    routeQuery.redirect = '/supplier/portal'
+    getPublicSettingsMock.mockResolvedValueOnce({ ...publicSettings, turnstile_enabled: false, email_verify_enabled: emailVerify })
+    registerMock.mockResolvedValue({})
+    const wrapper = mountRegister()
+    await flushPromises()
+    await wrapper.get('#email').setValue('user@example.com')
+    await wrapper.get('#password').setValue('secret-123')
+    await wrapper.get('#confirmPassword').setValue('secret-123')
+    await wrapper.get('form').trigger('submit.prevent')
+    await flushPromises()
+    if (emailVerify) {
+      expect(JSON.parse(sessionStorage.getItem('register_data')!).pending_redirect).toBe('/supplier/portal')
+      expect(pushMock).toHaveBeenCalledWith('/email-verify')
+    } else {
+      expect(pushMock).toHaveBeenCalledWith('/supplier/portal')
+    }
   })
 
   it('keeps the optional affiliate invitation field before Turnstile', async () => {

@@ -967,6 +967,7 @@ func ProvideRuntimeLifecycle(cfg *config.Config, locker MaintenanceLocker) *Runt
 
 // ProviderSet is the Wire provider set for all services
 var ProviderSet = wire.NewSet(
+	NewSupplierService,
 	ProvideRuntimeLifecycle,
 	// Core services
 	ProvideAuthService,

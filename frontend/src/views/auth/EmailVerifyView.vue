@@ -178,6 +178,7 @@
 </template>
 
 <script setup lang="ts">
+import { safeAuthRedirect, authDestination } from '@/router/authRedirect'
 import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -743,7 +744,7 @@ async function handleVerify(): Promise<void> {
     appStore.showSuccess(t('auth.accountCreatedSuccess', { siteName: siteName.value }))
 
     // Redirect to dashboard
-    await router.push(pendingRedirect.value || '/dashboard')
+    await router.push(safeAuthRedirect(pendingRedirect.value))
   } catch (error: unknown) {
     errorMessage.value = buildRegistrationErrorMessage(error, t('auth.verifyFailed'))
 
@@ -763,7 +764,7 @@ function handleBack(): void {
   sessionStorage.removeItem('register_data')
 
   // Go back to registration
-  router.push('/register')
+  router.push(authDestination('/register', pendingRedirect.value))
 }
 
 function buildEmailSuffixNotAllowedMessage(): string {

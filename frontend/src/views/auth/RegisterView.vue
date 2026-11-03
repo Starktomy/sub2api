@@ -354,7 +354,7 @@
       <p class="text-gray-500 dark:text-dark-400">
         {{ t('auth.alreadyHaveAccount') }}
         <router-link
-          to="/login"
+          :to="authDestination('/login', route.query.redirect)"
           class="font-medium text-primary-600 transition-colors hover:text-primary-500 dark:text-primary-400 dark:hover:text-primary-300"
         >
           {{ t('auth.signIn') }}
@@ -365,6 +365,7 @@
 </template>
 
 <script setup lang="ts">
+import { safeAuthRedirect, authDestination } from '@/router/authRedirect'
 import { computed, ref, reactive, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -1058,6 +1059,7 @@ async function handleRegister(): Promise<void> {
       sessionStorage.setItem(
         'register_data',
         JSON.stringify({
+          ...(route.query.redirect ? { pending_redirect: safeAuthRedirect(route.query.redirect) } : {}),
           email: formData.email,
           password: formData.password,
           turnstile_token:
@@ -1093,7 +1095,7 @@ async function handleRegister(): Promise<void> {
     appStore.showSuccess(t('auth.accountCreatedSuccess', { siteName: siteName.value }))
 
     // Redirect to dashboard
-    await router.push('/dashboard')
+    await router.push(safeAuthRedirect(route.query.redirect))
   } catch (error: unknown) {
     // Handle registration error
     errorMessage.value = buildRegistrationErrorMessage(error, t('auth.registrationFailed'))

@@ -86,7 +86,7 @@ function createDeferred<T>() {
   return { promise, resolve }
 }
 
-function runGuard(meta: Record<string, unknown>, path: string) {
+function runGuard(meta: Record<string, unknown>, path: string, query: Record<string, unknown> = {}) {
   if (!routerHarness.guard) {
     throw new Error('router guard was not registered')
   }
@@ -98,6 +98,7 @@ function runGuard(meta: Record<string, unknown>, path: string) {
       fullPath: path,
       name: 'FeatureRoute',
       params: {},
+      query,
       meta: { requiresAuth: true, ...meta },
     },
     {},
@@ -115,9 +116,40 @@ describe('feature route guard', () => {
     authStore.isAuthenticated = true
     authStore.isAdmin = false
     authStore.isSimpleMode = false
+    appStore.backendModeEnabled = false
     appStore.publicSettingsLoaded = false
     appStore.cachedPublicSettings = null
     appStore.fetchPublicSettings.mockReset()
+  })
+
+  it('keeps supplier entry public and portal authenticated without an admin role', async () => {
+    authStore.isAuthenticated = false
+    const entry = runGuard({ requiresAuth: false }, '/supplier')
+    await entry.navigation
+    expect(entry.next).toHaveBeenCalledWith()
+    const portal = runGuard({}, '/supplier/portal')
+    await portal.navigation
+    expect(portal.next).toHaveBeenCalledWith({ path: '/login', query: { redirect: '/supplier/portal' } })
+    authStore.isAuthenticated = true
+    const signedIn = runGuard({}, '/supplier/portal')
+    await signedIn.navigation
+    expect(signedIn.next).toHaveBeenCalledWith()
+  })
+
+  it('returns signed-in users from email auth pages to the supplier destination', async () => {
+    const login = runGuard({ requiresAuth: false }, '/login', { redirect: '/supplier/portal' })
+    await login.navigation
+    expect(login.next).toHaveBeenCalledWith('/supplier/portal')
+    const unsafe = runGuard({ requiresAuth: false }, '/register', { redirect: '//external.test' })
+    await unsafe.navigation
+    expect(unsafe.next).toHaveBeenCalledWith('/dashboard')
+  })
+
+  it('preserves backend-mode restrictions for supplier pages', async () => {
+    appStore.backendModeEnabled = true
+    const portal = runGuard({}, '/supplier/portal')
+    await portal.navigation
+    expect(portal.next).toHaveBeenCalledWith('/login')
   })
 
   it('waits for the first public-settings request before deciding payment access', async () => {
