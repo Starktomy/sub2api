@@ -68,7 +68,15 @@ Terraform `validate`/mock tests are not a production deployment approval. Explic
 Use only the operator's approved external tfvars and ephemeral secret injection.
 Never run apply from stored root credentials or create a second stack to bypass a failure.
 
-## Costs and retention
+## Explicit low-cost test mode
+
+`low_cost_test_mode=true` selects Single-AZ `db.t4g.micro` with the existing 20 GiB gp3, and one `cache.t4g.micro` Valkey node without automatic failover. The default remains false (the original HA topology). Encryption, TLS, private networking, backups and database deletion protection remain enabled. This is development-only, not the same availability contract.
+
+On 2026-11-03 the user explicitly approved downsizing the existing services. The live change is being executed through the dedicated deployment role after pre-change snapshots, not by running Terraform apply. Reconcile live state and private tfvars before any future apply; do not blindly apply historical saved plans. Snapshots remain billable until separately reviewed for removal.
+
+Current Oregon on-demand baseline at 730 hours/month: PostgreSQL micro $11.68 + 20 GiB gp3 $2.30 + one Valkey micro $9.344 = approximately **$23.32/month**, excluding snapshots/backup excess, CPU credits, transfer, monitoring, Secrets Manager and taxes. Live change completion must be recorded separately; the flag's existence is not proof of a finished resize.
+
+## Costs and retention (original HA configuration)
 
 AWS public on-demand prices queried on 2026-11-03 (local date), `us-west-2`:
 

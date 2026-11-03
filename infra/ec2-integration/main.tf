@@ -56,6 +56,12 @@ variable "additional_runtime_security_group_ids" {
   }
 }
 
+variable "low_cost_test_mode" {
+  description = "Explicit development-only opt-in: single-AZ micro PostgreSQL and one micro Valkey node; no automatic data-layer failover."
+  type        = bool
+  default     = false
+}
+
 variable "deployment_enabled" {
   type    = bool
   default = false
@@ -188,11 +194,11 @@ resource "aws_db_instance" "postgres" {
   identifier                  = "${local.name}-postgres"
   engine                      = "postgres"
   engine_version              = "16.13"
-  instance_class              = "db.t4g.medium"
+  instance_class              = var.low_cost_test_mode ? "db.t4g.micro" : "db.t4g.medium"
   allocated_storage           = 20
   storage_type                = "gp3"
   storage_encrypted           = true
-  multi_az                    = true
+  multi_az                    = !var.low_cost_test_mode
   db_name                     = "sub2api_integration_test"
   username                    = "sub2api_bootstrap"
   manage_master_user_password = true
@@ -246,12 +252,12 @@ resource "aws_elasticache_replication_group" "valkey" {
   description                 = "Sub2API EC2 integration TLS primary plus cross-AZ replica"
   engine                      = "valkey"
   engine_version              = "7.2"
-  node_type                   = "cache.t4g.small"
+  node_type                   = var.low_cost_test_mode ? "cache.t4g.micro" : "cache.t4g.small"
   cluster_mode                = "disabled"
-  num_cache_clusters          = 2
-  preferred_cache_cluster_azs = ["us-west-2b", "us-west-2a"]
-  multi_az_enabled            = true
-  automatic_failover_enabled  = true
+  num_cache_clusters          = var.low_cost_test_mode ? 1 : 2
+  preferred_cache_cluster_azs = var.low_cost_test_mode ? ["us-west-2a"] : ["us-west-2b", "us-west-2a"]
+  multi_az_enabled            = !var.low_cost_test_mode
+  automatic_failover_enabled  = !var.low_cost_test_mode
   subnet_group_name           = aws_elasticache_subnet_group.valkey.name
   security_group_ids          = [aws_security_group.valkey.id]
   parameter_group_name        = aws_elasticache_parameter_group.valkey.name
