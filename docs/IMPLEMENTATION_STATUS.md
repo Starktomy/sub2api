@@ -4,6 +4,14 @@
 
 完整目标方案：[CLOUD_ARCHITECTURE.zh-CN.md](CLOUD_ARCHITECTURE.zh-CN.md)。
 
+## Bedrock 现有适配器补强（2026-11-03，未部署）
+
+- 原生InvokeModel/EventStream路径继续复用，未新增网关、Converse或Mantle。EventStream增加本地防御性帧/头大小和切片边界、完整header验证与truncation识别；聚焦测试通过。
+- 新增显式aws_auth_mode=credential_file：只读取运维环境SUB2API_BEDROCK_CREDENTIALS_FILE固定绝对路径，SDK CredentialsCache在签名时refresh（提前5分钟）；拒绝默认AWS chain/IMDS/账号自选路径。严格root-owned JSON，字段AccessKeyId/SecretAccessKey/SessionToken/Expiration，支持root:10001 0440及目录只读挂载的atomic replacement；文件供应/STS刷新daemon尚未实现或部署。
+- 新模式要求显式区域、aws_allowed_model_ids（JSON字符串数组）、global需aws_allow_global=true；保留明确profile ID不静默改地域前缀，输出默认1024/上限8192，native内部attempt=1。管理连接测试同样校验。旧静态/APIkey兼容不变；这些不是完整跨区域驻留证明，也未改变通用外层failover策略。
+- signer/credential/cloud聚焦测试通过0.538s；全部Bedrock回归通过0.554s，server build、service vet及精确CI golangci-lint v2.14.0串行验证exit0、0 issues。临时文件凭据模式不等于已完成EC2 Role取证/持续供应。
+- 用户已授权真实Bedrock验收，但IAM管理默认会话过期；专用deployer可用但不能创建所需身份。需用户aws login后核验并建立最小权限身份；尚未调用真实Bedrock、未扩权或发布新镜像。
+
 ## 已完成
 
 - 创建独立本地 fork `/root/ai/sub2api-cloud`，分支 `feat/ecs-cloud-foundation`；upstream 保留为 `https://github.com/Wei-Shaw/sub2api.git`。

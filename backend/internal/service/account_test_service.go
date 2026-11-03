@@ -727,6 +727,10 @@ func (s *AccountTestService) testBedrockAccountConnection(c *gin.Context, ctx co
 		"temperature": 1,
 	}
 	bedrockBody, _ := json.Marshal(bedrockPayload)
+	bedrockBody, policyErr := validateBedrockCloudRequest(account, region, testModelID, bedrockBody)
+	if policyErr != nil {
+		return s.sendErrorAndEnd(c, "Bedrock application request policy rejected the test")
+	}
 
 	// Use non-streaming endpoint (response is standard Claude JSON)
 	apiURL := BuildBedrockURL(region, testModelID, false)

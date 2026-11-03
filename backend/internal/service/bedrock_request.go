@@ -160,6 +160,11 @@ func ResolveBedrockModelID(account *Account, requestedModel string) (string, boo
 	if !ok {
 		return "", false
 	}
+	if account.GetCredential("aws_auth_mode") == "credential_file" {
+		// Strict mode preserves explicit profile IDs. Region/profile routing is
+		// approved by exact allowlist, never silently rewritten across boundaries.
+		return modelID, true
+	}
 	if shouldAdjustRegion {
 		targetRegion := bedrockRuntimeRegion(account)
 		if shouldForceBedrockGlobal(account) {
