@@ -1,0 +1,28 @@
+[Unit]
+Description=Sub2API digest-pinned host roles
+Wants=network-online.target
+After=network-online.target docker.service sub2api-roles-imds.service
+Requires=docker.service sub2api-roles-imds.service
+StartLimitIntervalSec=900
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=root
+UMask=0077
+ExecStart=/usr/bin/python3 -I /opt/sub2api-roles/ec2-role-deploy.py run
+Restart=on-failure
+RestartSec=15s
+# Three sequential 120s graceful stops plus startup; only signal supervisor.
+KillMode=process
+TimeoutStopSec=420s
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/sub2api-roles
+PrivateTmp=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

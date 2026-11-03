@@ -1,0 +1,13 @@
+[Unit]
+Description=Block EC2 metadata from Sub2API container bridge
+Before=sub2api-roles.service
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/nft -f /etc/nftables.d/sub2api-roles.nft
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

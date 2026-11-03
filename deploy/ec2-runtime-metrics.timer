@@ -1,0 +1,12 @@
+[Unit]
+Description=Collect Sub2API runtime metrics every minute
+
+[Timer]
+OnBootSec=45s
+OnCalendar=*-*-* *:*:00
+RandomizedDelaySec=5s
+AccuracySec=1s
+Unit=ec2-runtime-metrics.service
+
+[Install]
+WantedBy=timers.target

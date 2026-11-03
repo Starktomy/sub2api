@@ -2,7 +2,24 @@
 
 日期：2026-11-03。状态：用户已授权发布镜像、创建必要 AWS 资源，并明确允许 root 仅用于补齐所需 IAM 权限。已创建私有 ECR、发布既有验收镜像，并启动第二台 EC2；应用跨机验收与完整 fencing 尚未完成。本文件不是完成报告。
 
-## 已核实的身份与阻塞
+## 追加：双机生产基础验收（进行中）
+
+用户随后要求先完成资源限制、监控、发布/回滚/开机恢复和容量测试；域名稍后提供。又明确要求SSH TCP22继续全网开放、先临时创建ALB测试，全部测试完成后可删除ALB及第二台EC2，前期保留单机。
+
+- 原主机已安装官方SSM Agent并通过独立SendCommand；两主机SSM Online。曾撤销全网入站并保留操作IP/32，随后按用户新要求恢复IPv4 TCP22 0.0.0.0/0，仅SSH，不恢复全协议或IPv6全开放。
+- 临时internal ALB sub2api-it-ha，SG仅接受原测试主机SG的HTTP80。两个Target Group分别Gateway/Control，Host api.test.invalid/admin.test.invalid分流，默认404；没有DNS发布、公网裸HTTP或证书冒充。ALB费用$0.0225/小时+$0.008/LCU小时。
+- 两台现改用sub2api-roles.service托管gateway/control/worker，分别内存1024/768/512MiB与CPU1.0/0.4/0.3，pids256、禁swap、非root/readonly/tmpfs；Go软目标不等于预留。原测试容器已停止，旧容器不自动启动。
+- 首次第二台安装因docker inspect不存在对象返回[]触发IndexError失败，恢复旧角色后修复并补测试，重试通过。原主机旧容器graceful stop较慢，ALB第二台持续服务。
+- 新增host-local失败发布自动回滚实测通过：候选配置DB端点指向本机不可用端口，返回失败后supervisor恢复原配置，三角色healthy；不声称跨主机滚动编排完成。
+- 第二台真实EC2 reboot后unit、metadata firewall、collector timer自动active，角色自动创建；最终Docker healthy确认仍单独验证。
+- ALB两Target Group均有两healthy后端；第二台服务重启期间120次health请求全部200，P95 3.17ms。这不是模型吞吐。
+- 原主机有界HTTP测试4/12/24并发各240次：4并发全部预期；12/24阶段各120次auth请求返回429（安全限流），health成功。脚本原始统计记为失败，不宣称容量全通过；无真实模型压测。
+- host/role collector两台安装并成功PutMetricData，CloudWatch namespace Sub2API/Runtime，固定InstanceId/Role低基数。原主机ProtectHome导致/root内CLI不可访问，复制既有CLI到/opt并修复symlink后发布成功。两个collector离线15tests、role deploy13tests通过；已接CI。
+- 已创建21条baseline metric alarms：RDS CPU/free storage/free memory、两个Valkey节点engineCPU/memory/evictions、两host status/heartbeat/collection与各role health。曾观察全部OK；故障测试期间可变。ActionsEnabled=false，无外部通知接收地址，不能算通知送达验收。34个常规custom series/两host，费用另计；阈值为初始基线非production容量承诺。
+- 真实模型首次2请求：账户1成功、1条usage/customer cost $0.000100；账户2本地pool0/503，未建立上游调用。只读诊断指向启用后2秒早于5秒publication；正在补PG-selected manifest/payload readiness，剩余最多2请求。账户/Key/user均finally停用，无refresh/import，账务保留。
+- 全部验收及证据保存前，不销毁临时ALB或第二台。当前资源仍计费；后续只清理本轮明确临时资源，不销毁RDS/Valkey/原EC2/ECR。
+
+## 已核实的身份与阻塞（以下保留早期执行记录，当前状态以上方追加为准）
 
 - 目标账号 `250088785444`，Region `us-west-2`。
 - 通过仓库外 AWS config 成功 AssumeRole 到 `sub2api-integration-deployer`。
