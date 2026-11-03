@@ -200,6 +200,83 @@ MVP采用按模型、按可验证usage的固定版本化单价，不先做竞价
 
 本文件未授权开发或上线交易、导入账号、调用真实模型、修改AWS资源或转账。具体实施按另行确认范围推进。
 
+## 13. 当前实施记录（2026-11-03）
+
+### 邮箱会员基础：已提交、已本地验证、未部署
+
+提交 `0f66938a1`，分支 `feat/control-supplier-portal`：
+
+- 新增前向迁移 `253_supplier_profiles.sql`，本人资料、唯一用户绑定、并发开通幂等、版本 CAS；当前用户邮箱变更后必须重新验证。
+- 供应者验证码与普通注册验证码用途隔离，原子单次消费；发送与开通接口按用户/IP限流，Redis不可用时拒绝，严格拒绝外部设置归属/状态等字段。
+- 门户会员自助开通无需人工审核，不产生上游供给、调度、收益或付款权限。
+- 后台聚焦命令：`SUPPLIER_TEST_PG_SOCKET=<临时本地 socket> GOMAXPROCS=1 GOMEMLIMIT=1400MiB GOGC=20 go test -p=1 ./internal/service ./internal/repository ./internal/handler ./internal/server/routes ./internal/server/middleware ./cmd/server -run TestSupplier -count=1 -v`：17项通过，实际执行本地 PostgreSQL 15.19 并发测试；`cmd/server` 编译及默认测试 vet 通过。Wire生成、`git diff --check` 通过；此批未单独执行完整 `go build`。
+- 前端聚焦124项通过；Node24环境 `pnpm typecheck`、`pnpm build` 通过，构建有非阻断的Browserslist/Node弃用/大chunk/混合导入警告。
+- 本地临时PG已停止并清理；未发送真实邮件、调用模型或操作AWS，未应用迁移到真实RDS。
+
+### 独立供应入口：已实现，本地测试与两套生产构建通过，未部署
+
+用户要求先提交会员基础后实现独立供应域名、专用 API 和会话隔离。本批实现独立前端构建和供应 Control 入口，保持一个 Gateway/调度器；完整验证结果待测试完成后追加。不得将上一批共享JWT和共享前端测试作为独立入口验收。
+
+当前代码设计（开发中，非部署说明）：
+
+- `supplier_portal.enabled` 显式选择专用 Control 进程，要求 split Control 与数据库 check-only 模式。
+- 必须配置精确 `supplier_portal.host`、匹配的 HTTPS `supplier_portal.origin`、与消费者密钥不同且至少32字符的 `supplier_portal.jwt_secret`；密钥只通过外部秘密配置传入，不写入Git。`registration_enabled` 独立控制供应者注册。
+- API-only 后端不提供消费者SPA，只显式挂载邮箱注册/验证码、登录/2FA、刷新/退出、最小身份、最小公开配置和本人供应资料；其他接口不注册。消费者入口移除原共享供应路由。
+- 前端 `pnpm build:supplier` 使用独立模块图，产物为 `frontend/dist/supplier/index.html` 及其静态资源，不是 `dist-supplier`。构建有消费者模块导入守卫；部署时静态站点与供应API保持同源。
+- 反代必须保持配置的Host，且只将API请求转发到供应专用监听端口；未知API不得回退到前端HTML。静态站点独立的SPA路由回退不应用于API。当前不增加正式反代配置或开放端口。
+- 如果配置了尚未支持的强制登录协议/captcha策略，供应流程拒绝并展示不可用，不能静默跳过既有安全策略。
+
+后端隔离批本地验证：
+
+- `GOMAXPROCS=1 GOMEMLIMIT=1400MiB GOGC=20 go test -p=1 ./internal/config ./internal/service ./internal/repository ./internal/handler ./internal/server/routes ./internal/server/middleware ./internal/server ./cmd/server -run 'TestSupplier|TestCloudRole|TestRuntimeHTTPRole|TestCloudGateway|TestCloudWorker|TestCloudCommon' -count=1 -v`：32个顶层测试通过，1项现有本地PG opt-in测试因未提供socket跳过；此批无schema变更。上一批实际PG验证不能代替本批跳过项。
+- `-tags=unit` 下既有 RefreshToken/GenerateToken 与供应测试通过（0.329s）；独立 `go build -p=1 -o /tmp/supplier-isolated-server ./cmd/server`、上述8包显式 `go vet -p=1`、Wire生成及 `git diff --check` 均通过。
+- access token 使用供应 audience及独立签名，覆盖双向拒绝、过期令牌旧刷新路径及签名边界；refresh用户/家族索引、TOTP pending/setup/attempt/stepup、邮箱proof缓存分别隔离。
+- 供应者注册要求供应用途邮箱证明，不赠额、不授订阅、不初始化返利；已有用户登录仍要求原有TOTP。仅记录注册来源及登录时间不属于消费者赠送权益。
+- 限制：供应专用监听进程仍复用Control DI与生命周期，并非依赖图/数据库权限已完全最小化。尚无真实反代、TLS、域名或公网端到端验证。
+
+前端隔离批本地验证：149项测试/18文件通过；Node24下串行 `pnpm typecheck && pnpm build:supplier && pnpm build` 全部exit0。供应构建99模块/5.26s，产物 `frontend/dist/supplier/index.html`，manifest动态页面仅Entry/Auth/Portal，消费者模块导入守卫通过；原站1098模块/1m18s构建通过，i18n 3项通过。无依赖或lockfile变化。原站构建输出至已有backend embed目录，不覆盖供应产物。
+
+真实域名尚未提供，本批不修改DNS、TLS、AWS或正式部署。
+
+### Session JSON 与窗口接入：前后端本地测试/构建通过，未接真实上游及正式数据库
+
+用户要求复用Sub2API既有能力，不另写导入器或探测器。已定位管理员导入 `backend/internal/handler/admin/account_codex_import.go`、前端 `CreateAccountModal.vue` 的 `handleOpenAIImportCodexSession`、`OpenAIQuotaService.QueryUsage` 及现有窗口调度字段。
+
+实施检查发现：现有Account凭据字段仍为明文JSON；`credentialcrypto`只有独立codec，尚未运行时接线。既有窗口QueryUsage还可能经tokenProvider刷新，并额外查询reset-credit details。因此不直接将管理员handler或完整QueryUsage开放给供应者。
+
+本批最小集成边界：
+
+- 抽取复用已有session解析逻辑，新增供应者受限接口与所有权校验，不复制整套管理员导入流程。
+- 新增前向迁移254（最终文件名待实现），供应资源加密信封绑定资源UUID、供应者和用途；不同时保存明文副本，不写既有明文Account，不进入调度池。
+- 复用credentialcrypto；显式本地密钥包装器只用于本地/测试选项，不冒称AWS KMS。外部密钥文件严格权限校验；没有密钥时导入拒绝，不自动生成或降级明文。正式托管仍需密钥轮换/恢复和部署验收。
+- 在现有quota service内增加明确只读窗口入口，复用客户端及解析，固定上游地址，使用短暂解密材料；不调用自动刷新、reset credit查询/消耗、隐私修改或收费模型请求。
+- 供应门户只展示本人资源、套餐/窗口观察值与时间，未知和陈旧明确标记；支持暂停/断开，不宣传自动续期或精确可售token总额。
+- 验证仅本地mock/loopback与临时数据库，不调用真实ChatGPT/Codex，不操作AWS或正式数据库。此段为实施决定，不是已完成或验证通过记录。
+
+后端接入批验证（2026-11-03）：
+
+- `SUPPLIER_TEST_PG_SOCKET=<临时socket> GOMAXPROCS=1 GOMEMLIMIT=1400MiB GOGC=20 go test -p=1 ./internal/pkg/credentialcrypto ./internal/pkg/codexsession ./internal/config ./internal/service ./internal/repository ./internal/handler ./internal/handler/admin ./internal/server/routes ./internal/server/middleware ./internal/server ./cmd/server -run 'TestSupplier|TestLocalWrapper|Test.*Codex' -count=1 -v`：534个顶层测试通过，0跳过。涵盖原管理导入回归、本地PG254重复迁移/归属/CAS/碰撞/断开重导入、加密篡改/上下文互换/key ID/旧key、loopback只读单GET且无重置/刷新/重定向/token回显。
+- 当前服务端独立build、相关包显式vet、Wire生成、diff空白检查通过；临时PG已停止清理。未访问真实上游/邮件/AWS，未应用正式数据库迁移。
+- 密钥配置：`SUPPLIER_PORTAL_VAULT_KEY_FILE` 为绝对路径的外部Linux本地密钥文件，root或当前uid所有、0600、路径及文件禁止符号链接；内容结构为keys映射（key ID至64位十六进制），不在文档提供可用密钥。`SUPPLIER_PORTAL_VAULT_KEY_ID` 选择当前写入key。缺少/无效配置返回503，不降级明文。
+- 支持文件保留旧key ID后重启，实现读旧写新；不支持热加载、自动重包裹或完整轮换/灾备流程，不等同AWS KMS部署。
+- 限制：导入身份/套餐声明未经上游验证，成功只读快照的套餐优先显示；逆向的legacy Account创建尚不查询供应vault，不保证全局排他性。导入只在短事务内锁表查重，锁等待500ms/语句2s；列表只返回最近100条，尚无分页。所有资源paused且不关联Account/调度。
+
+本机反代暂存验证：新增 `deploy/openresty-local-compose.yaml` / `openresty-local.conf`，Alpine OpenResty固定digest，仅发布127.0.0.1:8088，非root/readonly/128MiB。消费者页面200/API401，Gateway health200，供应页面200，未知Host404；供应API因专用进程未部署返回502，没有回退普通Control。首次临时目录readonly启动失败已修复，nginx -t通过。不代表真实TLS、DNS或新版session UI验收。
+
+资源前端最终验证：完整159项测试/19文件通过，套餐申报/观测标签后补测试11项通过；串行 `pnpm typecheck && pnpm build:supplier && pnpm build` 全部exit0，供应102模块/5.31s、原站1m53s，i18n3项通过。供应产物仍为 `frontend/dist/supplier/index.html`，manifest仅Entry/Auth/Portal且消费者模块守卫通过。重建后经运行中OpenResty本机测试Host访问新版供应index为200，nginx -t再次通过；仅验证静态文件可服务，不是浏览器交互或真实供应API端到端验证。后台专用进程尚未部署，API仍不可用。
+
+### 持久自动窗口任务（2026-11-04）：已实现、本地验证，未部署
+
+新增255迁移及PG持久队列；Worker明确opt-in，默认10分钟±20%抖动，30秒补偿扫描、每批2条顺序处理。短事务认领后执行只读查询，结果按资源版本、凭据版本、lease owner/generation CAS提交；60秒租约、20秒上游超时。429尊重Retry-After（上限24小时），瞬时失败有界退避，401/403/过期停止并要求重新连接；暂停/断开取消任务。旧资源默认不开同步，新导入入队；同步恢复不代表恢复调度。邮件配置状态仅表示配置齐全，不证明投递成功。
+
+后台最终40个顶层测试通过、0失败/跳过，真实临时PG执行255重复迁移、租约接管/拒绝旧结果、版本CAS、401隔离、暂停取消/恢复、429计划及到期断言；另6项热重跑通过。当前build、显式vet、Wire、diff检查通过，临时PG已清理。无真实probe或邮件。前端165项测试通过，最终typecheck/双build结果待追加。
+
+### 当前部署状态（2026-11-04）
+
+四域名HTTPS证书与Cloudflare回源可用；供应专用Control本地固定image ID运行，迁移253/254已通过独立migrator应用，255尚未应用。供应公开配置200、未登录资料401、admin及推理路径404；IMDS访问阻断。专用健康检查使用供应Host和最小公开配置，不能沿用通用/health。邮件尚未配置，真实邮箱注册不可用；后台自动Worker未启用、自动入池未实现。
+
+凭据、私有环境、密码文件及密钥均在仓库之外，不记录其内容。当前用户要求先分批提交/推送供应分支，再从其新建模块化上游分支；不将后续架构工作与此批验证混在一起。
+
 ## 参考
 
 - https://openai.com/policies/terms-of-use/

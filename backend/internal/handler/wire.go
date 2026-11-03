@@ -164,8 +164,9 @@ func ProvideSystemHandler(updateService *service.UpdateService, lockService *ser
 }
 
 // ProvideSettingHandler creates SettingHandler with version from BuildInfo
-func ProvideSettingHandler(settingService *service.SettingService, buildInfo BuildInfo, notificationEmailService *service.NotificationEmailService) *SettingHandler {
+func ProvideSettingHandler(settingService *service.SettingService, emailService *service.EmailService, buildInfo BuildInfo, notificationEmailService *service.NotificationEmailService) *SettingHandler {
 	h := NewSettingHandler(settingService, buildInfo.Version)
+	h.supplierEmail = emailService
 	h.SetNotificationEmailService(notificationEmailService)
 	return h
 }
@@ -181,6 +182,7 @@ func ProvideAdminSettingHandler(settingService *service.SettingService, emailSer
 
 // ProvideHandlers creates the Handlers struct
 func ProvideHandlers(
+	supplierResource *SupplierResourceHandler,
 	supplierHandler *SupplierHandler,
 	authHandler *AuthHandler,
 	userHandler *UserHandler,
@@ -204,11 +206,13 @@ func ProvideHandlers(
 	modelPlazaHandler *ModelPlazaHandler,
 	asyncImageHandler *AsyncImageHandler,
 	batchImageHandler *BatchImageHandler,
+	_ *service.SupplierProbeWorker,
 	_ *service.IdempotencyCoordinator,
 	_ *service.IdempotencyCleanupService,
 	_ *service.OpenAIQuotaAutoResetService,
 ) *Handlers {
 	return &Handlers{
+		SupplierResource: supplierResource,
 		Supplier:         supplierHandler,
 		Auth:             authHandler,
 		User:             userHandler,
@@ -239,6 +243,7 @@ func ProvideHandlers(
 var ProviderSet = wire.NewSet(
 	// Top-level handlers
 	NewSupplierHandler,
+	NewSupplierResourceHandler,
 	NewAuthHandler,
 	NewUserHandler,
 	NewMCPOAuthHandler,

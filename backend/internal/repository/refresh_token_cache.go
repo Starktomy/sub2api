@@ -32,7 +32,8 @@ func tokenFamilyKey(familyID string) string {
 }
 
 type refreshTokenCache struct {
-	rdb *redis.Client
+	namespace string
+	rdb       *redis.Client
 }
 
 // NewRefreshTokenCache creates a new RefreshTokenCache implementation.
@@ -41,7 +42,7 @@ func NewRefreshTokenCache(rdb *redis.Client) service.RefreshTokenCache {
 }
 
 func (c *refreshTokenCache) StoreRefreshToken(ctx context.Context, tokenHash string, data *service.RefreshTokenData, ttl time.Duration) error {
-	key := refreshTokenKey(tokenHash)
+	key := c.refreshTokenKey(tokenHash)
 	val, err := json.Marshal(data)
 	if err != nil {
 		return fmt.Errorf("marshal refresh token data: %w", err)
@@ -50,7 +51,7 @@ func (c *refreshTokenCache) StoreRefreshToken(ctx context.Context, tokenHash str
 }
 
 func (c *refreshTokenCache) GetRefreshToken(ctx context.Context, tokenHash string) (*service.RefreshTokenData, error) {
-	key := refreshTokenKey(tokenHash)
+	key := c.refreshTokenKey(tokenHash)
 	val, err := c.rdb.Get(ctx, key).Result()
 	if err != nil {
 		if err == redis.Nil {
@@ -66,7 +67,7 @@ func (c *refreshTokenCache) GetRefreshToken(ctx context.Context, tokenHash strin
 }
 
 func (c *refreshTokenCache) DeleteRefreshToken(ctx context.Context, tokenHash string) error {
-	key := refreshTokenKey(tokenHash)
+	key := c.refreshTokenKey(tokenHash)
 	return c.rdb.Del(ctx, key).Err()
 }
 
@@ -84,9 +85,9 @@ func (c *refreshTokenCache) DeleteUserRefreshTokens(ctx context.Context, userID 
 	// Build keys to delete
 	keys := make([]string, 0, len(tokenHashes)+1)
 	for _, hash := range tokenHashes {
-		keys = append(keys, refreshTokenKey(hash))
+		keys = append(keys, c.refreshTokenKey(hash))
 	}
-	keys = append(keys, userRefreshTokensKey(userID))
+	keys = append(keys, c.userRefreshTokensKey(userID))
 
 	// Delete all keys in a pipeline
 	pipe := c.rdb.Pipeline()
@@ -111,9 +112,9 @@ func (c *refreshTokenCache) DeleteTokenFamily(ctx context.Context, familyID stri
 	// Build keys to delete
 	keys := make([]string, 0, len(tokenHashes)+1)
 	for _, hash := range tokenHashes {
-		keys = append(keys, refreshTokenKey(hash))
+		keys = append(keys, c.refreshTokenKey(hash))
 	}
-	keys = append(keys, tokenFamilyKey(familyID))
+	keys = append(keys, c.tokenFamilyKey(familyID))
 
 	// Delete all keys in a pipeline
 	pipe := c.rdb.Pipeline()
@@ -125,7 +126,7 @@ func (c *refreshTokenCache) DeleteTokenFamily(ctx context.Context, familyID stri
 }
 
 func (c *refreshTokenCache) AddToUserTokenSet(ctx context.Context, userID int64, tokenHash string, ttl time.Duration) error {
-	key := userRefreshTokensKey(userID)
+	key := c.userRefreshTokensKey(userID)
 	pipe := c.rdb.Pipeline()
 	pipe.SAdd(ctx, key, tokenHash)
 	pipe.Expire(ctx, key, ttl)
@@ -134,7 +135,7 @@ func (c *refreshTokenCache) AddToUserTokenSet(ctx context.Context, userID int64,
 }
 
 func (c *refreshTokenCache) AddToFamilyTokenSet(ctx context.Context, familyID string, tokenHash string, ttl time.Duration) error {
-	key := tokenFamilyKey(familyID)
+	key := c.tokenFamilyKey(familyID)
 	pipe := c.rdb.Pipeline()
 	pipe.SAdd(ctx, key, tokenHash)
 	pipe.Expire(ctx, key, ttl)
@@ -143,16 +144,24 @@ func (c *refreshTokenCache) AddToFamilyTokenSet(ctx context.Context, familyID st
 }
 
 func (c *refreshTokenCache) GetUserTokenHashes(ctx context.Context, userID int64) ([]string, error) {
-	key := userRefreshTokensKey(userID)
+	key := c.userRefreshTokensKey(userID)
 	return c.rdb.SMembers(ctx, key).Result()
 }
 
 func (c *refreshTokenCache) GetFamilyTokenHashes(ctx context.Context, familyID string) ([]string, error) {
-	key := tokenFamilyKey(familyID)
+	key := c.tokenFamilyKey(familyID)
 	return c.rdb.SMembers(ctx, key).Result()
 }
 
 func (c *refreshTokenCache) IsTokenInFamily(ctx context.Context, familyID string, tokenHash string) (bool, error) {
-	key := tokenFamilyKey(familyID)
+	key := c.tokenFamilyKey(familyID)
 	return c.rdb.SIsMember(ctx, key, tokenHash).Result()
 }
+
+func (c *refreshTokenCache) refreshTokenKey(hash string) string {
+	return c.namespace + refreshTokenKey(hash)
+}
+func (c *refreshTokenCache) userRefreshTokensKey(id int64) string {
+	return c.namespace + userRefreshTokensKey(id)
+}
+func (c *refreshTokenCache) tokenFamilyKey(id string) string { return c.namespace + tokenFamilyKey(id) }

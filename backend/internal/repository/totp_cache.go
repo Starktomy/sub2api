@@ -21,7 +21,8 @@ const (
 
 // TotpCache implements service.TotpCache using Redis
 type TotpCache struct {
-	rdb *redis.Client
+	namespace string
+	rdb       *redis.Client
 }
 
 // NewTotpCache creates a new TOTP cache
@@ -31,7 +32,7 @@ func NewTotpCache(rdb *redis.Client) service.TotpCache {
 
 // GetSetupSession retrieves a TOTP setup session
 func (c *TotpCache) GetSetupSession(ctx context.Context, userID int64) (*service.TotpSetupSession, error) {
-	key := fmt.Sprintf("%s%d", totpSetupKeyPrefix, userID)
+	key := c.namespace + fmt.Sprintf("%s%d", totpSetupKeyPrefix, userID)
 	data, err := c.rdb.Get(ctx, key).Bytes()
 	if err != nil {
 		if err == redis.Nil {
@@ -50,7 +51,7 @@ func (c *TotpCache) GetSetupSession(ctx context.Context, userID int64) (*service
 
 // SetSetupSession stores a TOTP setup session
 func (c *TotpCache) SetSetupSession(ctx context.Context, userID int64, session *service.TotpSetupSession, ttl time.Duration) error {
-	key := fmt.Sprintf("%s%d", totpSetupKeyPrefix, userID)
+	key := c.namespace + fmt.Sprintf("%s%d", totpSetupKeyPrefix, userID)
 	data, err := json.Marshal(session)
 	if err != nil {
 		return fmt.Errorf("marshal setup session: %w", err)
@@ -65,13 +66,13 @@ func (c *TotpCache) SetSetupSession(ctx context.Context, userID int64, session *
 
 // DeleteSetupSession deletes a TOTP setup session
 func (c *TotpCache) DeleteSetupSession(ctx context.Context, userID int64) error {
-	key := fmt.Sprintf("%s%d", totpSetupKeyPrefix, userID)
+	key := c.namespace + fmt.Sprintf("%s%d", totpSetupKeyPrefix, userID)
 	return c.rdb.Del(ctx, key).Err()
 }
 
 // GetLoginSession retrieves a TOTP login session
 func (c *TotpCache) GetLoginSession(ctx context.Context, tempToken string) (*service.TotpLoginSession, error) {
-	key := totpLoginKeyPrefix + tempToken
+	key := c.namespace + totpLoginKeyPrefix + tempToken
 	data, err := c.rdb.Get(ctx, key).Bytes()
 	if err != nil {
 		if err == redis.Nil {
@@ -90,7 +91,7 @@ func (c *TotpCache) GetLoginSession(ctx context.Context, tempToken string) (*ser
 
 // SetLoginSession stores a TOTP login session
 func (c *TotpCache) SetLoginSession(ctx context.Context, tempToken string, session *service.TotpLoginSession, ttl time.Duration) error {
-	key := totpLoginKeyPrefix + tempToken
+	key := c.namespace + totpLoginKeyPrefix + tempToken
 	data, err := json.Marshal(session)
 	if err != nil {
 		return fmt.Errorf("marshal login session: %w", err)
@@ -105,13 +106,13 @@ func (c *TotpCache) SetLoginSession(ctx context.Context, tempToken string, sessi
 
 // DeleteLoginSession deletes a TOTP login session
 func (c *TotpCache) DeleteLoginSession(ctx context.Context, tempToken string) error {
-	key := totpLoginKeyPrefix + tempToken
+	key := c.namespace + totpLoginKeyPrefix + tempToken
 	return c.rdb.Del(ctx, key).Err()
 }
 
 // IncrementVerifyAttempts increments the verify attempt counter
 func (c *TotpCache) IncrementVerifyAttempts(ctx context.Context, userID int64) (int, error) {
-	key := fmt.Sprintf("%s%d", totpAttemptsKeyPrefix, userID)
+	key := c.namespace + fmt.Sprintf("%s%d", totpAttemptsKeyPrefix, userID)
 
 	// Use pipeline for atomic increment and set TTL
 	pipe := c.rdb.Pipeline()
@@ -132,7 +133,7 @@ func (c *TotpCache) IncrementVerifyAttempts(ctx context.Context, userID int64) (
 
 // GetVerifyAttempts gets the current verify attempt count
 func (c *TotpCache) GetVerifyAttempts(ctx context.Context, userID int64) (int, error) {
-	key := fmt.Sprintf("%s%d", totpAttemptsKeyPrefix, userID)
+	key := c.namespace + fmt.Sprintf("%s%d", totpAttemptsKeyPrefix, userID)
 	count, err := c.rdb.Get(ctx, key).Int()
 	if err != nil {
 		if err == redis.Nil {
@@ -145,7 +146,7 @@ func (c *TotpCache) GetVerifyAttempts(ctx context.Context, userID int64) (int, e
 
 // ClearVerifyAttempts clears the verify attempt counter
 func (c *TotpCache) ClearVerifyAttempts(ctx context.Context, userID int64) error {
-	key := fmt.Sprintf("%s%d", totpAttemptsKeyPrefix, userID)
+	key := c.namespace + fmt.Sprintf("%s%d", totpAttemptsKeyPrefix, userID)
 	return c.rdb.Del(ctx, key).Err()
 }
 
@@ -155,12 +156,12 @@ func totpStepUpKey(userID int64, sessionKey string) string {
 
 // SetStepUpGrant 记录一次 step-up 验证通过（sudo 窗口），绑定用户+会话。
 func (c *TotpCache) SetStepUpGrant(ctx context.Context, userID int64, sessionKey string, ttl time.Duration) error {
-	return c.rdb.Set(ctx, totpStepUpKey(userID, sessionKey), "1", ttl).Err()
+	return c.rdb.Set(ctx, c.namespace+totpStepUpKey(userID, sessionKey), "1", ttl).Err()
 }
 
 // HasStepUpGrant 检查 step-up 授权是否仍在有效期内。
 func (c *TotpCache) HasStepUpGrant(ctx context.Context, userID int64, sessionKey string) (bool, error) {
-	_, err := c.rdb.Get(ctx, totpStepUpKey(userID, sessionKey)).Result()
+	_, err := c.rdb.Get(ctx, c.namespace+totpStepUpKey(userID, sessionKey)).Result()
 	if err != nil {
 		if err == redis.Nil {
 			return false, nil

@@ -214,7 +214,7 @@ func (c *MaintenanceCoordinator) run(ctx context.Context, tasks []RuntimeTask) {
 // Unknown/new worker tasks are disabled rather than silently becoming HA-safe.
 func MaintenanceTaskPolicy(name string) string {
 	switch name {
-	case "AccountExpiryService", "IdempotencyCleanupService", "SubscriptionExpiryService", "UserMessageQueueCleanup", "AuthCacheInvalidationWorker", "ConcurrencySlotCleanup":
+	case "SupplierProbeWorker", "AccountExpiryService", "IdempotencyCleanupService", "SubscriptionExpiryService", "UserMessageQueueCleanup", "AuthCacheInvalidationWorker", "ConcurrencySlotCleanup":
 		return ""
 	case "TokenRefreshService":
 		return "provider refresh and reconciliation require durable fencing for every provider"

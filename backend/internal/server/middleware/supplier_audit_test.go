@@ -9,3 +9,7 @@ import (
 func TestSupplierEnrollmentAuditOmitsVerificationProof(t *testing.T) {
 	require.Contains(t, auditBodyOmittedRoutes, "POST /api/v1/supplier/enroll")
 }
+
+func TestSupplierResourceImportAuditOmitsCredentialDocument(t *testing.T) {
+	require.Contains(t, auditBodyOmittedRoutes, "POST /api/v1/supplier/resources/import")
+}

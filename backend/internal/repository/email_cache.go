@@ -77,7 +77,8 @@ func passwordResetSentAtKey(email string) string {
 }
 
 type emailCache struct {
-	rdb *redis.Client
+	namespace string
+	rdb       *redis.Client
 }
 
 func NewEmailCache(rdb *redis.Client) service.EmailCache {
@@ -130,25 +131,25 @@ func (c *emailCache) deleteCode(ctx context.Context, key string) error {
 }
 
 func (c *emailCache) GetVerificationCode(ctx context.Context, email string) (*service.VerificationCodeData, error) {
-	return c.getCode(ctx, verifyCodeKey(email))
+	return c.getCode(ctx, c.verifyCodeKey(email))
 }
 
 func (c *emailCache) SetVerificationCode(ctx context.Context, email string, data *service.VerificationCodeData, ttl time.Duration) error {
-	return c.setCode(ctx, verifyCodeKey(email), data, ttl)
+	return c.setCode(ctx, c.verifyCodeKey(email), data, ttl)
 }
 
 func (c *emailCache) IncrVerificationCodeAttempts(ctx context.Context, email string) (int, error) {
-	return c.incrCodeAttempts(ctx, verifyCodeKey(email))
+	return c.incrCodeAttempts(ctx, c.verifyCodeKey(email))
 }
 
 func (c *emailCache) DeleteVerificationCode(ctx context.Context, email string) error {
-	return c.deleteCode(ctx, verifyCodeKey(email))
+	return c.deleteCode(ctx, c.verifyCodeKey(email))
 }
 
 // Password reset token methods
 
 func (c *emailCache) GetPasswordResetToken(ctx context.Context, email string) (*service.PasswordResetTokenData, error) {
-	key := passwordResetKey(email)
+	key := c.passwordResetKey(email)
 	val, err := c.rdb.Get(ctx, key).Result()
 	if err != nil {
 		return nil, err
@@ -161,7 +162,7 @@ func (c *emailCache) GetPasswordResetToken(ctx context.Context, email string) (*
 }
 
 func (c *emailCache) SetPasswordResetToken(ctx context.Context, email string, data *service.PasswordResetTokenData, ttl time.Duration) error {
-	key := passwordResetKey(email)
+	key := c.passwordResetKey(email)
 	val, err := json.Marshal(data)
 	if err != nil {
 		return err
@@ -172,7 +173,7 @@ func (c *emailCache) SetPasswordResetToken(ctx context.Context, email string, da
 // ConsumePasswordResetToken atomically deletes the stored reset token when its
 // stored hash equals tokenHash. Returns true only for the single winning caller.
 func (c *emailCache) ConsumePasswordResetToken(ctx context.Context, email, tokenHash string) (bool, error) {
-	n, err := consumeResetTokenScript.Run(ctx, c.rdb, []string{passwordResetKey(email)}, tokenHash).Int()
+	n, err := consumeResetTokenScript.Run(ctx, c.rdb, []string{c.passwordResetKey(email)}, tokenHash).Int()
 	if err != nil {
 		return false, err
 	}
@@ -180,39 +181,39 @@ func (c *emailCache) ConsumePasswordResetToken(ctx context.Context, email, token
 }
 
 func (c *emailCache) DeletePasswordResetToken(ctx context.Context, email string) error {
-	key := passwordResetKey(email)
+	key := c.passwordResetKey(email)
 	return c.rdb.Del(ctx, key).Err()
 }
 
 // Password reset email cooldown methods
 
 func (c *emailCache) IsPasswordResetEmailInCooldown(ctx context.Context, email string) bool {
-	key := passwordResetSentAtKey(email)
+	key := c.passwordResetSentAtKey(email)
 	exists, err := c.rdb.Exists(ctx, key).Result()
 	return err == nil && exists > 0
 }
 
 func (c *emailCache) SetPasswordResetEmailCooldown(ctx context.Context, email string, ttl time.Duration) error {
-	key := passwordResetSentAtKey(email)
+	key := c.passwordResetSentAtKey(email)
 	return c.rdb.Set(ctx, key, "1", ttl).Err()
 }
 
 // Notify email verification code methods
 
 func (c *emailCache) GetNotifyVerifyCode(ctx context.Context, email string) (*service.VerificationCodeData, error) {
-	return c.getCode(ctx, notifyVerifyKey(email))
+	return c.getCode(ctx, c.notifyVerifyKey(email))
 }
 
 func (c *emailCache) SetNotifyVerifyCode(ctx context.Context, email string, data *service.VerificationCodeData, ttl time.Duration) error {
-	return c.setCode(ctx, notifyVerifyKey(email), data, ttl)
+	return c.setCode(ctx, c.notifyVerifyKey(email), data, ttl)
 }
 
 func (c *emailCache) IncrNotifyVerifyCodeAttempts(ctx context.Context, email string) (int, error) {
-	return c.incrCodeAttempts(ctx, notifyVerifyKey(email))
+	return c.incrCodeAttempts(ctx, c.notifyVerifyKey(email))
 }
 
 func (c *emailCache) DeleteNotifyVerifyCode(ctx context.Context, email string) error {
-	return c.deleteCode(ctx, notifyVerifyKey(email))
+	return c.deleteCode(ctx, c.notifyVerifyKey(email))
 }
 
 // User-level rate limiting for notify email verification codes
@@ -222,7 +223,7 @@ func notifyCodeUserRateKey(userID int64) string {
 }
 
 func (c *emailCache) IncrNotifyCodeUserRate(ctx context.Context, userID int64, window time.Duration) (int64, error) {
-	key := notifyCodeUserRateKey(userID)
+	key := c.namespace + notifyCodeUserRateKey(userID)
 	count, err := c.rdb.Incr(ctx, key).Result()
 	if err != nil {
 		return 0, err
@@ -235,7 +236,7 @@ func (c *emailCache) IncrNotifyCodeUserRate(ctx context.Context, userID int64, w
 }
 
 func (c *emailCache) GetNotifyCodeUserRate(ctx context.Context, userID int64) (int64, error) {
-	key := notifyCodeUserRateKey(userID)
+	key := c.namespace + notifyCodeUserRateKey(userID)
 	count, err := c.rdb.Get(ctx, key).Int64()
 	if err != nil {
 		return 0, err
@@ -246,10 +247,10 @@ func (c *emailCache) GetNotifyCodeUserRate(ctx context.Context, userID int64) (i
 // ConsumeSupplierVerificationCode atomically consumes a matched supplier-only proof.
 // The attempt budget has already been charged by EmailService.
 func (c *emailCache) ConsumeSupplierVerificationCode(ctx context.Context, email, code string) (bool, error) {
-	if !strings.HasPrefix(email, "supplier:") {
+	if !strings.HasPrefix(email, "supplier:") && !strings.HasPrefix(email, "supplier_signup:") {
 		return false, fmt.Errorf("invalid supplier proof namespace")
 	}
-	result, err := consumeSupplierCodeScript.Run(ctx, c.rdb, []string{verifyCodeKey(email), verifyCodeKey(email) + attemptsKeySuffix}, code).Int()
+	result, err := consumeSupplierCodeScript.Run(ctx, c.rdb, []string{c.verifyCodeKey(email), c.verifyCodeKey(email) + attemptsKeySuffix}, code).Int()
 	return result == 1, err
 }
 
@@ -261,3 +262,17 @@ if not ok or type(d)~='table' or d['Code']~=ARGV[1] then return 0 end
 redis.call('DEL',KEYS[1],KEYS[2])
 return 1
 `)
+
+func (c *emailCache) verifyCodeKey(email string) string { return c.namespace + verifyCodeKey(email) }
+
+func (c *emailCache) notifyVerifyKey(email string) string {
+	return c.namespace + notifyVerifyKey(email)
+}
+
+func (c *emailCache) passwordResetKey(email string) string {
+	return c.namespace + passwordResetKey(email)
+}
+
+func (c *emailCache) passwordResetSentAtKey(email string) string {
+	return c.namespace + passwordResetSentAtKey(email)
+}

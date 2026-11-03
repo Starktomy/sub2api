@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"log"
+	"net/http"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -73,6 +74,16 @@ func SetupRouter(
 		cfg = &config.Config{}
 	}
 	middleware2.SetIngressRejectRecorder(opsService)
+
+	// Dedicated supplier ingress has no consumer/admin/MCP/gateway routes or SPA fallback.
+	if cfg != nil && cfg.SupplierPortal.Enabled {
+		r.Use(middleware2.SupplierIngress(cfg.SupplierPortal))
+		r.Use(middleware2.RequestLogger(), middleware2.SessionBindingContext(cfg), middleware2.Logger())
+		r.Use(middleware2.SecurityHeaders(cfg.Security.CSP, nil))
+		routes.RegisterSupplierRoutes(r, handlers, jwtAuth, auditLog, cfg, redisClient)
+		r.NoRoute(func(c *gin.Context) { c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "Not found"}) })
+		return r
+	}
 
 	// Only the control surface serves HTML. Gateway/worker startup must not
 	// query panel settings or install frontend invalidation callbacks.
