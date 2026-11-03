@@ -68,6 +68,8 @@ const DefaultUpstreamResponseReadMaxBytes int64 = 128 * 1024 * 1024
 const DefaultModelsListReadMaxBytes int64 = 8 * 1024 * 1024
 
 type Config struct {
+	SupplierProbe           SupplierProbeConfig           `mapstructure:"supplier_probe"`
+	SupplierPortal          SupplierPortalConfig          `mapstructure:"supplier_portal"`
 	Server                  ServerConfig                  `mapstructure:"server"`
 	Runtime                 RuntimeConfig                 `mapstructure:"runtime"`
 	Log                     LogConfig                     `mapstructure:"log"`
@@ -2070,6 +2072,15 @@ func configureConfigSource(setConfigFile, addConfigPath func(string)) {
 
 func setDefaults() {
 	viper.SetDefault("runtime.role", RuntimeRoleAll)
+	viper.SetDefault("supplier_probe.enabled", false)
+	viper.SetDefault("supplier_probe.interval_seconds", 600)
+	viper.SetDefault("supplier_portal.enabled", false)
+	viper.SetDefault("supplier_portal.vault_key_file", "")
+	viper.SetDefault("supplier_portal.vault_key_id", "")
+	viper.SetDefault("supplier_portal.host", "")
+	viper.SetDefault("supplier_portal.origin", "")
+	viper.SetDefault("supplier_portal.jwt_secret", "")
+	viper.SetDefault("supplier_portal.registration_enabled", false)
 	viper.SetDefault("runtime.shutdown_timeout_seconds", DefaultRuntimeShutdownTimeoutSeconds)
 	viper.SetDefault("runtime.enable_split_roles", false)
 	viper.SetDefault("runtime.multi_replica_workers", false)
@@ -2753,6 +2764,9 @@ func setEnvReachableDefaults() {
 
 func (c *Config) Validate() error {
 	if err := c.Runtime.Validate(); err != nil {
+		return err
+	}
+	if err := c.ValidateSupplierPortal(); err != nil {
 		return err
 	}
 	if err := c.Database.validateMigrationMode(); err != nil {

@@ -331,6 +331,9 @@ func (s *EmailService) SendVerifyCode(ctx context.Context, email, siteName strin
 
 // Supplier codes use an isolated cache namespace; delivery still targets the real mailbox.
 func (s *EmailService) SendSupplierVerifyCode(ctx context.Context, email, siteName string, locale ...string) error {
+	if !s.EmailDeliveryConfigured(ctx) {
+		return ErrEmailNotConfigured
+	}
 	return s.sendVerifyCode(ctx, "supplier:"+email, email, siteName, locale...)
 }
 
@@ -405,13 +408,16 @@ func (s *EmailService) VerifyCode(ctx context.Context, email, code string) error
 
 // VerifySupplierCode never accepts registration/password-reset codes.
 func (s *EmailService) VerifySupplierCode(ctx context.Context, email, code string) error {
+	return s.verifyPurposeCode(ctx, "supplier:"+email, code)
+}
+
+func (s *EmailService) verifyPurposeCode(ctx context.Context, key, code string) error {
 	cache, ok := s.cache.(interface {
 		ConsumeSupplierVerificationCode(context.Context, string, string) (bool, error)
 	})
 	if !ok {
 		return ErrServiceUnavailable
 	}
-	key := "supplier:" + email
 	data, err := s.cache.GetVerificationCode(ctx, key)
 	if err != nil || data == nil || !time.Now().Before(data.ExpiresAt) {
 		return ErrInvalidVerifyCode
@@ -693,4 +699,26 @@ func (s *EmailService) buildPasswordResetEmailBody(resetURL, siteName string) st
 </body>
 </html>
 `, html.EscapeString(siteName), html.EscapeString(resetURL), html.EscapeString(resetURL))
+}
+
+func (s *EmailService) SendSupplierSignupCode(ctx context.Context, email, site string, locale ...string) error {
+	if !s.EmailDeliveryConfigured(ctx) {
+		return ErrEmailNotConfigured
+	}
+	return s.sendVerifyCode(ctx, "supplier_signup:"+email, email, site, locale...)
+}
+func (s *EmailService) VerifySupplierSignupCode(ctx context.Context, email, code string) error {
+	return s.verifyPurposeCode(ctx, "supplier_signup:"+email, code)
+}
+
+// EmailDeliveryConfigured checks stored configuration only; it does not test delivery.
+func (s *EmailService) EmailDeliveryConfigured(ctx context.Context) bool {
+	if s == nil || s.settingRepo == nil {
+		return false
+	}
+	cfg, e := s.GetSMTPConfig(ctx)
+	if e != nil {
+		return false
+	}
+	return cfg.Host != "" && cfg.Port > 0 && cfg.Port <= 65535 && cfg.From != "" && ((cfg.Username == "" && cfg.Password == "") || (cfg.Username != "" && cfg.Password != ""))
 }

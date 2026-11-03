@@ -3,7 +3,6 @@ package admin
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -13,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/codexsession"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -93,22 +93,8 @@ type codexImportAccount struct {
 	WarningTexts    []string
 }
 
-type codexJWTClaims struct {
-	Sub        string                `json:"sub"`
-	Email      string                `json:"email"`
-	Exp        int64                 `json:"exp"`
-	Iat        int64                 `json:"iat"`
-	OpenAIAuth *codexJWTOpenAIClaims `json:"https://api.openai.com/auth,omitempty"`
-}
-
-type codexJWTOpenAIClaims struct {
-	ChatGPTAccountID string                     `json:"chatgpt_account_id"`
-	ChatGPTUserID    string                     `json:"chatgpt_user_id"`
-	ChatGPTPlanType  string                     `json:"chatgpt_plan_type"`
-	UserID           string                     `json:"user_id"`
-	POID             string                     `json:"poid"`
-	Organizations    []openai.OrganizationClaim `json:"organizations"`
-}
+type codexJWTClaims = codexsession.Claims
+type codexJWTOpenAIClaims = codexsession.OpenAIClaims
 
 type codexAccountIndex struct {
 	accountsByKey   map[string][]service.Account
@@ -715,36 +701,10 @@ func enrichCodexImportAccountFromJWT(item *codexImportAccount, token string, val
 }
 
 func decodeCodexJWTClaims(token string) (*codexJWTClaims, error) {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return nil, fmt.Errorf("invalid JWT format")
-	}
-	payload, err := decodeCodexJWTSegment(parts[1])
-	if err != nil {
-		return nil, err
-	}
-	var claims codexJWTClaims
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		return nil, err
-	}
-	return &claims, nil
+	return codexsession.DecodeClaims(token)
 }
-
 func decodeCodexJWTSegment(segment string) ([]byte, error) {
-	if decoded, err := base64.RawURLEncoding.DecodeString(segment); err == nil {
-		return decoded, nil
-	}
-	if decoded, err := base64.RawStdEncoding.DecodeString(segment); err == nil {
-		return decoded, nil
-	}
-	padded := segment
-	if rem := len(padded) % 4; rem > 0 {
-		padded += strings.Repeat("=", 4-rem)
-	}
-	if decoded, err := base64.URLEncoding.DecodeString(padded); err == nil {
-		return decoded, nil
-	}
-	return base64.StdEncoding.DecodeString(padded)
+	return codexsession.DecodeSegment(segment)
 }
 
 func buildCodexImportAccountName(item *codexImportAccount, index int) string {

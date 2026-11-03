@@ -56,7 +56,7 @@ func ProvideRouter(
 
 	// Gateway uses websearch during inference; control keeps local config-save
 	// feedback. Worker and unknown roles must not read settings or build it.
-	if servesGatewayRoutes(cfg) || servesControlRoutes(cfg) {
+	if !cfg.SupplierPortal.Enabled && (servesGatewayRoutes(cfg) || servesControlRoutes(cfg)) {
 		settingService.SetWebSearchManagerBuilder(context.Background(), func(cfg *service.WebSearchEmulationConfig, proxyURLs map[int64]string) {
 			if cfg == nil || !cfg.Enabled || len(cfg.Providers) == 0 {
 				service.SetWebSearchManager(nil)

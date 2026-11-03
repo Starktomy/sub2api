@@ -75,6 +75,8 @@ func ProvideMaintenanceLocker(db *sql.DB, cfg *config.Config) service.Maintenanc
 
 // ProviderSet is the Wire provider set for all repositories
 var ProviderSet = wire.NewSet(
+	NewSupplierResourceRepository,
+	NewSupplierProbeRepository,
 	NewSupplierRepository,
 	ProvideMaintenanceLocker,
 	NewUserRepository,
@@ -136,7 +138,7 @@ var ProviderSet = wire.NewSet(
 	NewUserRPMCache,
 	NewUserMsgQueueCache,
 	NewDashboardCache,
-	NewEmailCache,
+	ProvideScopedEmailCache,
 	NewIdentityCache,
 	NewRedeemCache,
 	NewUpdateCache,
@@ -149,8 +151,8 @@ var ProviderSet = wire.NewSet(
 	NewSchedulerOutboxRepository,
 	NewAuthCacheInvalidationOutboxRepository,
 	NewProxyLatencyCache,
-	NewTotpCache,
-	NewRefreshTokenCache,
+	ProvideScopedTotpCache,
+	ProvideScopedRefreshTokenCache,
 	NewErrorPassthroughCache,
 	NewTLSFingerprintProfileCache,
 	NewChannelCache,
@@ -246,4 +248,20 @@ func ProvideSQLDB(client *ent.Client) (*sql.DB, error) {
 // 提供：*redis.Client
 func ProvideRedis(cfg *config.Config) *redis.Client {
 	return InitRedis(cfg)
+}
+
+func supplierCacheNamespace(cfg *config.Config) string {
+	if cfg != nil && cfg.SupplierPortal.Enabled {
+		return "supplier_portal:"
+	}
+	return ""
+}
+func ProvideScopedEmailCache(rdb *redis.Client, cfg *config.Config) service.EmailCache {
+	return &emailCache{rdb: rdb, namespace: supplierCacheNamespace(cfg)}
+}
+func ProvideScopedTotpCache(rdb *redis.Client, cfg *config.Config) service.TotpCache {
+	return &TotpCache{rdb: rdb, namespace: supplierCacheNamespace(cfg)}
+}
+func ProvideScopedRefreshTokenCache(rdb *redis.Client, cfg *config.Config) service.RefreshTokenCache {
+	return &refreshTokenCache{rdb: rdb, namespace: supplierCacheNamespace(cfg)}
 }

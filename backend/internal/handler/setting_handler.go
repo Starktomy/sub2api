@@ -15,6 +15,7 @@ import (
 
 // SettingHandler 公开设置处理器（无需认证）
 type SettingHandler struct {
+	supplierEmail            *service.EmailService
 	settingService           *service.SettingService
 	notificationEmailService *service.NotificationEmailService
 	version                  string

@@ -4,9 +4,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -770,4 +773,59 @@ func mapUpstreamStatus(status int) int {
 	default:
 		return http.StatusBadGateway
 	}
+}
+
+// QuerySupplierUsage reuses the existing fixed-endpoint quota client and DTO,
+// but never reads Accounts, refreshes tokens, fetches reset credits, mutates
+// privacy, recovers agent tasks, or generates model traffic.
+func (s *OpenAIQuotaService) QuerySupplierUsage(ctx context.Context, token, account string) (*SupplierResourceUsage, error) {
+	if s == nil || s.privacyClientFactory == nil {
+		return nil, ErrServiceUnavailable
+	}
+	client, err := s.privacyClientFactory("")
+	if err != nil {
+		return nil, infraerrors.New(http.StatusBadGateway, "SUPPLIER_USAGE_UNAVAILABLE", "Usage query unavailable")
+	}
+	client.SetRedirectPolicy(req.NoRedirectPolicy()).SetCommonRetryCount(0)
+	call, cancel := context.WithTimeout(ctx, openaiQuotaUpstreamTimeout)
+	defer cancel()
+	var payload OpenAIQuotaUsage
+	resp, err := client.R().SetContext(call).SetRetryCount(0).DisableAutoReadResponse().SetHeaders(buildCodexCommonHeaders(token, account, false)).Get(chatGPTUsageURL)
+	if err != nil || resp == nil || !resp.IsSuccessState() {
+		if resp != nil && resp.Body != nil {
+			resp.Body.Close()
+		}
+		if resp != nil {
+			switch resp.StatusCode {
+			case 401:
+				return nil, &SupplierProbeFailure{Code: "unauthorized"}
+			case 403:
+				return nil, &SupplierProbeFailure{Code: "forbidden"}
+			case 429:
+				delay := time.Minute
+				v := resp.Header.Get("Retry-After")
+				if sec, e := strconv.Atoi(v); e == nil && sec > 0 {
+					delay = time.Duration(sec) * time.Second
+				} else if at, e := http.ParseTime(v); e == nil && time.Until(at) > 0 {
+					delay = time.Until(at)
+				}
+				if delay > 24*time.Hour {
+					delay = 24 * time.Hour
+				}
+				return nil, &SupplierProbeFailure{Code: "rate_limited", RetryAfter: delay}
+			}
+		}
+		return nil, &SupplierProbeFailure{Code: "upstream_unavailable"}
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
+	if err != nil || len(raw) > 1<<20 || json.Unmarshal(raw, &payload) != nil {
+		return nil, infraerrors.New(http.StatusBadGateway, "SUPPLIER_USAGE_UNAVAILABLE", "Usage query unavailable")
+	}
+	switch payload.PlanType {
+	case "free", "plus", "pro", "team", "business", "enterprise", "edu":
+	default:
+		payload.PlanType = ""
+	}
+	return &SupplierResourceUsage{PlanType: payload.PlanType, RateLimit: payload.RateLimit, FetchedAt: time.Now().Unix()}, nil
 }

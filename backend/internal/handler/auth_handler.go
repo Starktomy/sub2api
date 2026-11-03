@@ -112,6 +112,17 @@ func ensureLoginUserActive(user *service.User) error {
 // respondWithTokenPair 生成 Token 对并返回认证响应
 // 如果 Token 对生成失败，回退到只返回 Access Token（向后兼容）
 func (h *AuthHandler) respondWithTokenPair(c *gin.Context, user *service.User) {
+	if h.authService.IsSupplierPortal() {
+		if err := ensureLoginUserActive(user); response.ErrorFrom(c, err) {
+			return
+		}
+		pair, err := h.authService.GenerateTokenPair(c.Request.Context(), user, "")
+		if response.ErrorFrom(c, err) {
+			return
+		}
+		response.Success(c, gin.H{"access_token": pair.AccessToken, "refresh_token": pair.RefreshToken, "expires_in": pair.ExpiresIn, "token_type": "Bearer", "user": gin.H{"id": user.ID, "email": user.Email}})
+		return
+	}
 	respondWithTokenPair(c, h.authService, user)
 }
 
@@ -164,7 +175,7 @@ func (h *AuthHandler) ensureBackendModeAllowsNewUserLogin(ctx context.Context) e
 }
 
 func (h *AuthHandler) isBackendModeEnabled(ctx context.Context) bool {
-	if h == nil || h.settingSvc == nil {
+	if h == nil || h.settingSvc == nil || h.authService.IsSupplierPortal() {
 		return false
 	}
 	settings, err := h.settingSvc.GetPublicSettings(ctx)
@@ -262,7 +273,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	}
 
 	// Check if TOTP 2FA is enabled for this user
-	if h.totpService != nil && h.settingSvc.IsTotpEnabled(c.Request.Context()) && user.TotpEnabled {
+	if h.totpService != nil && (h.authService.IsSupplierPortal() || h.settingSvc.IsTotpEnabled(c.Request.Context())) && user.TotpEnabled {
 		// Create a temporary login session for 2FA
 		tempToken, err := h.totpService.CreateLoginSession(c.Request.Context(), user.ID, user.Email)
 		if err != nil {
@@ -327,6 +338,10 @@ func (h *AuthHandler) Login2FA(c *gin.Context) {
 		"user_id", session.UserID,
 		"email", session.Email)
 
+	if h.authService.IsSupplierPortal() && session.PendingOAuthBind != nil {
+		response.BadRequest(c, "Invalid 2FA session purpose")
+		return
+	}
 	// Verify the TOTP code
 	if err := h.totpService.VerifyCode(c.Request.Context(), session.UserID, req.TotpCode); err != nil {
 		slog.Debug("login_2fa_verify_failed",
@@ -422,6 +437,19 @@ func (h *AuthHandler) Login2FA(c *gin.Context) {
 // GetCurrentUser handles getting current authenticated user
 // GET /api/v1/auth/me
 func (h *AuthHandler) GetCurrentUser(c *gin.Context) {
+	if h.authService.IsSupplierPortal() {
+		subject, ok := middleware2.GetAuthSubjectFromContext(c)
+		if !ok {
+			response.Unauthorized(c, "User not authenticated")
+			return
+		}
+		user, err := h.userService.GetByID(c.Request.Context(), subject.UserID)
+		if response.ErrorFrom(c, err) {
+			return
+		}
+		response.Success(c, gin.H{"id": user.ID, "email": user.Email})
+		return
+	}
 	subject, ok := middleware2.GetAuthSubjectFromContext(c)
 	if !ok {
 		response.Unauthorized(c, "User not authenticated")
@@ -696,7 +724,7 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 	}
 
 	// Backend mode: block non-admin token refresh
-	if h.settingSvc.IsBackendModeEnabled(c.Request.Context()) && result.UserRole != "admin" {
+	if !h.authService.IsSupplierPortal() && h.settingSvc.IsBackendModeEnabled(c.Request.Context()) && result.UserRole != "admin" {
 		response.Forbidden(c, "Backend mode is active. Only admin login is allowed.")
 		return
 	}

@@ -171,8 +171,11 @@ func (s *AuthService) Register(ctx context.Context, email, password string) (str
 
 // RegisterWithVerification 用户注册（支持邮件验证、优惠码、邀请码和邀请返利码），返回token和用户。
 func (s *AuthService) RegisterWithVerification(ctx context.Context, email, password, verifyCode, promoCode, invitationCode, affiliateCode string) (string, *User, error) {
+	if s.IsSupplierPortal() && (promoCode != "" || invitationCode != "" || affiliateCode != "") {
+		return "", nil, infraerrors.BadRequest("SUPPLIER_REGISTRATION_FIELDS", "Consumer incentives are not accepted")
+	}
 	// 检查是否开放注册（默认关闭：settingService 未配置时不允许注册）
-	if s.settingService == nil || !s.settingService.IsRegistrationEnabled(ctx) {
+	if !s.registrationEnabled(ctx) {
 		return "", nil, ErrRegDisabled
 	}
 
@@ -182,7 +185,7 @@ func (s *AuthService) RegisterWithVerification(ctx context.Context, email, passw
 	}
 	// 检查是否需要邀请码
 	var invitationRedeemCode *RedeemCode
-	if s.settingService != nil && s.settingService.IsInvitationCodeEnabled(ctx) {
+	if !s.IsSupplierPortal() && s.settingService != nil && s.settingService.IsInvitationCodeEnabled(ctx) {
 		if invitationCode == "" {
 			return "", nil, ErrInvitationCodeRequired
 		}
@@ -201,7 +204,7 @@ func (s *AuthService) RegisterWithVerification(ctx context.Context, email, passw
 	}
 
 	// 检查是否需要邮件验证
-	if s.settingService != nil && s.settingService.IsEmailVerifyEnabled(ctx) {
+	if s.IsEmailVerifyEnabled(ctx) {
 		// 如果邮件验证已开启但邮件服务未配置，拒绝注册
 		// 这是一个配置错误，不应该允许绕过验证
 		if s.emailService == nil {
@@ -212,7 +215,7 @@ func (s *AuthService) RegisterWithVerification(ctx context.Context, email, passw
 			return "", nil, ErrEmailVerifyRequired
 		}
 		// 验证邮箱验证码
-		if err := s.emailService.VerifyCode(ctx, email, verifyCode); err != nil {
+		if err := s.verifyRegistrationCode(ctx, email, verifyCode); err != nil {
 			return "", nil, fmt.Errorf("verify code: %w", err)
 		}
 	}
@@ -236,7 +239,10 @@ func (s *AuthService) RegisterWithVerification(ctx context.Context, email, passw
 		return "", nil, fmt.Errorf("hash password: %w", err)
 	}
 
-	grantPlan := s.resolveSignupGrantPlan(ctx, "email")
+	grantPlan := signupGrantPlan{Concurrency: 1}
+	if !s.IsSupplierPortal() {
+		grantPlan = s.resolveSignupGrantPlan(ctx, "email")
+	}
 
 	// 新用户默认 RPM（0 = 不限制）。注册时写入，后续作为用户级兜底。
 	var defaultRPMLimit int
@@ -270,25 +276,26 @@ func (s *AuthService) RegisterWithVerification(ctx context.Context, email, passw
 		}
 	}
 	s.postAuthUserBootstrap(ctx, user, "email", true)
-	s.assignSubscriptions(ctx, user.ID, grantPlan.Subscriptions, "auto assigned by signup defaults")
-	// snapshot user × platform quota（fail-open）
-	_ = s.snapshotPlatformQuotaDefaults(ctx, user.ID, &grantPlan)
-	if s.affiliateService != nil {
-		if _, err := s.affiliateService.EnsureUserAffiliate(ctx, user.ID); err != nil {
-			logger.LegacyPrintf("service.auth", "[Auth] Failed to initialize affiliate profile for user %d: %v", user.ID, err)
-		}
-		if code := strings.TrimSpace(affiliateCode); code != "" {
-			if err := s.affiliateService.BindInviterByCode(ctx, user.ID, code); err != nil {
-				// 邀请返利码绑定失败不影响注册，只记录日志
-				logger.LegacyPrintf("service.auth", "[Auth] Failed to bind affiliate inviter for user %d: %v", user.ID, err)
+	if !s.IsSupplierPortal() {
+		s.assignSubscriptions(ctx, user.ID, grantPlan.Subscriptions, "auto assigned by signup defaults")
+		// snapshot user × platform quota（fail-open）
+		_ = s.snapshotPlatformQuotaDefaults(ctx, user.ID, &grantPlan)
+		if s.affiliateService != nil {
+			if _, err := s.affiliateService.EnsureUserAffiliate(ctx, user.ID); err != nil {
+				logger.LegacyPrintf("service.auth", "[Auth] Failed to initialize affiliate profile for user %d: %v", user.ID, err)
+			}
+			if code := strings.TrimSpace(affiliateCode); code != "" {
+				if err := s.affiliateService.BindInviterByCode(ctx, user.ID, code); err != nil {
+					// 邀请返利码绑定失败不影响注册，只记录日志
+					logger.LegacyPrintf("service.auth", "[Auth] Failed to bind affiliate inviter for user %d: %v", user.ID, err)
+				}
 			}
 		}
 	}
-
 	// 邀请码占用已由 createUserAndClaimInvitation 在“用户创建 + 邀请码占用”的
 	// 同一个数据库事务内原子完成（一次性约束，见函数注释），此处不再单独标记。
 	// 应用优惠码（如果提供且功能已启用）
-	if promoCode != "" && s.promoService != nil && s.settingService != nil && s.settingService.IsPromoCodeEnabled(ctx) {
+	if !s.IsSupplierPortal() && promoCode != "" && s.promoService != nil && s.settingService != nil && s.settingService.IsPromoCodeEnabled(ctx) {
 		if err := s.promoService.ApplyPromoCode(ctx, user.ID, promoCode); err != nil {
 			// 优惠码应用失败不影响注册，只记录日志
 			logger.LegacyPrintf("service.auth", "[Auth] Failed to apply promo code for user %d: %v", user.ID, err)
@@ -317,7 +324,7 @@ type SendVerifyCodeResult struct {
 // SendVerifyCode 发送邮箱验证码（同步方式）
 func (s *AuthService) SendVerifyCode(ctx context.Context, email string, locale ...string) error {
 	// 检查是否开放注册（默认关闭）
-	if s.settingService == nil || !s.settingService.IsRegistrationEnabled(ctx) {
+	if !s.registrationEnabled(ctx) {
 		return ErrRegDisabled
 	}
 
@@ -348,15 +355,24 @@ func (s *AuthService) SendVerifyCode(ctx context.Context, email string, locale .
 		siteName = s.settingService.GetSiteName(ctx)
 	}
 
+	if s.IsSupplierPortal() {
+		return s.emailService.SendSupplierSignupCode(ctx, email, siteName, firstEmailLocale(locale))
+	}
 	return s.emailService.SendVerifyCode(ctx, email, siteName, firstEmailLocale(locale))
 }
 
 // SendVerifyCodeAsync 异步发送邮箱验证码并返回倒计时
 func (s *AuthService) SendVerifyCodeAsync(ctx context.Context, email string, locale ...string) (*SendVerifyCodeResult, error) {
+	if s.IsSupplierPortal() {
+		if err := s.SendVerifyCode(ctx, email, locale...); err != nil {
+			return nil, err
+		}
+		return &SendVerifyCodeResult{Countdown: 60}, nil
+	}
 	logger.LegacyPrintf("service.auth", "[Auth] SendVerifyCodeAsync called for email: %s", email)
 
 	// 检查是否开放注册（默认关闭）
-	if s.settingService == nil || !s.settingService.IsRegistrationEnabled(ctx) {
+	if !s.registrationEnabled(ctx) {
 		logger.LegacyPrintf("service.auth", "%s", "[Auth] Registration is disabled")
 		return nil, ErrRegDisabled
 	}
@@ -535,6 +551,9 @@ func (s *AuthService) IsRegistrationEnabled(ctx context.Context) bool {
 
 // IsEmailVerifyEnabled 检查是否开启邮件验证
 func (s *AuthService) IsEmailVerifyEnabled(ctx context.Context) bool {
+	if s.IsSupplierPortal() {
+		return true
+	}
 	if s.settingService == nil {
 		return false
 	}
@@ -597,7 +616,7 @@ func (s *AuthService) LoginOrRegisterOAuth(ctx context.Context, email, username 
 	if err != nil {
 		if errors.Is(err, ErrUserNotFound) {
 			// OAuth 首次登录视为注册（fail-close：settingService 未配置时不允许注册）
-			if s.settingService == nil || !s.settingService.IsRegistrationEnabled(ctx) {
+			if !s.registrationEnabled(ctx) {
 				return "", nil, ErrRegDisabled
 			}
 
@@ -732,7 +751,7 @@ func (s *AuthService) loginOrRegisterOAuthWithTokenPair(ctx context.Context, ema
 
 			// 检查是否需要邀请码
 			var invitationRedeemCode *RedeemCode
-			if s.settingService != nil && s.settingService.IsInvitationCodeEnabled(ctx) {
+			if !s.IsSupplierPortal() && s.settingService != nil && s.settingService.IsInvitationCodeEnabled(ctx) {
 				if invitationCode == "" {
 					return nil, nil, ErrOAuthInvitationRequired
 				}
@@ -1374,14 +1393,20 @@ func (s *AuthService) ValidateToken(tokenString string) (*JWTClaims, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
-		return []byte(s.cfg.JWT.Secret), nil
+		return []byte(s.signingSecret()), nil
 	})
 
 	if err != nil {
+		if errors.Is(err, jwt.ErrTokenSignatureInvalid) || errors.Is(err, jwt.ErrTokenMalformed) || errors.Is(err, jwt.ErrTokenUnverifiable) {
+			return nil, ErrInvalidToken
+		}
 		if errors.Is(err, jwt.ErrTokenExpired) {
 			// token 过期但仍返回 claims（用于 RefreshToken 等场景）
 			// jwt-go 在解析时即使遇到过期错误，token.Claims 仍会被填充
 			if claims, ok := token.Claims.(*JWTClaims); ok {
+				if !s.validAudience(claims) {
+					return nil, ErrInvalidToken
+				}
 				return claims, ErrTokenExpired
 			}
 			return nil, ErrTokenExpired
@@ -1390,6 +1415,9 @@ func (s *AuthService) ValidateToken(tokenString string) (*JWTClaims, error) {
 	}
 
 	if claims, ok := token.Claims.(*JWTClaims); ok && token.Valid {
+		if !s.validAudience(claims) {
+			return nil, ErrInvalidToken
+		}
 		return claims, nil
 	}
 
@@ -1451,8 +1479,11 @@ func (s *AuthService) generateAccessToken(user *User, sessionID, bindingHash str
 		},
 	}
 
+	if s.IsSupplierPortal() {
+		claims.Audience = jwt.ClaimStrings{"supplier"}
+	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenString, err := token.SignedString([]byte(s.cfg.JWT.Secret))
+	tokenString, err := token.SignedString([]byte(s.signingSecret()))
 	if err != nil {
 		return "", fmt.Errorf("sign token: %w", err)
 	}
@@ -1981,4 +2012,38 @@ func (s *AuthService) snapshotPlatformQuotaDefaults(ctx context.Context, userID 
 		return nil // fail-open：返回 nil，让调用方继续
 	}
 	return nil
+}
+
+func (s *AuthService) IsSupplierPortal() bool {
+	return s != nil && s.cfg != nil && s.cfg.SupplierPortal.Enabled
+}
+func (s *AuthService) signingSecret() string {
+	if s.IsSupplierPortal() {
+		return s.cfg.SupplierPortal.JWTSecret
+	}
+	return s.cfg.JWT.Secret
+}
+func (s *AuthService) registrationEnabled(ctx context.Context) bool {
+	if s.IsSupplierPortal() {
+		return s.cfg.SupplierPortal.RegistrationEnabled
+	}
+	return s.settingService != nil && s.settingService.IsRegistrationEnabled(ctx)
+}
+func (s *AuthService) verifyRegistrationCode(ctx context.Context, email, code string) error {
+	if s.IsSupplierPortal() {
+		return s.emailService.VerifySupplierSignupCode(ctx, email, code)
+	}
+	return s.emailService.VerifyCode(ctx, email, code)
+}
+
+func (s *AuthService) validAudience(claims *JWTClaims) bool {
+	if s.IsSupplierPortal() {
+		return len(claims.Audience) == 1 && claims.Audience[0] == "supplier"
+	}
+	for _, aud := range claims.Audience {
+		if aud == "supplier" {
+			return false
+		}
+	}
+	return true
 }

@@ -47,6 +47,7 @@ type AdminHandlers struct {
 
 // Handlers contains all HTTP handlers
 type Handlers struct {
+	SupplierResource *SupplierResourceHandler
 	Supplier         *SupplierHandler
 	Auth             *AuthHandler
 	User             *UserHandler

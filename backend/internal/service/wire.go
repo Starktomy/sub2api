@@ -967,6 +967,8 @@ func ProvideRuntimeLifecycle(cfg *config.Config, locker MaintenanceLocker) *Runt
 
 // ProviderSet is the Wire provider set for all services
 var ProviderSet = wire.NewSet(
+	NewSupplierResourceService,
+	ProvideSupplierProbeWorker,
 	NewSupplierService,
 	ProvideRuntimeLifecycle,
 	// Core services
@@ -1236,4 +1238,12 @@ func ProvideAntigravityOAuthService(lifecycle *RuntimeLifecycle, proxies ProxyRe
 	}
 	registerRuntimeService(lifecycle, "AntigravityOAuthService", RuntimeScopeControl, svc)
 	return svc
+}
+
+func ProvideSupplierProbeWorker(repo SupplierProbeRepository, resources *SupplierResourceService, cfg *config.Config, lifecycle *RuntimeLifecycle) *SupplierProbeWorker {
+	w := NewSupplierProbeWorker(repo, resources, cfg)
+	if cfg.SupplierProbe.Enabled {
+		lifecycle.Register(RuntimeTask{Name: "SupplierProbeWorker", Scope: RuntimeScopeWorker, StopPhase: RuntimeStopConsumers, Start: w.Start, Stop: w.Stop})
+	}
+	return w
 }
