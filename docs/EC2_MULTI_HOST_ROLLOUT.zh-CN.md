@@ -19,6 +19,16 @@
 - 真实模型首次2请求：账户1成功、1条usage/customer cost $0.000100；账户2本地pool0/503，未建立上游调用。只读诊断指向启用后2秒早于5秒publication；正在补PG-selected manifest/payload readiness，剩余最多2请求。账户/Key/user均finally停用，无refresh/import，账务保留。
 - 全部验收及证据保存前，不销毁临时ALB或第二台。当前资源仍计费；后续只清理本轮明确临时资源，不销毁RDS/Valkey/原EC2/ECR。
 
+## 收尾与当前单机状态（2026-11-03）
+
+- 第二台失败发布测试最终成功：AWS waiter先到达等待上限，实际SSM命令随后exit0；supervisor日志previous release restored，三角色healthy。真实reboot后最终REBOOT_ALL_ROLES_HEALTHY、collector Result=success，不只检查unit active。
+- 模型readiness修复为两次稳定PG-selected publication观察，校验manifest/full/slim digest、group bucket成员及eligible状态后才发请求。7项聚焦unit tests通过。复验两账户均HTTP200，各input20/output5、各customer cost $0.000100。累计4次generation HTTP请求、3条成功ledger，$0.000300客户价格；首轮账户2本地503无usage，不宣称到达provider。凭据不变、无refresh/import；账户、fixture用户/Key最终禁用且published账户disabled，账务记录保留。
+- 停止第二台全部角色后，原主机publication/maintenance generation=5/5、outbox0；ALB仅剩原主机时120次health全部200，P95 2.45ms。该测试不是持续模型容量上限，先前429限流结果不改写。
+- 按用户明确授权已删除临时ALB sub2api-it-ha及两个Target Group；describe确认ALB为空。第二台i-07f2c0ba4744915e4已terminated，BlockDeviceMappings为空。临时SG sg-09623eef732d304f9与sg-0befb673c8130af44删除成功，RDS/Valkey及原主机上的临时来源规则已撤销；外部tfvars additional_runtime_security_group_ids恢复[]。
+- 临时ALB策略、清理策略与第二台runtime角色/profile已删除，deployer新机launch/lifecycle/preparation/data-ingress权限撤销；保留原主机SSM/指标与必要运行权限。ELB AWS service-linked role保留，不把AWS共享服务身份当本项目临时资源删除。
+- 原主机保留sub2api-roles.service与collector timer，三角色resource-capped健康、private gateway health200；保留15条RDS/Valkey/原主机基础告警查询均OK，外部通知仍未配置。公网仅SSH22按用户要求开放；没有DNS/公网HTTPS入口。
+- 现已回到单EC2预生产测试形态，不再具备宿主故障冗余或ALB自动入口切换。RDS Multi-AZ/双节点Valkey与ECR保留继续计费；新增34series双机collector降为17常规series单机（历史CloudWatch数据按AWS保留），告警15条，自定义指标/告警费用仍存在。
+
 ## 已核实的身份与阻塞（以下保留早期执行记录，当前状态以上方追加为准）
 
 - 目标账号 `250088785444`，Region `us-west-2`。
