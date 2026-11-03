@@ -80,7 +80,7 @@ func (c *grokOAuthClient) ExchangeCode(ctx context.Context, code, codeVerifier, 
 }
 
 func (c *grokOAuthClient) RefreshToken(ctx context.Context, refreshToken, proxyURL, clientID string) (*xai.TokenResponse, error) {
-	client, err := createGrokReqClient(proxyURL)
+	client, err := refreshRequestClient(ctx, proxyURL, 60*time.Second, false, createGrokReqClient)
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusBadGateway, "GROK_OAUTH_CLIENT_INIT_FAILED", "create HTTP client: %v", err)
 	}

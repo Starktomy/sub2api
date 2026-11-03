@@ -94,3 +94,5 @@
 允许清单增加 ConcurrencySlotCleanup，共六项：原子 Lua 重查 regular/live/wait，保留更新索引及 TTL，split worker 不执行 legacy prefix sweep。SchedulerSnapshot 的 pending/exact-ack 与生命周期修复已实现，但全路径 leader fencing 未完成，仍禁用。TokenRefresh durable-only/后动作收敛仅为防护准备，真实 provider 内部审计未完成，仍禁用。详见 WORKER_REPLICA_SAFETY.zh-CN.md 和 IMPLEMENTATION_STATUS.md 的追加验证记录。不要将局部单测误记为全部后台任务已支持 HA。
 
 最终修复两项 rebuild 测试的零值构造后，service 聚焦0.707s、repository聚焦0.918s、server build/vet全部通过。六进程 smoke-03 passed=true：kill worker-a→worker-b 实际暂停过期账号，陈旧索引下活跃槽位和等待计数保留，Control A session 在 B 与重启后可见，provider_calls=0；临时进程退出。下一阶段先 provider 真实调用链单次刷新（含 transport replay/redirect 与禁止轮换后 enrichment），再完整 scheduler leader fencing；均未放开 HA。
+
+Provider 维护刷新已完成单次服务路径与隔离HTTP策略，legacy对照、五类具体HTTP客户端fake failure/redirect/cancel、重复3次及build/vet通过，详见 IMPLEMENTATION_STATUS。HA TokenRefresh仍未准入；完整scheduler fencing仍待实现，不能将bucket/group owner改造当作PG generation+namespace完整方案。

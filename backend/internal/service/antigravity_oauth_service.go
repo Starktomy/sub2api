@@ -10,9 +10,23 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 )
 
+type antigravityRefreshClient interface {
+	RefreshToken(context.Context, string) (*antigravity.TokenResponse, error)
+	LoadCodeAssist(context.Context, string) (*antigravity.LoadCodeAssistResponse, map[string]any, error)
+	OnboardUser(context.Context, string, string) (string, error)
+}
+
 type AntigravityOAuthService struct {
-	sessionStore *antigravity.SessionStore
-	proxyRepo    ProxyRepository
+	sessionStore         *antigravity.SessionStore
+	proxyRepo            ProxyRepository
+	refreshClientFactory func(string) (antigravityRefreshClient, error)
+}
+
+func (s *AntigravityOAuthService) newRefreshClient(proxyURL string) (antigravityRefreshClient, error) {
+	if s.refreshClientFactory != nil {
+		return s.refreshClientFactory(proxyURL)
+	}
+	return antigravity.NewClient(proxyURL)
 }
 
 func NewAntigravityOAuthService(proxyRepo ProxyRepository) *AntigravityOAuthService {
@@ -188,8 +202,12 @@ func (s *AntigravityOAuthService) ExchangeCode(ctx context.Context, input *Antig
 // RefreshToken 刷新 token
 func (s *AntigravityOAuthService) RefreshToken(ctx context.Context, refreshToken, proxyURL string) (*AntigravityTokenInfo, error) {
 	var lastErr error
+	maxRetries := 3
+	if isMaintenanceRefresh(ctx) {
+		maxRetries = 0
+	}
 
-	for attempt := 0; attempt <= 3; attempt++ {
+	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
 			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
 			if backoff > 30*time.Second {
@@ -198,7 +216,7 @@ func (s *AntigravityOAuthService) RefreshToken(ctx context.Context, refreshToken
 			time.Sleep(backoff)
 		}
 
-		client, err := antigravity.NewClient(proxyURL)
+		client, err := s.newRefreshClient(proxyURL)
 		if err != nil {
 			return nil, fmt.Errorf("create antigravity client failed: %w", err)
 		}
@@ -319,6 +337,12 @@ func (s *AntigravityOAuthService) RefreshAccountToken(ctx context.Context, accou
 		return nil, err
 	}
 
+	if isMaintenanceRefresh(ctx) {
+		// Omitted local metadata is preserved by the refresher's credential merge.
+		// Do not turn token rotation into project discovery or onboarding work.
+		return tokenInfo, nil
+	}
+
 	// 保留原有的 email
 	existingEmail := strings.TrimSpace(account.GetCredential("email"))
 	if existingEmail != "" {
@@ -368,7 +392,7 @@ func (s *AntigravityOAuthService) loadProjectIDWithRetry(ctx context.Context, ac
 			time.Sleep(backoff)
 		}
 
-		client, err := antigravity.NewClient(proxyURL)
+		client, err := s.newRefreshClient(proxyURL)
 		if err != nil {
 			return nil, fmt.Errorf("create antigravity client failed: %w", err)
 		}
@@ -413,7 +437,7 @@ func (s *AntigravityOAuthService) loadProjectIDWithRetry(ctx context.Context, ac
 	return nil, fmt.Errorf("获取 project_id 失败 (重试 %d 次后): %w", maxRetries, lastErr)
 }
 
-func tryOnboardProjectID(ctx context.Context, client *antigravity.Client, accessToken string, loadRaw map[string]any) (string, error) {
+func tryOnboardProjectID(ctx context.Context, client antigravityRefreshClient, accessToken string, loadRaw map[string]any) (string, error) {
 	tierID := resolveDefaultTierID(loadRaw)
 	if tierID == "" {
 		return "", fmt.Errorf("loadCodeAssist 未返回可用的默认 tier")
