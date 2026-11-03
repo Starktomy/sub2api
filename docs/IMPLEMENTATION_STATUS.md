@@ -135,6 +135,18 @@
 - service聚焦unit0.119秒、repository聚焦0.059秒、handler最终0.025秒通过；Wire/build/相关vet通过。新SQL迁移只在临时Docker数据库执行，**未应用RDS、未安装/启动新binary**，四服务仍inactive，无真实OAuth刷新或模型调用。
 - 按用户要求分批commit/push：独立加密基础包已提交c80c6110f；其余刷新状态机/权限代码及报告随后单独提交。不合并主分支。
 
+## 第九批：当前EC2多Control与保守维护主备（部分任务完成）
+
+- 用户要求继续当前EC2测试，不部署ECS、不用Spot。保持一个代码库，新增显式runtime.multi_replica_workers门禁，默认false且只允许experimental worker。
+- split角色的Claude/OpenAI/Gemini/Antigravity/Grok上游OAuth session接共享Redis TTL后端；写失败明确报错、无内存fallback。回调验证后原子领取/删除再发上游，失败兑换也消费session；legacy内存模式同时改为单次消费语义。Redis session含PKCE verifier JSON，依赖TLS/ACL，不是应用层加密。
+- 维护主备使用专用PG session advisory lock；构造无抢锁，standby等待，leader丢锁取消并join，旧实例不重启，join失败不主动释放session。网络分区不是绝对fencing；因此只运行审计白名单。
+- 当前白名单5类：账号过期、幂等记录清理、订阅过期（禁邮件提醒）、等待队列孤儿清理、鉴权缓存失效outbox。幂等清理外层DELETE补到期条件，防陈旧候选误删续期记录。其余token刷新/调度快照/模型测试/通知/支付/备份等明确禁用并日志列原因，详见WORKER_REPLICA_SAFETY.zh-CN.md。**没有完成全部后台任务多副本化**。
+- 六进程实机测试：同一EC2启动2Gateway+2Control+2Worker，独立本地PG15测试库+临时密码Redis。全部health/角色路由通过；只有一个初始leader；SIGKILL后standby获锁并实际暂停过期账号夹具；Control A HTTP创建OAuth session，B验证错误state（证明已找到session），B重启后仍可读。测试结束所有进程退出，provider/model/payment调用=0。
+- 共享session六pkg unit通过；维护service聚焦0.196秒、repo0.100秒；配置完整包1.675秒、Wire生成/server+migrate build/相关vet通过。最终假上游跨service成功回调/12并发单次兑换/重建实例/TTL/故障测试通过0.889秒；维护尾改动回归通过0.108秒。广范围service unit编译曾因资源协调终止，不计通过。
+- 首轮六进程smoke仅接管锁，通过后补真实过期任务行为并再跑通过。私有脱敏日志在/root/.local/state/sub2api-cloud/replica-test-f0b2bad6/smoke-02/；测试数据用专用role/DB，没有改真实AWS账号或RDS schema。
+- 登录侧OIDC/WeChat/LinuxDo等初始state/verifier依赖浏览器cookie，不是进程map；pending identity为PG、passkey为Redis。未做这些登录流全面replay/隐私审计，不把目标搜索当全面Control验收。
+- 原systemd集成部署未更新，仍inactive；本轮是临时本机多进程测试，未建立常驻六服务、未创建AWS资源。
+
 ## 尚未实现，禁止按已完成生产部署
 
 - 独立角色仅实验opt-in：共享Wire图/权限最小化、DI失败全资源回收、部分缓存janitor、Control OAuth多副本、维护worker多副本lease仍未完成。AWS下一步见 [AWS_PREPRODUCTION_CHECKLIST.zh-CN.md](AWS_PREPRODUCTION_CHECKLIST.zh-CN.md)。

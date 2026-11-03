@@ -71,6 +71,15 @@
 - 不明结果禁止自动重新消费token；本地completion可幂等重试。显式恢复方法需停旧holder、重新授权、inactive/不可调度、changed refresh token及匹配generation，推进fence；无加密spool、无公开恢复CLI/HTTP。
 - service/repo/handler单测、Wire/build/vet通过。用户授权完成后分批commit push；加密组件c80c6110f已推送，刷新及文档另批。最新完整状态见IMPLEMENTATION_STATUS第八批，取代第七批历史缺口。
 
+## 接续更新：本机六进程与保守多副本（仍有任务受阻）
+
+- 用户改为继续EC2，不部署ECS/Spot。实现split Control五provider Redis TTL会话、原子单次消费、无内存fallback；失败兑换需重开授权。
+- Worker显式RUNTIME_MULTI_REPLICA_WORKERS=true后PG专用会话锁主备。白名单仅5类：账号过期、幂等清理、订阅过期禁邮件、等待队列、鉴权失效outbox；其余任务启动时明确禁用，不能称全部后台多副本完成。完整清单docs/WORKER_REPLICA_SAFETY.zh-CN.md。
+- 当前机器独立本地PG15/临时Redis上2Gateway+2Control+2Worker真实烟测通过：SIGKILL leader后备用获锁且实际暂停过期fixture；A创建会话B可读，重启B仍可读，无真实provider调用。
+- 六session/pkg测试通过；fake服务回调12竞争恰好1上游调用0.889秒，维护最终回归0.108秒，配置完整1.675秒、build/migrate/Wire/vet通过。
+- 没改原systemd常驻服务，测试进程已全部退出；私有夹具/日志在/root/.local/state/sub2api-cloud/replica-test-f0b2bad6/，无AWS schema/资源变更。
+- Redis数据丢失仍使未完成OAuth需重开，不承诺缓存故障会话持久无损；客户OIDC等cookie登录流未做全面安全审计。
+
 ## 权威文档与证据位置
 
 - `AGENTS.md`：操作约束。

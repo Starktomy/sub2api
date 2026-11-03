@@ -169,6 +169,7 @@ issues/
 !docs/EC2_MANAGED_DATA_VALIDATION.zh-CN.md
 !docs/CONTEXT_HANDOFF.zh-CN.md
 !docs/OAUTH_POOL_VALIDATION.zh-CN.md
+!docs/WORKER_REPLICA_SAFETY.zh-CN.md
 
 # Python operational tooling creates no versioned bytecode.
 __pycache__/
