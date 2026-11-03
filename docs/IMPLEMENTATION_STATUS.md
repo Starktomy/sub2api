@@ -248,3 +248,9 @@ TLS补充回归发现严格维护的 Chrome preset 即使 ForceHTTP1，ALPN仍�
 验证：`go test -p=1 ./internal/repository -run TestMaintenance -count=1 -timeout=3m` PASS0.086s；service同regex PASS0.052s；`go test -p=1 -tags=integration ./internal/repository -run TestMaintenanceGeneration -count=1 -timeout=4m -v` Docker PG实际断言PASS5.852s（递增、伪造owner、错误session、失锁、旧代次重获锁仍拒绝、active不发布）。后补session测试/build/vet结果待最终记录。新迁移未应用真实RDS；新二进制check要求数据库具备新迁移，禁止直接替换永久服务。
 
 最终PG基础链exit0，server build通过；后补 `go test -p=1 ./internal/repository -run 'TestMaintenance|TestAllocateMaintenance|TestWithMaintenance|TestFencedMaintenance' -count=1 -timeout=3m` 与 repository/service vet通过。此批没有运行新版六进程（新增migration251未同步到旧私有fixture），Docker fresh迁移实际验证已通过。默认运行仍使用旧构造器，未启用新能力。
+
+## Session-bound scheduler outbox（2026-11-03，验证中）
+
+新增显式adapter绑定仓储maintenance session：dedup release/pending扫描、精确ID ack均在同session.withGeneration事务验exclusive锁和row owner/generation；commit失败不返回events。旧pool仓储只重用scanner，默认wire不变。RequiresMaintenanceFence任务在legacy或无coordinator时拒绝，不允许静默降级。仓储聚焦PASS0.042s；service/Docker/build/vet尚在运行。Redis namespace/active-reader未实现、SchedulerSnapshot继续禁用，未部署AWS。
+
+Session-bound outbox最终链PASS：repository0.042s、service0.098s、Docker PG generation+fenced outbox5.948s、server build/vet均通过；最终继承capability拒绝用例另行重跑通过。outbox未接默认wire、Redis namespace/reader未实现，仍不开放SchedulerSnapshot。后续用户要求修复CI并准备多机器镜像，先修CI再做本地image/role/migrator测试，不发布ECR/创建新AWS资源。

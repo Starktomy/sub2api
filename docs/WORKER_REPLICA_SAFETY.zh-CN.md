@@ -80,3 +80,7 @@ Process-local / request-local / gateway-local / control-local 不由此 coordina
 ### PG 持久代次基础（进行中，默认未接线）
 
 新增未部署的 forward migration251：singleton generation/随机owner，active_scheduler_generation 独立可空。显式 NewFencedMaintenanceLockRepository 在 dedicated session 已持有 advisory lock 后分配代次；默认构造器不访问新表。分配事务先检查同session exclusive锁，commit不明不返回capability并丢弃连接。短SQL guard在同session事务内验证锁、FOR UPDATE匹配代次和owner后才执行callback；禁止跨provider/network等待。不可变fence经context传给任务，Check/guard/release串行。尚未接outbox、namespace、active发布和reader，不能据此放行SchedulerSnapshot。runtime无DDL/seed，未应用真实RDS。
+
+### Session-bound outbox（验证中，默认未接线）
+
+新增显式 BindFencedSchedulerOutbox，只接受仓储签发、有效代次且未释放的session。pending扫描/dedup释放及精确ID确认通过同session.withGeneration事务，先验锁与row capability；commit失败不返回events。read-only observation仍可用pool。RequiresMaintenanceFence任务在legacy session或绕开coordinator时拒绝启动，无静默降级。默认wire不变，SchedulerSnapshot继续禁用，namespace/reader未实现。

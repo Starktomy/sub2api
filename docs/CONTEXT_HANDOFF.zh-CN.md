@@ -102,3 +102,5 @@ Provider 维护刷新已完成单次服务路径与隔离HTTP策略，legacy对�
 最终补充：build/vet/smoke-04全部PASS，provider_calls=0、接管和活跃槽位保留通过；TLS+durable HTTP测试已提交f0c6cec7c。ownership slice可分批提交，完整PG fencing仍未实现，禁止提前放行。
 
 PG持久代次基础新增migration251（未应用RDS），opt-in构造器分配generation+随机owner，withGeneration同dedicated session事务验锁+row owner/generation；不可变fence传任务。默认wire不切换，outbox/namespace/reader未接线，Scheduler仍禁用。仓储/服务/真实Docker PG集成5.852s、build/vet通过；未在旧fixture运行新六进程，需先迁移测试库。下一步接受保护outbox dedup release/exact ack，再做namespace/reader。
+
+2026-11-03：PG generation基础9dc909d69已push。session-bound outbox adapter及RequiresMaintenanceFence门禁测试/Docker/build/vet通过，最终旧context继承capability拒绝通过；默认不接线。用户追加：当前任务完成后修CI并准备多机器镜像测试。CI确认fork Starktomy/sub2api（gh默认指向upstream需显式--repo）：cloud health-cmd单引号runner误解析、integration共享夹具污染、16项lint；修复进行中。不得将镜像准备视作ECR发布/新AWS资源授权。
