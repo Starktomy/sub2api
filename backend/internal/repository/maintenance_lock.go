@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
@@ -14,7 +15,16 @@ import (
 const maintenanceLockNamespace = 1937072690
 const maintenanceLockID = 1
 
-type MaintenanceLockRepository struct{ db *sql.DB }
+type MaintenanceLockRepository struct {
+	db                *sql.DB
+	durableGeneration bool
+}
+
+// NewFencedMaintenanceLockRepository explicitly selects schema-backed generation
+// allocation. It remains opt-in until scheduler consumers and recovery are wired.
+func NewFencedMaintenanceLockRepository(db *sql.DB) *MaintenanceLockRepository {
+	return &MaintenanceLockRepository{db: db, durableGeneration: true}
+}
 
 func NewMaintenanceLockRepository(db *sql.DB) *MaintenanceLockRepository {
 	return &MaintenanceLockRepository{db: db}
@@ -37,12 +47,35 @@ func (r *MaintenanceLockRepository) TryAcquire(ctx context.Context) (service.Mai
 	if !acquired {
 		return nil, false, conn.Close()
 	}
-	return &maintenanceSession{conn: conn}, true, nil
+	session := &maintenanceSession{conn: conn}
+	if r.durableGeneration {
+		generation, owner, err := allocateMaintenanceGeneration(ctx, conn)
+		if err != nil {
+			// Ambiguous allocation must never start work or return a possibly
+			// locked connection to the pool. Discard; next acquisition advances.
+			discardMaintenanceConnection(conn)
+			return nil, false, err
+		}
+		session.fence = service.MaintenanceFence{Generation: generation, Owner: owner}
+	}
+	return session, true, nil
 }
 
-type maintenanceSession struct{ conn *sql.Conn }
+type maintenanceSession struct {
+	conn     *sql.Conn
+	mu       sync.Mutex // serialize checks, fenced transactions and release
+	fence    service.MaintenanceFence
+	released bool
+}
+
+func (s *maintenanceSession) Fence() service.MaintenanceFence { return s.fence }
 
 func (s *maintenanceSession) Check(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.released {
+		return errors.New("maintenance session released")
+	}
 	// SELECT rather than Ping: check ownership on exactly the dedicated session.
 	// driver replacement is not permitted: sql.Conn remains tied to this session.
 	var held bool
@@ -61,6 +94,12 @@ func (s *maintenanceSession) Check(ctx context.Context) error {
 }
 
 func (s *maintenanceSession) Release(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.released {
+		return nil
+	}
+	s.released = true
 	var unlocked bool
 	err := s.conn.QueryRowContext(ctx, "SELECT pg_advisory_unlock($1, $2)", maintenanceLockNamespace, maintenanceLockID).Scan(&unlocked)
 	// A connection with uncertain unlock outcome MUST NOT return to the pool.
@@ -77,4 +116,15 @@ func (s *maintenanceSession) Release(ctx context.Context) error {
 func discardMaintenanceConnection(conn *sql.Conn) {
 	_ = conn.Raw(func(any) error { return driver.ErrBadConn })
 	_ = conn.Close()
+}
+
+// withGeneration serializes a short SQL mutation with lock checks/release on
+// this exact session. A pooled preflight Check followed by a write is unsafe.
+func (s *maintenanceSession) withGeneration(ctx context.Context, fn func(*sql.Tx) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.released || !s.fence.Valid() {
+		return errors.New("fenced maintenance session unavailable")
+	}
+	return withMaintenanceGeneration(ctx, s.conn, s.fence.Generation, s.fence.Owner, fn)
 }

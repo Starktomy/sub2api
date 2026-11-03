@@ -55,3 +55,20 @@ func TestMaintenanceLostSessionIsNotHealthy(t *testing.T) {
 	require.ErrorContains(t, session.Release(context.Background()), "connection lost")
 	require.NoError(t, mock.ExpectationsWereMet())
 }
+
+func TestFencedMaintenanceAllocationFailureDiscardsSession(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	mock.ExpectQuery("SELECT pg_try_advisory_lock").WillReturnRows(sqlmock.NewRows([]string{"locked"}).AddRow(true))
+	mock.ExpectBegin()
+	expectMaintenanceGenerationLock(mock, true)
+	mock.ExpectQuery("UPDATE maintenance_generation").WillReturnError(errors.New("schema unavailable"))
+	mock.ExpectRollback()
+	mock.ExpectClose()
+	session, ok, err := NewFencedMaintenanceLockRepository(db).TryAcquire(context.Background())
+	require.Error(t, err)
+	require.False(t, ok)
+	require.Nil(t, session)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
