@@ -27,7 +27,7 @@
 - 私有 ECR `sub2api-cloud` 已创建，AES256、不可变标签。已发布 `it-6fad966dd-amd64`，index digest `sha256:ceab9d6e81bbfde21c6bd5620e0cc85a9d2c052c6cf998ab638ccde8997d4005`。这仍是 SchedulerSnapshot 禁用的既有 headless 验收版本。
 - amd64 manifest `sha256:ecac8ae45ad6011fa298b2455e031043e229cfc7078d22f7c743d18a42e719b1` 的 ECR BASIC scan 返回 COMPLETE、findingSeverityCounts 为空；不代表源代码或全部语言依赖安全审计通过。直接扫描 index 曾返回 UnsupportedImageType，不能混记成功。
 - 新主机 `i-07f2c0ba4744915e4` 已 running，私网 `172.31.51.219`、`us-west-2a`，Amazon Linux 2023 AMI `ami-0cc098d14c47f965b`、t8i.medium、20 GiB 加密 gp3、standard CPU credits。新 SG `sg-0befb673c8130af44` 无公网入站，仅允许原测试主机 SG 私网 TCP18080–18083；没有复用原全开放 SG。
-- IMDSv2 required、hop limit1、IPv6 metadata disabled；runtime 无 AWS SDK 身份需求，host 通过 profile 拉取镜像。容器宿主防火墙隔离仍待执行，不把 hop limit 单独当完整隔离证据。
+- IMDSv2 required、hop limit1、IPv6 metadata disabled；runtime 无 AWS SDK 身份需求，host 通过 profile 拉取镜像。不把 hop limit 单独当完整隔离证据；已执行的防火墙与探针见下。
 - 专用角色 EC2 dry-run 返回 DryRunOperation 后才执行 run-instances，使用固定 ClientToken 防止重复创建。root 只做 IAM；新增 SSM SendCommand 仅限新主机及 AWS-RunShellScript 文档。
 - Docker25.0.18 安装成功，SSM Online；新主机通过 profile 拉取固定 digest，非root/只读/network-none migrator-help 返回 REMOTE_IMAGE_CONTRACT_OK。临时 Docker 登录文件通过 EXIT trap 删除。
 - 新主机已安装 IPv4 DOCKER-USER 与 IPv6 FORWARD metadata 拦截规则，并通过sub2api-container-imds.service绑定Docker启动持久化；非root容器HTTP metadata探针返回CONTAINER_METADATA_BLOCKED。该探针只证明当前metadata请求未成功，IPv6 metadata本身disabled；不把单个GET探针解释为所有SSRF路径验证。原主机本轮新增DOCKER-USER拦截，持久化单独待验。
@@ -37,7 +37,8 @@
 - 两主机各启动gateway/control/guarded-worker，共六容器。原主机绑定loopback18180/18181，新主机绑定私网172.31.51.219:18080/18081，Worker不发布端口。跨AZ health200，gateway models401/control API404，control models404/auth-me401；两主机日志均确认experimental runtime启动。
 - 首次原主机容器因systemd env双引号被Docker保留而exit64（split gate正确拒绝），只规范化独立测试env并重建失败容器，随后health200。
 - 新主机Worker首先获得领导权，原主机为standby。STOP远端leader后插入无token/凭据的过期fixture，再SIGKILL远端leader；原主机取得领导权并实际暂停fixture，CROSS_HOST_WORKER_TAKEOVER_OK。fixture随后disabled，远端Worker已请求恢复为standby。没有真实provider/model/payment调用。
-- 这不是宿主停止故障、Control OAuth session共享、完整scheduler fencing或生产HA的验收；旧镜像SchedulerSnapshot/TokenRefresh仍禁用。
+- 单独验证整机停止：先确认远端Worker再次获得领导权、原主机恢复standby，再通过仅限新实例的权限stop-instances。EC2实际stopped后重新启用同一合成过期fixture，原主机取得领导权并暂停fixture，返回WHOLE_HOST_STOP_TAKEOVER_OK；原主机gateway/control仍health200。fixture finally禁用。新主机恢复后SSM命令成功，Docker与metadata防火墙unit均active、DOCKER-USER规则存在，三角色恢复运行，跨AZgateway/control health再次200。角色目前为显式手动恢复，没有声称应用自动开机恢复。
+- 这不是Control OAuth session共享、完整scheduler fencing或生产HA的验收；旧镜像SchedulerSnapshot/TokenRefresh仍禁用。
 
 ## 费用范围
 
