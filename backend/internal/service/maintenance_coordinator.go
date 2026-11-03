@@ -185,11 +185,12 @@ func (c *MaintenanceCoordinator) run(ctx context.Context, tasks []RuntimeTask) {
 }
 
 // MaintenanceTaskPolicy is an explicit fail-closed inventory. Empty means an
-// audited SQL-only, conditional/idempotent operation with cancellation and join.
+// audited conditional/idempotent SQL operation or atomic Redis cleanup, with
+// cancellation and join. Redis cleanup is safe even if old/new leaders overlap.
 // Unknown/new worker tasks are disabled rather than silently becoming HA-safe.
 func MaintenanceTaskPolicy(name string) string {
 	switch name {
-	case "AccountExpiryService", "IdempotencyCleanupService", "SubscriptionExpiryService", "UserMessageQueueCleanup", "AuthCacheInvalidationWorker":
+	case "AccountExpiryService", "IdempotencyCleanupService", "SubscriptionExpiryService", "UserMessageQueueCleanup", "AuthCacheInvalidationWorker", "ConcurrencySlotCleanup":
 		return ""
 	case "TokenRefreshService":
 		return "provider refresh and reconciliation require durable fencing for every provider"
@@ -208,8 +209,6 @@ func MaintenanceTaskPolicy(name string) string {
 		return "scheduled callbacks and startup backfills do not join"
 	case "UsageCleanupService":
 		return "cleanup task progress and recovery are not generation fenced"
-	case "ConcurrencySlotCleanup":
-		return "shared Redis cleanup needs atomic expiry predicates and joined lifecycle audit"
 	case "SchedulerSnapshotService":
 		return "shared snapshot writes/outbox acknowledgements are not generation fenced"
 	case "OpsAggregationService", "ChannelMonitorV2Aggregator":

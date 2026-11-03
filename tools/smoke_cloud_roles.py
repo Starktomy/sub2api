@@ -122,7 +122,9 @@ def main():
             now = int(redis_command("TIME").splitlines()[0])
             redis_command("ZADD", slot_key, now, "other-live-gateway:request")
             redis_command("SET", wait_key, 1, "EX", 600)
-            redis_command("ZADD", "concurrency:account:active_index", now + 900, 900001)
+            # Force this active account into the expired-candidate batch. Atomic
+            # cleanup must recheck real load rather than trust this stale score.
+            redis_command("ZADD", "concurrency:account:active_index", now - 1, 900001)
 
             jwt_secret, totp_secret = secrets.token_hex(32), secrets.token_hex(32)
             instances = (("gateway-a", "gateway"), ("gateway-b", "gateway"), ("control", "control"), ("worker", "worker"))
@@ -224,6 +226,11 @@ def main():
                 if len(leaders()) != 1:
                     raise RuntimeError("both workers reported initial leadership")
                 leader = leaders()[0]
+                for worker in ("worker-a", "worker-b"):
+                    if not any('maintenance task admitted for PostgreSQL coordination' in line
+                               and 'ConcurrencySlotCleanup' in line
+                               for line in launched[worker]["log"].read_text().splitlines()):
+                        raise RuntimeError(f"{worker} did not admit atomic concurrency cleanup")
                 standby = "worker-b" if leader == "worker-a" else "worker-a"
                 fixture = subprocess.run([psql, "-X", "-qAt", "-v", "ON_ERROR_STOP=1"], env=probe_env,
                     input="INSERT INTO accounts(name,platform,type,credentials,status,schedulable,auto_pause_on_expired,expires_at) VALUES ('replica-expired-fixture','openai','oauth','{}','active',true,true,NOW()-INTERVAL '1 minute') RETURNING id;",
@@ -248,7 +255,9 @@ def main():
                     time.sleep(0.1)
                 subprocess.run([psql, "-X", "-q", "-v", "ON_ERROR_STOP=1"], env=probe_env,
                     input=f"DELETE FROM accounts WHERE id={expired_id};", capture_output=True, text=True, check=True, timeout=10)
-                results.append({"check": "maintenance_leader_killed_and_standby_acquired", "leader": leader, "standby": standby, "expired_fixture_paused": True})
+                if redis_command("ZSCORE", slot_key, "other-live-gateway:request") == "" or redis_command("GET", wait_key) != "1":
+                    raise RuntimeError("cleanup takeover deleted a live gateway slot or wait counter")
+                results.append({"check": "maintenance_leader_killed_and_standby_acquired", "leader": leader, "standby": standby, "expired_fixture_paused": True, "live_slot_and_wait_preserved": True})
                 # Controls are separate healthy processes. Provider callback
                 # semantics are covered with fake-provider shared-store tests.
                 # Here exercise real HTTP creation on A and state validation on

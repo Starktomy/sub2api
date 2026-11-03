@@ -330,27 +330,67 @@ var (
 		return 1
 	`)
 
-	// startupCleanupSlotScript 清理单个槽位 key 中非当前进程前缀的成员，避免 Redis Cluster CROSSSLOT。
-	// KEYS[1] 是有序集合键，ARGV[1] 是当前进程前缀，ARGV[2] 是槽位 TTL。
-	// 返回 {清除数量, 剩余成员数}，Go 侧据剩余数决定索引 member 去留，无需再回读槽位。
-	startupCleanupSlotScript = redis.NewScript(`
-		local key = KEYS[1]
-		local activePrefix = ARGV[1]
+	// reconcileSlotIndexScript rechecks load and updates the index in one operation.
+	// KEYS: index, regular slots, live slots, wait count. ARGV: member, regular
+	// TTL, live TTL, wait TTL, optional startup prefix, captured wait value/PTTL,
+	// captured index score, then captured regular member/score pairs. Startup only removes captured,
+	// unchanged slots; a newly acquired slot must never become a cleanup victim.
+	// This cache uses standalone Redis/Valkey (these keys are not cluster tagged).
+	reconcileSlotIndexScript = redis.NewScript(`
+		redis.replicate_commands()
+		local member = ARGV[1]
 		local slotTTL = tonumber(ARGV[2])
-		local removed = 0
-		local members = redis.call('ZRANGE', key, 0, -1)
-		for _, member in ipairs(members) do
-			if string.sub(member, 1, string.len(activePrefix)) ~= activePrefix then
-				removed = removed + redis.call('ZREM', key, member)
+		local liveTTL = tonumber(ARGV[3])
+		local waitTTL = tonumber(ARGV[4])
+		local now = tonumber(redis.call('TIME')[1])
+		-- Validate all key types before any writes: Redis script errors do not roll back.
+		local score = redis.call('ZSCORE', KEYS[1], member)
+		local regular = redis.call('ZCARD', KEYS[2])
+		local live = redis.call('ZCARD', KEYS[3])
+		local waitValue = redis.call('GET', KEYS[4])
+		local waitPTTL = redis.call('PTTL', KEYS[4])
+		if ARGV[5] ~= '' and (score or '') == ARGV[8] then
+			for i = 9, #ARGV, 2 do
+				local request = ARGV[i]
+				if string.sub(request, 1, string.len(ARGV[5])) ~= ARGV[5] then
+					local current = redis.call('ZSCORE', KEYS[2], request)
+					if current and tonumber(current) == tonumber(ARGV[i + 1]) then
+						redis.call('ZREM', KEYS[2], request)
+					end
+				end
+			end
+			-- Preserve a wait counter refreshed since candidate capture.
+			if waitValue and waitValue == ARGV[6] and waitPTTL <= tonumber(ARGV[7]) then
+				redis.call('DEL', KEYS[4])
+				waitValue = false
 			end
 		end
-		local remaining = redis.call('ZCARD', key)
-		if remaining == 0 then
-			redis.call('DEL', key)
-		else
-			redis.call('EXPIRE', key, slotTTL)
+		redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now - slotTTL)
+		redis.call('ZREMRANGEBYSCORE', KEYS[3], '-inf', now - liveTTL)
+		regular = redis.call('ZCARD', KEYS[2])
+		live = redis.call('ZCARD', KEYS[3])
+		local ttl = 0
+		if regular > 0 then ttl = slotTTL end
+		if live > 0 and liveTTL > ttl then ttl = liveTTL end
+		if (tonumber(waitValue) or 0) > 0 and waitTTL > ttl then ttl = waitTTL end
+		if ttl == 0 then
+			return redis.call('ZREM', KEYS[1], member)
 		end
-		return {removed, remaining}
+		local expires = now + ttl
+		-- A cleanup snapshot must not shorten an acquisition's fresh index TTL.
+		if not score or tonumber(score) < expires then
+			redis.call('ZADD', KEYS[1], expires, member)
+		end
+		-- Never reset slot/wait key TTLs from a stale cleanup snapshot.
+		return 0
+	`)
+
+	removeInvalidSlotIndexMemberScript = redis.NewScript(`
+		local score = redis.call('ZSCORE', KEYS[1], ARGV[1])
+		if score and tonumber(score) <= tonumber(ARGV[2]) then
+			return redis.call('ZREM', KEYS[1], ARGV[1])
+		end
+		return 0
 	`)
 )
 
@@ -428,12 +468,13 @@ func (c *concurrencyCache) redisUnixSeconds(ctx context.Context) (int64, error) 
 type slotIndexSpec struct {
 	indexKey string
 	slotKey  func(int64) string
+	liveKey  func(int64) string
 	waitKey  func(int64) string
 }
 
 var (
-	accountSlotIndex = slotIndexSpec{indexKey: accountActiveIndexKey, slotKey: accountSlotKey, waitKey: accountWaitKey}
-	userSlotIndex    = slotIndexSpec{indexKey: userActiveIndexKey, slotKey: userSlotKey, waitKey: waitQueueKey}
+	accountSlotIndex = slotIndexSpec{indexKey: accountActiveIndexKey, slotKey: accountSlotKey, liveKey: liveAccountSlotKey, waitKey: accountWaitKey}
+	userSlotIndex    = slotIndexSpec{indexKey: userActiveIndexKey, slotKey: userSlotKey, liveKey: liveUserSlotKey, waitKey: waitQueueKey}
 )
 
 // touchActiveIndexAt 是写路径上的轻量标记：主操作已成功时，尽力把 ID 放入活跃索引，
@@ -466,147 +507,41 @@ func (c *concurrencyCache) refreshActiveIndex(ctx context.Context, indexKey stri
 	if c == nil || c.rdb == nil || id <= 0 {
 		return
 	}
-	now, err := c.redisUnixSeconds(ctx)
-	if err != nil {
+	liveKey := liveAccountSlotKey(id)
+	if indexKey == userActiveIndexKey {
+		liveKey = liveUserSlotKey(id)
+	}
+	if err := reconcileSlotIndexScript.Run(ctx, c.rdb,
+		[]string{indexKey, slotKey, liveKey, waitKey},
+		strconv.FormatInt(id, 10), c.slotTTLSeconds, liveLeaseTTLSeconds, c.waitQueueTTLSeconds, "", "", -2,
+	).Err(); err != nil {
 		logger.LegacyPrintf("repository.concurrency", "Warning: refresh active index %s for %d failed: %v", indexKey, id, err)
-		return
 	}
-
-	load, err := c.readActiveLoadForKey(ctx, id, slotKey, waitKey, now)
-	if err != nil {
-		logger.LegacyPrintf("repository.concurrency", "Warning: refresh active index %s for %d failed: %v", indexKey, id, err)
-		return
-	}
-	member := strconv.FormatInt(id, 10)
-	if load.slotCount == 0 && load.waitCount <= 0 {
-		if err := c.rdb.ZRem(ctx, indexKey, member).Err(); err != nil {
-			logger.LegacyPrintf("repository.concurrency", "Warning: remove active index member %s from %s failed: %v", member, indexKey, err)
-		}
-		return
-	}
-
-	ttlSeconds := c.activeIndexTTL(load.slotCount, load.waitCount)
-	if ttlSeconds <= 0 {
-		return
-	}
-	c.touchActiveIndexAt(ctx, indexKey, id, now+int64(ttlSeconds))
 }
 
-type activeIndexLoad struct {
-	id        int64
-	member    string
-	slotCount int
-	waitCount int
-}
-
-// activeIndexTTL 取槽位 TTL 与等待队列 TTL 中仍然需要关注的较大值。
-// 只要并发槽位或等待计数还有负载，就保留索引；两者都为 0 时调用方会删除索引。
-func (c *concurrencyCache) activeIndexTTL(slotCount int, waitCount int) int {
-	ttlSeconds := 0
-	if slotCount > 0 {
-		ttlSeconds = c.slotTTLSeconds
-	}
-	if waitCount > 0 && c.waitQueueTTLSeconds > ttlSeconds {
-		ttlSeconds = c.waitQueueTTLSeconds
-	}
-	return ttlSeconds
-}
-
-// readActiveLoadForKey 读取单个 ID 的当前负载，并顺手清理该槽位集合中的过期成员。
-func (c *concurrencyCache) readActiveLoadForKey(ctx context.Context, id int64, slotKey, waitKey string, now int64) (activeIndexLoad, error) {
-	cutoffTime := now - int64(c.slotTTLSeconds)
-	pipe := c.rdb.Pipeline()
-	pipe.ZRemRangeByScore(ctx, slotKey, "-inf", strconv.FormatInt(cutoffTime, 10))
-	zcardCmd := pipe.ZCard(ctx, slotKey)
-	getCmd := pipe.Get(ctx, waitKey)
-	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
-		return activeIndexLoad{}, fmt.Errorf("pipeline exec: %w", err)
-	}
-
-	waitCount := 0
-	if v, err := getCmd.Int(); err == nil && v > 0 {
-		waitCount = v
-	}
-	return activeIndexLoad{
-		id:        id,
-		member:    strconv.FormatInt(id, 10),
-		slotCount: int(zcardCmd.Val()),
-		waitCount: waitCount,
-	}, nil
-}
-
-// readIndexLoads 批量读取索引候选的真实负载（账号/用户通用）。
-// 分块 Pipeline 可以减少 Redis 往返，同时避免一次 Pipeline 塞入过多命令。
-func (c *concurrencyCache) readIndexLoads(ctx context.Context, spec slotIndexSpec, members []string, now int64) ([]activeIndexLoad, []string, error) {
-	loads := make([]activeIndexLoad, 0, len(members))
-	staleMembers := make([]string, 0)
-	candidates := make([]activeIndexLoad, 0, len(members))
-	for _, member := range members {
-		id, err := strconv.ParseInt(member, 10, 64)
-		if err != nil || id <= 0 {
-			staleMembers = append(staleMembers, member)
-			continue
-		}
-		candidates = append(candidates, activeIndexLoad{id: id, member: member})
-	}
-
-	cutoffTime := now - int64(c.slotTTLSeconds)
-	for start := 0; start < len(candidates); start += activeIndexPipelineChunkSize {
+// reconcileIndexMembers pipelines atomic per-member rechecks, not stale load decisions.
+func (c *concurrencyCache) reconcileIndexMembers(ctx context.Context, spec slotIndexSpec, members []string, cutoff int64) error {
+	for start := 0; start < len(members); start += activeIndexPipelineChunkSize {
 		end := start + activeIndexPipelineChunkSize
-		if end > len(candidates) {
-			end = len(candidates)
+		if end > len(members) {
+			end = len(members)
 		}
-		chunk := candidates[start:end]
-
 		pipe := c.rdb.Pipeline()
-		type loadCmd struct {
-			activeIndexLoad
-			zcardCmd *redis.IntCmd
-			getCmd   *redis.StringCmd
-		}
-		cmds := make([]loadCmd, 0, len(chunk))
-		for _, candidate := range chunk {
-			slotKey := spec.slotKey(candidate.id)
-			waitKey := spec.waitKey(candidate.id)
-			pipe.ZRemRangeByScore(ctx, slotKey, "-inf", strconv.FormatInt(cutoffTime, 10))
-			cmds = append(cmds, loadCmd{
-				activeIndexLoad: candidate,
-				zcardCmd:        pipe.ZCard(ctx, slotKey),
-				getCmd:          pipe.Get(ctx, waitKey),
-			})
-		}
-		if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
-			return nil, nil, fmt.Errorf("pipeline exec: %w", err)
-		}
-		for _, cmd := range cmds {
-			waitCount := 0
-			if v, err := cmd.getCmd.Int(); err == nil && v > 0 {
-				waitCount = v
+		for _, member := range members[start:end] {
+			id, err := strconv.ParseInt(member, 10, 64)
+			if err != nil || id <= 0 {
+				removeInvalidSlotIndexMemberScript.Eval(ctx, pipe, []string{spec.indexKey}, member, cutoff)
+				continue
 			}
-			loads = append(loads, activeIndexLoad{
-				id:        cmd.id,
-				member:    cmd.member,
-				slotCount: int(cmd.zcardCmd.Val()),
-				waitCount: waitCount,
-			})
+			reconcileSlotIndexScript.Eval(ctx, pipe,
+				[]string{spec.indexKey, spec.slotKey(id), spec.liveKey(id), spec.waitKey(id)},
+				member, c.slotTTLSeconds, liveLeaseTTLSeconds, c.waitQueueTTLSeconds, "", "", -2)
+		}
+		if _, err := pipe.Exec(ctx); err != nil {
+			return fmt.Errorf("reconcile active index %s: %w", spec.indexKey, err)
 		}
 	}
-
-	return loads, staleMembers, nil
-}
-
-// removeActiveIndexMembers 清理无效 member；这是辅助索引的维护动作，调用方无需因为失败中断主流程。
-func (c *concurrencyCache) removeActiveIndexMembers(ctx context.Context, indexKey string, members []string) {
-	if len(members) == 0 {
-		return
-	}
-	args := make([]any, 0, len(members))
-	for _, member := range members {
-		args = append(args, member)
-	}
-	if err := c.rdb.ZRem(ctx, indexKey, args...).Err(); err != nil {
-		logger.LegacyPrintf("repository.concurrency", "Warning: remove %d active index members from %s failed: %v", len(members), indexKey, err)
-	}
+	return nil
 }
 
 // runScriptInt64Pair 执行返回两元素整数数组的 Lua 脚本并解析（如 {result, now}、{removed, remaining}）。
@@ -1113,29 +1048,7 @@ func (c *concurrencyCache) reconcileExpiredIndexCandidates(ctx context.Context, 
 		return fmt.Errorf("read expired index %s: %w", spec.indexKey, err)
 	}
 
-	loads, staleMembers, err := c.readIndexLoads(ctx, spec, members, now)
-	if err != nil {
-		return err
-	}
-	refreshed := make([]redis.Z, 0, len(loads))
-	for _, load := range loads {
-		if load.slotCount == 0 && load.waitCount <= 0 {
-			// 真实槽位和等待数都为空，说明这个索引 member 已经完成使命。
-			staleMembers = append(staleMembers, load.member)
-			continue
-		}
-		refreshed = append(refreshed, redis.Z{
-			Score:  float64(now + int64(c.activeIndexTTL(load.slotCount, load.waitCount))),
-			Member: load.member,
-		})
-	}
-	if len(refreshed) > 0 {
-		if err := c.rdb.ZAdd(ctx, spec.indexKey, refreshed...).Err(); err != nil {
-			logger.LegacyPrintf("repository.concurrency", "Warning: refresh %d active index members in %s failed: %v", len(refreshed), spec.indexKey, err)
-		}
-	}
-	c.removeActiveIndexMembers(ctx, spec.indexKey, staleMembers)
-	return nil
+	return c.reconcileIndexMembers(ctx, spec, members, now)
 }
 
 // CleanupStaleProcessSlots 启动时清理非当前进程前缀的槽位。
@@ -1216,9 +1129,8 @@ func (c *concurrencyCache) allIndexMembers(ctx context.Context, indexKey string)
 	return members, nil
 }
 
-// cleanupStaleProcessSlotsForIndex 逐个处理索引中的账号/用户。
-// Lua 脚本一次只碰一个槽位 key，兼容 Redis Cluster，随后删除重启后已失效的等待计数；
-// 索引 member 的去留由脚本返回的剩余槽位数决定，最后批量写回。
+// cleanupStaleProcessSlotsForIndex captures cleanup candidates, then atomically
+// rechecks them and rebuilds the index from current regular/live/wait load.
 func (c *concurrencyCache) cleanupStaleProcessSlotsForIndex(
 	ctx context.Context,
 	spec slotIndexSpec,
@@ -1226,37 +1138,43 @@ func (c *concurrencyCache) cleanupStaleProcessSlotsForIndex(
 	activeRequestPrefix string,
 	now int64,
 ) error {
-	staleMembers := make([]string, 0)
-	refreshed := make([]redis.Z, 0)
+	type capturedCleanup struct {
+		id   int64
+		args []any
+	}
+	captured := make([]capturedCleanup, 0, len(members))
 	for _, member := range members {
 		id, err := strconv.ParseInt(member, 10, 64)
 		if err != nil || id <= 0 {
-			staleMembers = append(staleMembers, member)
+			if err := removeInvalidSlotIndexMemberScript.Run(ctx, c.rdb, []string{spec.indexKey}, member, now).Err(); err != nil {
+				return fmt.Errorf("remove invalid index member %s: %w", member, err)
+			}
 			continue
 		}
-
-		_, remaining, err := runScriptInt64Pair(ctx, c.rdb, startupCleanupSlotScript, []string{spec.slotKey(id)}, activeRequestPrefix, c.slotTTLSeconds)
-		if err != nil {
+		pipe := c.rdb.Pipeline()
+		slots := pipe.ZRangeWithScores(ctx, spec.slotKey(id), 0, -1)
+		wait := pipe.Get(ctx, spec.waitKey(id))
+		waitTTL := pipe.PTTL(ctx, spec.waitKey(id))
+		indexScore := pipe.ZScore(ctx, spec.indexKey, member)
+		if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
+			return fmt.Errorf("capture stale process slots %s: %w", spec.slotKey(id), err)
+		}
+		args := []any{member, c.slotTTLSeconds, liveLeaseTTLSeconds, c.waitQueueTTLSeconds,
+			activeRequestPrefix, wait.Val(), waitTTL.Val().Milliseconds(), ""}
+		if indexScore.Err() == nil {
+			args[7] = strconv.FormatFloat(indexScore.Val(), 'f', -1, 64)
+		}
+		for _, slot := range slots.Val() {
+			args = append(args, slot.Member, slot.Score)
+		}
+		captured = append(captured, capturedCleanup{id: id, args: args})
+	}
+	for _, candidate := range captured {
+		id, args := candidate.id, candidate.args
+		if err := reconcileSlotIndexScript.Run(ctx, c.rdb,
+			[]string{spec.indexKey, spec.slotKey(id), spec.liveKey(id), spec.waitKey(id)}, args...).Err(); err != nil {
 			return fmt.Errorf("cleanup stale process slots %s: %w", spec.slotKey(id), err)
 		}
-		// 等待计数属于已死进程，直接删除；剩余槽位（当前进程前缀）决定索引 member 去留。
-		if err := c.rdb.Del(ctx, spec.waitKey(id)).Err(); err != nil {
-			return fmt.Errorf("delete stale wait key %s: %w", spec.waitKey(id), err)
-		}
-		if remaining > 0 {
-			refreshed = append(refreshed, redis.Z{
-				Score:  float64(now + int64(c.slotTTLSeconds)),
-				Member: member,
-			})
-		} else {
-			staleMembers = append(staleMembers, member)
-		}
 	}
-	if len(refreshed) > 0 {
-		if err := c.rdb.ZAdd(ctx, spec.indexKey, refreshed...).Err(); err != nil {
-			logger.LegacyPrintf("repository.concurrency", "Warning: refresh %d active index members in %s failed: %v", len(refreshed), spec.indexKey, err)
-		}
-	}
-	c.removeActiveIndexMembers(ctx, spec.indexKey, staleMembers)
 	return nil
 }
