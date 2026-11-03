@@ -237,6 +237,17 @@ func transformBedrockInvocationMetrics(data []byte) []byte {
 //	[headers: variable]
 //	[payload: variable]
 //	[message_crc: 4 bytes]
+//
+// Local defensive allocation limits, derived from the AWS EventStream server
+// limits (24 MiB payload, 128 KiB encoded headers) plus 16 bytes of framing:
+// https://smithy.io/2.0/aws/amazon-eventstream.html
+// The spec does not require clients to enforce server size limits; these caps
+// deliberately bound memory used by this gateway when reading untrusted frames.
+const (
+	bedrockEventStreamMaxHeadersLength = 128 * 1024
+	bedrockEventStreamMaxTotalLength   = 24*1024*1024 + bedrockEventStreamMaxHeadersLength + 16
+)
+
 type bedrockEventStreamDecoder struct {
 	reader *bufio.Reader
 }
@@ -269,13 +280,27 @@ func (d *bedrockEventStreamDecoder) Decode() ([]byte, error) {
 			return nil, fmt.Errorf("invalid eventstream frame: total_length=%d", totalLength)
 		}
 
+		// Validate unsigned lengths before conversion, allocation, or slicing.
+		// The total cap also fits in int on 32-bit platforms.
+		if totalLength > bedrockEventStreamMaxTotalLength {
+			return nil, errors.New("invalid eventstream frame: total length exceeds limit")
+		}
+		if headersLength > totalLength-16 {
+			return nil, errors.New("invalid eventstream frame: headers exceed frame body")
+		}
+		if headersLength > bedrockEventStreamMaxHeadersLength {
+			return nil, errors.New("invalid eventstream frame: headers length exceeds limit")
+		}
+
 		// 读取 headers + payload + message_crc
 		remaining := int(totalLength) - 12
-		if remaining <= 0 {
-			continue
-		}
 		data := make([]byte, remaining)
 		if _, err := io.ReadFull(d.reader, data); err != nil {
+			// Once a prelude has been read, EOF is a truncated frame, not
+			// a clean end of stream. Preserve cancellation and other errors.
+			if err == io.EOF {
+				err = io.ErrUnexpectedEOF
+			}
 			return nil, err
 		}
 
@@ -293,7 +318,10 @@ func (d *bedrockEventStreamDecoder) Decode() ([]byte, error) {
 		payload := data[headersLength : len(data)-4] // 去掉 message_crc
 
 		// 从 headers 中提取 :event-type
-		eventType := extractEventStreamHeaderValue(headers, ":event-type")
+		eventType, err := parseEventStreamHeaderValue(headers, ":event-type")
+		if err != nil {
+			return nil, err
+		}
 
 		// 只处理 chunk 事件
 		if eventType == "chunk" {
@@ -323,83 +351,67 @@ func (d *bedrockEventStreamDecoder) Decode() ([]byte, error) {
 //
 // value_type = 7 表示 string 类型，前 2 bytes 为长度
 func extractEventStreamHeaderValue(headers []byte, targetName string) string {
-	pos := 0
-	for pos < len(headers) {
-		if pos >= len(headers) {
-			break
-		}
+	value, _ := parseEventStreamHeaderValue(headers, targetName)
+	return value
+}
+
+// Parse the entire block, even after finding the target: a malformed trailing
+// header must not turn an otherwise invalid frame into an accepted chunk.
+func parseEventStreamHeaderValue(headers []byte, targetName string) (string, error) {
+	var result string
+	found := false
+	for pos := 0; pos < len(headers); {
 		nameLen := int(headers[pos])
 		pos++
-		if pos+nameLen > len(headers) {
-			break
+		if nameLen == 0 || nameLen > len(headers)-pos {
+			return "", errors.New("invalid eventstream header name")
 		}
-		name := string(headers[pos : pos+nameLen])
+		name := headers[pos : pos+nameLen]
 		pos += nameLen
-
-		if pos >= len(headers) {
-			break
+		if pos == len(headers) {
+			return "", errors.New("truncated eventstream header type")
 		}
 		valueType := headers[pos]
 		pos++
-
+		valueLen := 0
 		switch valueType {
-		case 7: // string
-			if pos+2 > len(headers) {
-				return ""
-			}
-			valueLen := int(bedrockReadUint16(headers[pos : pos+2]))
-			pos += 2
-			if pos+valueLen > len(headers) {
-				return ""
-			}
-			value := string(headers[pos : pos+valueLen])
-			pos += valueLen
-			if name == targetName {
-				return value
-			}
-		case 0: // bool true
-			if name == targetName {
-				return "true"
-			}
-		case 1: // bool false
-			if name == targetName {
-				return "false"
-			}
+		case 0, 1: // bool
 		case 2: // byte
-			pos++
-			if name == targetName {
-				return ""
-			}
+			valueLen = 1
 		case 3: // short
-			pos += 2
-			if name == targetName {
-				return ""
-			}
+			valueLen = 2
 		case 4: // int
-			pos += 4
-			if name == targetName {
-				return ""
+			valueLen = 4
+		case 5, 8: // long, timestamp
+			valueLen = 8
+		case 6, 7: // bytes, string
+			if len(headers)-pos < 2 {
+				return "", errors.New("truncated eventstream header length")
 			}
-		case 5: // long
-			pos += 8
-			if name == targetName {
-				return ""
-			}
-		case 6: // bytes
-			if pos+2 > len(headers) {
-				return ""
-			}
-			valueLen := int(bedrockReadUint16(headers[pos : pos+2]))
-			pos += 2 + valueLen
-		case 8: // timestamp
-			pos += 8
+			valueLen = int(bedrockReadUint16(headers[pos : pos+2]))
+			pos += 2
 		case 9: // uuid
-			pos += 16
+			valueLen = 16
 		default:
-			return "" // 未知类型，无法继续解析
+			return "", errors.New("invalid eventstream header type")
 		}
+		if valueLen > len(headers)-pos {
+			return "", errors.New("truncated eventstream header value")
+		}
+		if !found && string(name) == targetName {
+			found = true
+			switch valueType {
+			case 0:
+				result = "true"
+			case 1:
+				result = "false"
+			case 7:
+				result = string(headers[pos : pos+valueLen])
+			}
+		}
+		pos += valueLen
 	}
-	return ""
+	return result, nil
 }
 
 // crc32IEEETable is the CRC32 / IEEE table used by AWS EventStream.

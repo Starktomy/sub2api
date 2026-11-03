@@ -2,8 +2,10 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/binary"
+	"fmt"
 	"hash/crc32"
 	"io"
 	"testing"
@@ -258,4 +260,147 @@ func TestBuildBedrockURL(t *testing.T) {
 		url := BuildBedrockURL("us-east-1", "us.anthropic.claude-sonnet-4-6", true)
 		assert.Equal(t, "https://bedrock-runtime.us-east-1.amazonaws.com/model/us.anthropic.claude-sonnet-4-6/invoke-with-response-stream", url)
 	})
+}
+
+// bedrockTestPrelude builds CRC-valid length declarations without a body.
+func bedrockTestPrelude(total, headers uint32) []byte {
+	p := make([]byte, 12)
+	binary.BigEndian.PutUint32(p, total)
+	binary.BigEndian.PutUint32(p[4:], headers)
+	binary.BigEndian.PutUint32(p[8:], crc32.ChecksumIEEE(p[:8]))
+	return p
+}
+
+func bedrockTestRawFrame(headers, payload []byte) []byte {
+	frame := bedrockTestPrelude(uint32(16+len(headers)+len(payload)), uint32(len(headers)))
+	frame = append(frame, headers...)
+	frame = append(frame, payload...)
+	return binary.BigEndian.AppendUint32(frame, crc32.ChecksumIEEE(frame))
+}
+
+type bedrockPreludeOnlyReader struct {
+	prelude  []byte
+	bodyRead bool
+}
+
+func (r *bedrockPreludeOnlyReader) Read(p []byte) (int, error) {
+	if len(r.prelude) == 0 {
+		r.bodyRead = true
+		return 0, io.ErrUnexpectedEOF
+	}
+	n := copy(p, r.prelude)
+	r.prelude = r.prelude[n:]
+	return n, nil
+}
+
+func TestBedrockEventStreamLengthGuards(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		total, headers uint32
+		want           string
+	}{
+		{"below minimum", 15, 0, "total_length"},
+		{"oversized total", bedrockEventStreamMaxTotalLength + 1, 0, "total length exceeds limit"},
+		{"uint32 max", ^uint32(0), 0, "total length exceeds limit"},
+		{"headers overlap checksum", 16, 1, "headers exceed frame body"},
+		{"headers exceed body", 32, ^uint32(0), "headers exceed frame body"},
+		{"oversized headers", bedrockEventStreamMaxHeadersLength + 17, bedrockEventStreamMaxHeadersLength + 1, "headers length exceeds limit"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &bedrockPreludeOnlyReader{prelude: bedrockTestPrelude(tc.total, tc.headers)}
+			_, err := newBedrockEventStreamDecoder(r).Decode()
+			require.ErrorContains(t, err, tc.want)
+			assert.False(t, r.bodyRead, "invalid prelude must be rejected before reading the body")
+		})
+	}
+}
+
+func TestBedrockEventStreamMalformedHeaders(t *testing.T) {
+	chunk := append([]byte{11}, []byte(":event-type")...)
+	chunk = append(chunk, 7, 0, 5)
+	chunk = append(chunk, []byte("chunk")...)
+	cases := [][]byte{
+		{0}, {3, 'x'}, {1, 'x'}, {1, 'x', 255},
+		{1, 'x', 6}, {1, 'x', 6, 0}, {1, 'x', 6, 0, 2, 'x'},
+		{1, 'x', 7}, {1, 'x', 7, 0}, {1, 'x', 7, 0, 2, 'x'},
+	}
+	for _, typ := range []byte{2, 3, 4, 5, 8, 9} {
+		cases = append(cases, []byte{1, 'x', typ})
+	}
+	for i, malformed := range cases {
+		t.Run(fmt.Sprint(i), func(t *testing.T) {
+			for _, prefix := range [][]byte{nil, chunk} {
+				headers := append(append([]byte(nil), prefix...), malformed...)
+				frame := bedrockTestRawFrame(headers, []byte("secret-upstream-payload"))
+				_, err := newBedrockEventStreamDecoder(bytes.NewReader(frame)).Decode()
+				require.Error(t, err)
+				assert.NotContains(t, err.Error(), "secret-upstream-payload")
+				assert.Empty(t, extractEventStreamHeaderValue(headers, ":event-type"))
+			}
+		})
+	}
+}
+
+func TestBedrockEventStreamTruncation(t *testing.T) {
+	frame := bedrockTestRawFrame([]byte{1, 'x', 0}, []byte("payload"))
+	for n := 1; n < len(frame); n++ {
+		_, err := newBedrockEventStreamDecoder(bytes.NewReader(frame[:n])).Decode()
+		require.ErrorIs(t, err, io.ErrUnexpectedEOF, "length %d", n)
+	}
+	_, err := newBedrockEventStreamDecoder(bytes.NewReader(nil)).Decode()
+	require.ErrorIs(t, err, io.EOF)
+}
+
+func TestBedrockEventStreamValidHeaderTypes(t *testing.T) {
+	var headers []byte
+	for typ, size := range []int{0, 0, 1, 2, 4, 8, 3, 3, 8, 16} {
+		headers = append(headers, 1, byte('a'+typ), byte(typ))
+		if typ == 6 || typ == 7 {
+			headers = append(headers, 0, byte(size))
+		}
+		headers = append(headers, make([]byte, size)...)
+	}
+	headers = append(headers, 11)
+	headers = append(headers, []byte(":event-type")...)
+	headers = append(headers, 7, 0, 5)
+	headers = append(headers, []byte("chunk")...)
+	frame := bedrockTestRawFrame(headers, []byte("valid"))
+	decoder := newBedrockEventStreamDecoder(bytes.NewReader(append(frame, frame...)))
+	for i := 0; i < 2; i++ {
+		payload, err := decoder.Decode()
+		require.NoError(t, err)
+		assert.Equal(t, "valid", string(payload))
+	}
+	_, err := decoder.Decode()
+	require.ErrorIs(t, err, io.EOF)
+}
+
+type bedrockErrorReader struct{ err error }
+
+func (r bedrockErrorReader) Read([]byte) (int, error) { return 0, r.err }
+
+func TestBedrockEventStreamCancellation(t *testing.T) {
+	for _, want := range []error{context.Canceled, context.DeadlineExceeded} {
+		for _, prefix := range [][]byte{nil, bedrockTestPrelude(32, 0)} {
+			r := io.MultiReader(bytes.NewReader(prefix), bedrockErrorReader{want})
+			_, err := newBedrockEventStreamDecoder(r).Decode()
+			require.ErrorIs(t, err, want)
+		}
+	}
+}
+
+func TestBedrockEventStreamLengthBoundaries(t *testing.T) {
+	// At the caps, the prelude must be accepted and body reading attempted.
+	for _, lengths := range [][2]uint32{
+		{16, 0},
+		{bedrockEventStreamMaxTotalLength, bedrockEventStreamMaxHeadersLength},
+	} {
+		r := &bedrockPreludeOnlyReader{prelude: bedrockTestPrelude(lengths[0], lengths[1])}
+		_, err := newBedrockEventStreamDecoder(r).Decode()
+		require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+		assert.True(t, r.bodyRead)
+	}
+	// A valid minimum frame is skipped, not rejected.
+	_, err := newBedrockEventStreamDecoder(bytes.NewReader(bedrockTestRawFrame(nil, nil))).Decode()
+	require.ErrorIs(t, err, io.EOF)
 }

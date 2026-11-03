@@ -92,6 +92,11 @@ func (s *GatewayService) forwardBedrock(
 		return nil, fmt.Errorf("prepare bedrock request body: %w", err)
 	}
 
+	bedrockBody, err = validateBedrockCloudRequest(account, region, mappedModel, bedrockBody)
+	if err != nil {
+		return nil, err
+	}
+
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
@@ -191,7 +196,13 @@ func (s *GatewayService) executeBedrockUpstream(
 	var resp *http.Response
 	var err error
 	retryStart := time.Now()
-	for attempt := 1; attempt <= maxRetryAttempts; attempt++ {
+	attemptLimit := maxRetryAttempts
+	if account.GetCredential("aws_auth_mode") == "credential_file" {
+		// One provider attempt in strict application-identity mode. Do not amplify
+		// SDK/account failover retries or replay an ambiguous generation here.
+		attemptLimit = 1
+	}
+	for attempt := 1; attempt <= attemptLimit; attempt++ {
 		var upstreamReq *http.Request
 		if account.IsBedrockAPIKey() {
 			upstreamReq, err = s.buildUpstreamRequestBedrockAPIKey(ctx, body, modelID, region, stream, apiKey)
@@ -213,7 +224,7 @@ func (s *GatewayService) executeBedrockUpstream(
 		}
 
 		if resp.StatusCode >= 400 && resp.StatusCode != 400 && s.shouldRetryUpstreamError(account, resp.StatusCode) {
-			if attempt < maxRetryAttempts {
+			if attempt < attemptLimit {
 				elapsed := time.Since(retryStart)
 				if elapsed >= maxRetryElapsed {
 					break

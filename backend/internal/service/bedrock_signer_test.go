@@ -1,6 +1,8 @@
 package service
 
 import (
+	"context"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -32,4 +34,15 @@ func TestFilterBetaTokens(t *testing.T) {
 	assert.Equal(t, []string{"interleaved-thinking-2025-05-14"}, filterBetaTokens(tokens, filterSet))
 	assert.Equal(t, tokens, filterBetaTokens(tokens, nil))
 	assert.Nil(t, filterBetaTokens(nil, filterSet))
+}
+
+func TestBedrockSignerStaticCompatibility(t *testing.T) {
+	signer := NewBedrockSigner("static-key", "static-secret", "static-token", "us-west-2")
+	req, err := http.NewRequest(http.MethodPost, "https://bedrock-runtime.us-west-2.amazonaws.com/model/test/invoke", nil)
+	require.NoError(t, err)
+	require.NoError(t, signer.SignRequest(context.Background(), req, []byte("{}")))
+	require.Contains(t, req.Header.Get("Authorization"), "Credential=static-key/")
+	require.Equal(t, "static-token", req.Header.Get("X-Amz-Security-Token"))
+	account := &Account{Platform: PlatformAnthropic, Type: AccountTypeBedrock, Credentials: map[string]any{"auth_mode": "apikey", "api_key": "test-api-key"}}
+	require.True(t, account.IsBedrockAPIKey())
 }

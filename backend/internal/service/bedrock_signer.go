@@ -15,6 +15,7 @@ import (
 // BedrockSigner 使用 AWS SigV4 对 Bedrock 请求签名
 type BedrockSigner struct {
 	credentials aws.Credentials
+	provider    aws.CredentialsProvider
 	region      string
 	signer      *v4.Signer
 }
@@ -34,6 +35,24 @@ func NewBedrockSigner(accessKeyID, secretAccessKey, sessionToken, region string)
 
 // NewBedrockSignerFromAccount 从 Account 凭证创建 BedrockSigner
 func NewBedrockSignerFromAccount(account *Account) (*BedrockSigner, error) {
+	if account == nil {
+		return nil, fmt.Errorf("bedrock account is required")
+	}
+	mode := account.GetCredential("aws_auth_mode")
+	if mode == "credential_file" {
+		region := account.GetCredential("aws_region")
+		if len(region) > 64 || !bedrockRegionPattern.MatchString(region) {
+			return nil, fmt.Errorf("valid aws_region required for credential_file authentication")
+		}
+		provider, err := operatorBedrockCredentials()
+		if err != nil {
+			return nil, err
+		}
+		return &BedrockSigner{provider: provider, region: region, signer: v4.NewSigner()}, nil
+	}
+	if mode != "" && mode != "static" {
+		return nil, fmt.Errorf("unsupported bedrock authentication mode")
+	}
 	accessKeyID := account.GetCredential("aws_access_key_id")
 	if accessKeyID == "" {
 		return nil, fmt.Errorf("aws_access_key_id not found in credentials")
@@ -57,8 +76,28 @@ func NewBedrockSignerFromAccount(account *Account) (*BedrockSigner, error) {
 // 签名验证可能失败。litellm 通过 _filter_headers_for_aws_signature 实现头过滤，
 // 当前实现中 buildUpstreamRequestBedrock 仅设置了 Content-Type 和 Accept，因此是安全的。
 func (s *BedrockSigner) SignRequest(ctx context.Context, req *http.Request, body []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	credentials := s.credentials
+	if s.provider != nil {
+		var err error
+		credentials, err = s.provider.Retrieve(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return errBedrockCredentials
+		}
+		if !credentials.HasKeys() || !credentials.CanExpire || credentials.Expired() {
+			return errBedrockCredentials
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	payloadHash := sha256Hash(body)
-	return s.signer.SignHTTP(ctx, s.credentials, req, payloadHash, "bedrock", s.region, time.Now())
+	return s.signer.SignHTTP(ctx, credentials, req, payloadHash, "bedrock", s.region, time.Now())
 }
 
 func sha256Hash(data []byte) string {
