@@ -25,6 +25,10 @@ type SupplierPortalConfig struct {
 }
 
 func (c *Config) ValidateSupplierPortal() error {
+	k := c.KiroVault
+	if (k.VaultKeyFile == "") != (k.VaultKeyID == "") || (k.VaultKeyFile != "" && (!filepath.IsAbs(k.VaultKeyFile) || len(k.VaultKeyID) > 128)) || (k.UseSupplierVault && (k.VaultKeyFile != "" || c.SupplierPortal.VaultKeyFile == "" || c.SupplierPortal.VaultKeyID == "")) {
+		return fmt.Errorf("kiro vault requires explicit dedicated keys or exclusive supplier alias")
+	}
 	if c.SupplierProbe.IntervalSeconds == 0 {
 		c.SupplierProbe.IntervalSeconds = 600
 	}

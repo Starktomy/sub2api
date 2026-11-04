@@ -212,6 +212,7 @@ func ProvideAccountHandler(
 	tokenCacheInvalidator service.TokenCacheInvalidator,
 	grokQuotaService *service.GrokQuotaService,
 	oauthRefreshAPI *service.OAuthRefreshAPI,
+	kiroNative *service.KiroNativeService,
 ) *AccountHandler {
 	handler := NewAccountHandler(
 		adminService,
@@ -232,5 +233,6 @@ func ProvideAccountHandler(
 	handler.SetOAuthRefreshAPI(oauthRefreshAPI)
 	handler.grokImportProber = grokQuotaService
 	handler.cfg = cfg
+	handler.kiroNative = kiroNative
 	return handler
 }

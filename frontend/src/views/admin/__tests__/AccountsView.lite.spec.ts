@@ -15,7 +15,8 @@ const {
   getAllGroups,
   refreshCredentials,
   showError,
-  showWarning
+  showWarning,
+  auth
 } = vi.hoisted(() => ({
   listAccounts: vi.fn(),
   listWithEtag: vi.fn(),
@@ -26,7 +27,8 @@ const {
   getAllGroups: vi.fn(),
   refreshCredentials: vi.fn(),
   showError: vi.fn(),
-  showWarning: vi.fn()
+  showWarning: vi.fn(),
+  auth: { token: 'test-token', isSimpleMode: false, isAdmin: false }
 }))
 
 vi.mock('@/api/admin', () => ({
@@ -53,7 +55,7 @@ vi.mock('@/stores/app', () => ({
 }))
 
 vi.mock('@/stores/auth', () => ({
-  useAuthStore: () => ({ token: 'test-token', isSimpleMode: false })
+  useAuthStore: () => auth
 }))
 
 vi.mock('vue-i18n', async () => {
@@ -108,6 +110,7 @@ function mountView(stubActionMenu = true) {
         ConfirmDialog: true,
         AccountActionMenu: stubActionMenu,
         ImportDataModal: true,
+        KiroManagementModal: { props: ['show', 'accountId'], template: '<div data-test="kiro-management">{{ accountId }}</div>' },
         ReAuthAccountModal: true,
         AccountTestModal: AccountTestModalStub,
         AccountStatsModal: AccountStatsModalStub,
@@ -159,6 +162,7 @@ const fullAccount = {
 describe('admin AccountsView lite account list', () => {
   beforeEach(() => {
     localStorage.clear()
+    auth.isAdmin = false
     listAccounts.mockReset().mockResolvedValue({ items: [listRow], total: 1, page: 1, page_size: 20, pages: 1 })
     listWithEtag.mockReset().mockResolvedValue({ notModified: true, etag: 'compact-etag', data: null })
     getById.mockReset().mockResolvedValue(fullAccount)
@@ -174,6 +178,20 @@ describe('admin AccountsView lite account list', () => {
   afterEach(() => {
     vi.useRealTimers()
     vi.restoreAllMocks()
+  })
+
+  it('offers native Kiro management only to admins and opens the selected account without loading secrets', async () => {
+    auth.isAdmin = true
+    listAccounts.mockResolvedValue({ items: [{ ...listRow, platform: 'kiro' }], total: 1, page: 1, page_size: 20, pages: 1 })
+    const wrapper = mountView(); await flushPromises()
+    await wrapper.get('[data-testid="open-kiro-management"]').trigger('click')
+    expect(wrapper.get('[data-test="kiro-management"]').text()).toBe('42')
+    expect(getById).not.toHaveBeenCalled()
+    wrapper.unmount()
+    auth.isAdmin = false
+    const nonAdmin = mountView(); await flushPromises()
+    expect(nonAdmin.find('[data-testid="open-kiro-management"]').exists()).toBe(false)
+    nonAdmin.unmount()
   })
 
   it('keeps lite=1 on the initial list request', async () => {

@@ -368,6 +368,9 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 	if err != nil {
 		return s.sendErrorAndEnd(c, "Account not found")
 	}
+	if account.Platform == "kiro" {
+		return s.sendErrorAndEnd(c, "Native Kiro requires the private journaled integration path; public testing is disabled")
+	}
 	if err := validateUpstreamProviderBinding(account); err != nil {
 		return s.sendErrorAndEnd(c, err.Error())
 	}

@@ -192,6 +192,10 @@ func (a *Account) EffectiveLoadFactor() int {
 }
 
 func (a *Account) IsSchedulable() bool {
+	// No billable native Kiro routing until settlement has an explicit contract.
+	if a.Platform == "kiro" {
+		return false
+	}
 	if !a.IsActive() || !a.Schedulable {
 		return false
 	}

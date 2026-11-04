@@ -188,6 +188,11 @@ func (h *AccountHandler) ExportData(c *gin.Context) {
 	dataAccounts := make([]DataAccount, 0, len(accounts))
 	for i := range accounts {
 		acc := accounts[i]
+		if acc.Platform == "kiro" {
+			acc.Credentials = map[string]any{"kiro_credential_ref": acc.Credentials["kiro_credential_ref"]}
+			acc.Extra = map[string]any{}
+			acc.ProxyID = nil
+		}
 		var proxyKey *string
 		if acc.ProxyID != nil {
 			if key, ok := proxyKeyByID[*acc.ProxyID]; ok {

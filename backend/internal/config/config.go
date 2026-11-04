@@ -67,7 +67,14 @@ const DefaultUpstreamResponseReadMaxBytes int64 = 128 * 1024 * 1024
 // 可通过 gateway.models_list_read_max_bytes 配置项覆盖。
 const DefaultModelsListReadMaxBytes int64 = 8 * 1024 * 1024
 
+type KiroVaultConfig struct {
+	VaultKeyFile     string `mapstructure:"vault_key_file"`
+	VaultKeyID       string `mapstructure:"vault_key_id"`
+	UseSupplierVault bool   `mapstructure:"use_supplier_vault"`
+}
+
 type Config struct {
+	KiroVault               KiroVaultConfig               `mapstructure:"kiro_vault"`
 	SupplierProbe           SupplierProbeConfig           `mapstructure:"supplier_probe"`
 	SupplierPortal          SupplierPortalConfig          `mapstructure:"supplier_portal"`
 	Server                  ServerConfig                  `mapstructure:"server"`
@@ -2075,6 +2082,9 @@ func setDefaults() {
 	viper.SetDefault("supplier_probe.enabled", false)
 	viper.SetDefault("supplier_probe.interval_seconds", 600)
 	viper.SetDefault("supplier_portal.enabled", false)
+	viper.SetDefault("kiro_vault.vault_key_file", "")
+	viper.SetDefault("kiro_vault.vault_key_id", "")
+	viper.SetDefault("kiro_vault.use_supplier_vault", false)
 	viper.SetDefault("supplier_portal.vault_key_file", "")
 	viper.SetDefault("supplier_portal.vault_key_id", "")
 	viper.SetDefault("supplier_portal.host", "")

@@ -175,6 +175,8 @@ issues/
 !docs/AURORA_CUTOVER_RUNBOOK.zh-CN.md
 !docs/SUPPLIER_PORTAL_DESIGN.zh-CN.md
 !docs/MODULAR_UPSTREAMS.zh-CN.md
+!docs/KIRO_ADAPTER_PLAN.zh-CN.md
+!docs/KIRO_DEBUGGING_PLAYBOOK.zh-CN.md
 
 # Python operational tooling creates no versioned bytecode.
 __pycache__/
@@ -182,6 +184,7 @@ __pycache__/
 
 # Operator-provided upstream account exports are never source files.
 account.test
+kiro.test
 
 # Vitest / Vite cache at repo root
 .vite/
