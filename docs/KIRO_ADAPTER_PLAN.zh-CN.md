@@ -138,6 +138,32 @@ Author已按用户纠正统一为Starktomy、GitHub noreply邮箱，Claude协作
 
 修正后本平台ExecutePrivate单次实测：HTTP200、events=5、text_bytes=2、transport_eof=true、completion_verified=false。执行链在发送前完成持久刷新至version=5/idle（加密备份已保留），无生成重试，未知用量仍待对账，公共HTTP收费Gateway未开放。模型为claude-haiku-4.5；不保存生成文本。协议/聚焦Kiro service测试通过0.053s/0.075s；其他后台大范围回归单独记录，不混作通过。
 
+## 逐项完善：文本成功终态已实测（2026-11-04）
+
+新版CLI静态词表与平台白名单探针确认metadata stopReason为大写END_TURN，不是旧猜测的小写end_turn。Attempt只在END_TURN、所有工具闭合、无后续内容/重复终态/异常且完整EOF时验证成功；context/metering允许在metadata之后到达。未知reason、截断、取消保持未验证。当前工具结束原因未实测，不开启其成功映射。
+
+平台单次真实复验HTTP200、events=5、text_bytes=2、metadata_stop_reason=END_TURN、completion_verified=true、transport_eof=true。私有Messages桥补message_start、内容块收尾、message_delta/end_turn、message_stop；usage用空对象省略未知token，不伪造0，因此仍不是严格完整Anthropic usage契约。桥的完整序列离线回归通过，未新增公共路由。
+
+聚焦协议/service测试通过0.037s/0.063s，覆盖缺marker/unknown、截断、未结束工具、重复marker及后续内容。已完成生成不等于账务完成：journal仍保持usage_unknown/pending，不收费。
+
+结算勘查：现有UsageBillingRepository.Apply自开事务，不能先扣费再另事务标settled；需复用同库claimUsageBillingKey/applyUsageBillingEffects，在同事务冻结命令并更新journal。现有attempt无客户/API key/订阅归属，历史私有测试不能追溯扣费。当前定价无credits单价；不能把per_request/token价格冒充credit价格。下一阶段需显式收费依据，再实现前向迁移、发送前冻结客户/价格上下文及原子settled/幂等恢复；价格缺失继续blocked，公共收费门禁关闭。
+
+## 收费决策（2026-11-04）
+
+用户明确选择“暂不启用收费”。后续继续完善终态、协议及用量事实，不接客户扣费、不新增默认credit费率、不开放收费Gateway。保留现有pending/blocked记录；历史私有测试不追溯结算。原子结算设计作为后续显式启用收费时的前置，不在本轮擅自实施收费。
+
+## 客户侧改为现有token计费（2026-11-04，覆盖前述暂不收费选择）
+
+用户明确要求客户与其他平台一样按消耗token计费。采用现有模型token价格/倍率/客户账本，不新增credits单价、不按次收费。上游credits仅作为供应成本事实，不能自行换算成token。
+
+官方前身Smithy元数据有tokenUsage：uncachedInputTokens、outputTokens、totalTokens以及可选cacheReadInputTokens/cacheWriteInputTokens。已补指针型解析、非负及安全整数检查，并把有效报告写入provider_reported token事实，保持partial直到完整终态；不把缺失视为0。新版实际抓包目前仅stopReason/context百分比/credits，未观察到tokenUsage，不能因此宣称按实际token自动扣费已完成。
+
+既有私有测试无客户/API key/订阅归属，不能追溯扣费。还需客户上下文发送前冻结、完整token事实选择和价格版本、复用既有扣费effects的同事务settled、幂等/提交不明恢复测试。缺少可信token时保持usage_unknown/pending，不擅自启用本地估算计费；公共收费入口仍关闭。
+
+## 当前增量离线复核（2026-11-04）
+
+Kiro协议全包test通过0.040s，全部TestKiro service通过0.021s，协议包vet通过。FuzzConvertMessages 3秒23614次、FuzzDecoder 5秒76083次通过。无新增真实调用或扣费。参考项目缓存算法正在独立只读核查，不在结论返回前变更计费分类。
+
 ## 后续顺序：小米MiMo
 
 用户要求Kiro全部完成且真实测试后再加入小米MiMo。本轮不并行实现MiMo，不预先宣称其协议/模型/计费支持。Kiro仍有公共结算、完整工具/管理/模型额度等缺口，真实smoke也尚未执行；不能以内部包通过替代该前置。后续MiMo按官方认证/协议/模型及用量契约核对，复用唯一模块体系。

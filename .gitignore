@@ -177,6 +177,8 @@ issues/
 !docs/MODULAR_UPSTREAMS.zh-CN.md
 !docs/KIRO_ADAPTER_PLAN.zh-CN.md
 !docs/KIRO_DEBUGGING_PLAYBOOK.zh-CN.md
+!docs/KIRO_CACHE_REFERENCE_ANALYSIS.zh-CN.md
+!docs/UPSTREAM_UPDATE_ASSESSMENT_20261104.zh-CN.md
 
 # Python operational tooling creates no versioned bytecode.
 __pycache__/

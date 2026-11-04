@@ -20,9 +20,20 @@ type toolState struct {
 // Attempt is per-attempt, single-consumer state. Retained tool metadata is bounded.
 // Construct a new Attempt for a new attempt; there is deliberately no reset.
 type Attempt struct {
-	tools    map[string]toolState
-	bytes    int
-	terminal error
+	tools      map[string]toolState
+	bytes      int
+	terminal   error
+	stopReason string
+	ended      bool
+	completed  bool
+}
+
+func (a *Attempt) CompletionVerified() bool { return a.completed && a.terminal == nil }
+func (a *Attempt) StopReason() string {
+	if a.CompletionVerified() {
+		return "end_turn"
+	}
+	return ""
 }
 
 func (a *Attempt) fail(err error) (Delta, error) { a.terminal = err; return Delta{}, err }
@@ -35,6 +46,24 @@ func (a *Attempt) Apply(e Event) (Delta, error) {
 	}
 	if e.messageType != "event" {
 		return a.fail(ErrEvent)
+	}
+	if a.ended {
+		return a.fail(ErrState)
+	}
+	if v, ok := e.Metadata(); ok {
+		if v.StopReason == "" || a.stopReason != "" {
+			return a.fail(ErrState)
+		}
+		a.stopReason = v.StopReason
+		return Delta{}, nil
+	}
+	if a.stopReason != "" {
+		if _, ok := e.Assistant(); ok {
+			return a.fail(ErrState)
+		}
+		if _, ok := e.Tool(); ok {
+			return a.fail(ErrState)
+		}
 	}
 	if v, ok := e.Assistant(); ok {
 		return Delta{Text: v.Content}, nil
@@ -80,11 +109,25 @@ func (a *Attempt) Apply(e Event) (Delta, error) {
 	return Delta{}, nil
 }
 
-// End records transport termination, never successful generation completion.
-// Pass the decoder error (including EOF). Nil also cannot establish success.
+// End verifies only captured END_TURN plus clean EOF and closed tools.
+// Missing/unknown markers, nil, truncation and errors cannot establish success.
 func (a *Attempt) End(err error) error {
 	if a.terminal != nil {
 		return a.terminal
+	}
+	if a.ended {
+		return a.terminal
+	}
+	a.ended = true
+	if err == io.EOF && a.stopReason == "END_TURN" {
+		for _, tool := range a.tools {
+			if !tool.stopped {
+				a.terminal = ErrIncomplete
+				return a.terminal
+			}
+		}
+		a.completed = true
+		return nil
 	}
 	if err == nil {
 		err = ErrIncomplete

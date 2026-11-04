@@ -40,7 +40,32 @@ type ToolUseEvent struct {
 // MetadataEvent preserves the upstream reason without treating arbitrary values
 // as verified success. Capture established this field, not its full enum contract.
 type MetadataEvent struct {
-	StopReason string `json:"stopReason"`
+	StopReason string      `json:"stopReason"`
+	TokenUsage *TokenUsage `json:"tokenUsage,omitempty"`
+}
+
+// TokenUsage follows the official Smithy wire schema. Pointer counts retain
+// unknown versus explicitly reported zero; credits never populate these fields.
+type TokenUsage struct {
+	UncachedInputTokens   *int64 `json:"uncachedInputTokens"`
+	OutputTokens          *int64 `json:"outputTokens"`
+	TotalTokens           *int64 `json:"totalTokens"`
+	CacheReadInputTokens  *int64 `json:"cacheReadInputTokens,omitempty"`
+	CacheWriteInputTokens *int64 `json:"cacheWriteInputTokens,omitempty"`
+}
+
+// ValidComplete requires the mandatory official fields and nonnegative counts.
+// It does not infer absent caches or reconstruct missing input/output splits.
+func (u *TokenUsage) ValidComplete() bool {
+	if u == nil || u.UncachedInputTokens == nil || u.OutputTokens == nil || u.TotalTokens == nil {
+		return false
+	}
+	for _, n := range []*int64{u.UncachedInputTokens, u.OutputTokens, u.TotalTokens, u.CacheReadInputTokens, u.CacheWriteInputTokens} {
+		if n != nil && (*n < 0 || *n > 1<<53) {
+			return false
+		}
+	}
+	return true
 }
 
 type ContextUsageEvent struct {

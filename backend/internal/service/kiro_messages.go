@@ -11,8 +11,10 @@ import (
 
 // ExecutePrivateMessages bridges supported Messages text/tool requests to
 // native Kiro and resolved streaming deltas. It does not expose a public route or
-// emit fabricated token counts, stop_reason=end_turn, message_stop or success.
-// Unknown completion ends with an explicit error event, even after partial text.
+// emit fabricated token counts. Verified END_TURN permits stream termination;
+// unknown completion ends with an explicit error event even after partial text.
+// Empty usage objects explicitly omit unavailable counts; this is a private
+// extension, not a claim of complete strict Anthropic wire compatibility.
 func (s *KiroNativeService) ExecutePrivateMessages(ctx context.Context, accountID int64, operationID string, body []byte, w io.Writer) (kiro.Result, error) {
 	input, err := kiro.ConvertMessagesText(body, uuid.NewString())
 	if err != nil {
@@ -28,6 +30,18 @@ func (s *KiroNativeService) ExecutePrivateMessages(ctx context.Context, accountI
 			f.Flush()
 		}
 		return err
+	}
+	var requestMeta struct {
+		Model string `json:"model"`
+	}
+	_ = json.Unmarshal(body, &requestMeta)
+	started := false
+	startMessage := func() error {
+		if started {
+			return nil
+		}
+		started = true
+		return emit("message_start", map[string]any{"type": "message_start", "message": map[string]any{"id": "msg_" + uuid.NewString(), "type": "message", "role": "assistant", "model": requestMeta.Model, "content": []any{}, "stop_reason": nil, "stop_sequence": nil, "usage": map[string]any{}}})
 	}
 	var attempt kiro.Attempt
 	indexes := map[string]int{}
@@ -47,6 +61,11 @@ func (s *KiroNativeService) ExecutePrivateMessages(ctx context.Context, accountI
 		d, err := attempt.Apply(e)
 		if err != nil {
 			return err
+		}
+		if d.Text != "" || d.ToolUseID != "" {
+			if err := startMessage(); err != nil {
+				return err
+			}
 		}
 		if d.Text != "" {
 			if activeTool {
@@ -101,6 +120,20 @@ func (s *KiroNativeService) ExecutePrivateMessages(ctx context.Context, accountI
 		}
 		return nil
 	})
+	if err == nil && result.CompletionVerified {
+		if err = startMessage(); err == nil {
+			err = closeBlock()
+		}
+		if err == nil {
+			err = emit("message_delta", map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": result.StopReason, "stop_sequence": nil}, "usage": map[string]any{}})
+		}
+		if err == nil {
+			err = emit("message_stop", map[string]any{"type": "message_stop"})
+		}
+		if err != nil {
+			return result, kiro.ErrCallback
+		}
+	}
 	if err != nil {
 		_ = emit("error", map[string]any{"type": "error", "error": map[string]any{"type": "kiro_completion_unverified", "message": "Native Kiro completion or usage could not be verified; do not replay automatically"}})
 	}

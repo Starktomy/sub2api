@@ -50,8 +50,9 @@ type Result struct {
 	// RetryAfter is metadata only. No sleep, retry, refresh or failover occurs.
 	RetryAfter        time.Duration
 	RetryAfterPresent bool
-	// CompletionVerified remains false: the reference establishes no success event.
+	// CompletionVerified requires captured END_TURN and clean framing/EOF.
 	CompletionVerified bool
+	StopReason         string
 	// TransportEOF proves only clean framing/transport exhaustion, not an
 	// application terminal or complete tool input. A one-event text response
 	// can legitimately have this shape; its completion remains unverified.
@@ -356,7 +357,10 @@ func (t *Transport) Execute(ctx context.Context, input Request, auth Auth, callb
 		}
 		if e != nil {
 			result.TransportEOF = e == io.EOF
-			return result, attempt.End(e)
+			endErr := attempt.End(e)
+			result.CompletionVerified = attempt.CompletionVerified()
+			result.StopReason = attempt.StopReason()
+			return result, endErr
 		}
 		if result.Events >= t.config.MaxEvents {
 			return result, ErrLimit

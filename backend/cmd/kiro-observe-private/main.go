@@ -68,6 +68,15 @@ func run() error {
 		h := sha256.Sum256([]byte(os.Getenv("KIRO_OBSERVE_MARKER")))
 		textBytes := 0
 		result, err := native.ExecutePrivate(ctx, 2, hex.EncodeToString(h[:]), request, func(event kiro.Event) error {
+			if m, ok := event.Metadata(); ok {
+				reason := "unknown"
+				for _, allowed := range []string{"end_turn", "tool_use", "max_tokens", "cancelled", "refusal", "stop", "STOP", "END_TURN", "TOOL_USE", "MAX_TOKENS", "FINISH", "COMPLETE", "COMPLETED", "stop_sequence", "Stop", "endTurn"} {
+					if m.StopReason == allowed {
+						reason = allowed
+					}
+				}
+				fmt.Printf("metadata_stop_reason=%s\n", reason)
+			}
 			if a, ok := event.Assistant(); ok {
 				textBytes += len(a.Content)
 				if textBytes >= 256 {

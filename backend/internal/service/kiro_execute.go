@@ -73,6 +73,28 @@ func (s *KiroNativeService) ExecutePrivate(ctx context.Context, accountID int64,
 		if _, ok := e.Tool(); ok {
 			partial = true
 		}
+		if m, ok := e.Metadata(); ok && m.TokenUsage.ValidComplete() && meteringCount < 254 {
+			meteringCount++
+			u := m.TokenUsage
+			metrics := []UsageMetric{}
+			for _, entry := range []struct {
+				name  string
+				count *int64
+			}{
+				{"input_tokens", u.UncachedInputTokens}, {"output_tokens", u.OutputTokens}, {"total_tokens", u.TotalTokens}, {"cache_read_tokens", u.CacheReadInputTokens}, {"cache_write_tokens", u.CacheWriteInputTokens},
+			} {
+				if entry.count != nil {
+					value := float64(*entry.count)
+					metrics = append(metrics, UsageMetric{Name: entry.name, Value: &value, Unit: "tokens"})
+				}
+			}
+			// Still partial until the full stream terminates. No debit is triggered
+			// by observing a metadata frame or by receiving credits alone.
+			fact := UsageFactInput{ObservationID: kiroDigest([]byte(id + "/token-metadata/" + strconv.Itoa(meteringCount))), Source: "provider_reported", Quality: "reported", Partial: true, Outcome: "observed", EvidenceDigest: kiroDigest(e.Raw()), Metrics: metrics}
+			if _, err := s.journal.Observe(ctx, *fence, fact); err != nil {
+				return err
+			}
+		}
 		if m, ok := e.Metering(); ok && meteringCount < 254 {
 			meteringCount++
 			metrics := []UsageMetric{{Name: "usage", Value: m.Usage, Unit: m.Unit, UnitPlural: m.UnitPlural}}
