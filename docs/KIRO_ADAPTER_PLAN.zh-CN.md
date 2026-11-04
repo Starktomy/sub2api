@@ -124,6 +124,12 @@ Authorization: Bearer <REDACTED>
 - 新增CLI transport、SSO过期/profile冲突、metadata复制测试。首次完整聚焦service回归因旧IDE fixture无SSO而失败，补正确CLI access凭据后全部TestKiro通过0.024s；协议全包通过0.041s，私有观察工具build及diff检查通过。
 - 本批没有新增真实生成调用。尚需适配端受控真实推理、stopReason枚举/后续事件顺序、SSE完整终态与用量合同验收；不能以官方CLI此前成功代替本批实现实测。
 
+## 提交后平台真实推理（2026-11-04）
+
+用户授权提交推送及通过本平台测试。基点f81fab32c4ab225413159c27644877ce6307b778之后36个提交在当前模块分支重写Author为starktomy、保留Claude co-author，内容树不变，使用明确旧远端HEAD的force-with-lease推送；旧历史保留本地backup分支。首个推送HEAD为a74a941e1faf31f567222086c8942c9389e5e633。
+
+推送后使用本项目已提交的私有ExecutePrivate执行链、持久凭据/发送屏障/journal，对claude-haiku-4.5单次请求（32 max_tokens扩展、30秒、256文本字节取消界限）。返回HTTP400、events=0、text_bytes=0、completion_verified=false、transport_eof=false；无重试。没有通过公共HTTP Gateway/线上API测试，公共收费门禁保持关闭。这次证明本平台当前推理请求仍不匹配上游；不能把官方CLI先前HTTP200当本平台验收通过。具体拒绝原因尚待受限诊断，未输出认证材料或原始错误body。
+
 ## 后续顺序：小米MiMo
 
 用户要求Kiro全部完成且真实测试后再加入小米MiMo。本轮不并行实现MiMo，不预先宣称其协议/模型/计费支持。Kiro仍有公共结算、完整工具/管理/模型额度等缺口，真实smoke也尚未执行；不能以内部包通过替代该前置。后续MiMo按官方认证/协议/模型及用量契约核对，复用唯一模块体系。
