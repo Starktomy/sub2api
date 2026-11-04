@@ -26,6 +26,16 @@
         <p class="input-hint">{{ t('admin.accounts.notesHint') }}</p>
       </div>
 
+      <UpstreamProviderSelect
+        v-if="upstreamBinding.active.value"
+        id="edit-upstream-provider"
+        v-model="upstreamBinding.selected.value"
+        :options="upstreamBinding.options.value"
+        :loading="upstreamBinding.loading.value"
+        :failed="upstreamBinding.failed.value"
+        :unknown-selection="upstreamBinding.unknownSelection.value"
+      />
+
       <!-- API Key fields (only for apikey type) -->
       <div v-if="account.type === 'apikey'" class="space-y-4">
         <div v-if="!isCNApiKeyAccount || editApiProtocol !== 'adaptive'">
@@ -3379,6 +3389,8 @@
 </template>
 
 <script setup lang="ts">
+import UpstreamProviderSelect from './UpstreamProviderSelect.vue'
+import { useUpstreamProviderBinding } from '@/composables/useUpstreamProviderBinding'
 import { ref, reactive, computed, watch, nextTick, onBeforeUnmount, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
@@ -5624,6 +5636,13 @@ const submitUpdateAccount = async (accountID: number, updatePayload: Record<stri
   }
 }
 
+const upstreamBinding = useUpstreamProviderBinding(
+  computed(() => props.show), computed(() => props.account?.platform || ''),
+  computed(() => props.account?.type || ''),
+  computed(() => props.account?.extra as Record<string, unknown> | undefined),
+  computed(() => props.account?.id)
+)
+
 const handleSubmit = async () => {
   if (!props.account) return
   const accountID = props.account.id
@@ -6388,6 +6407,18 @@ const handleSubmit = async () => {
         delete newExtra.upstream_request_id_header
       }
       updatePayload.extra = newExtra
+    }
+
+    if (upstreamBinding.active.value) {
+      try {
+        updatePayload.extra = upstreamBinding.apply(
+          (updatePayload.extra as Record<string, unknown> | undefined) || props.account.extra,
+          props.account.platform, props.account.type
+        )
+      } catch {
+        appStore.showError(t('admin.accounts.upstreamProvider.invalid'))
+        return
+      }
     }
 
     const canContinue = await ensureAntigravityMixedChannelConfirmed(async () => {

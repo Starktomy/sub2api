@@ -28,6 +28,9 @@ func (s *GeminiMessagesCompatService) ForwardAsChatCompletions(
 	account *Account,
 	body []byte,
 ) (*ForwardResult, error) {
+	if err := validateUpstreamProviderBinding(account); err != nil {
+		return nil, err
+	}
 	startTime := time.Now()
 
 	var ccReq apicompat.ChatCompletionsRequest
@@ -325,7 +328,11 @@ func (s *GeminiMessagesCompatService) buildGeminiChatCompletionsUpstreamRequestF
 	clientStream bool,
 	useUpstreamStream bool,
 ) (func(context.Context) (*http.Request, string, error), string) {
-	switch account.Type {
+	credentialType, credentialErr := moduleCredentialType(account)
+	if credentialErr != nil {
+		return func(context.Context) (*http.Request, string, error) { return nil, "", credentialErr }, ""
+	}
+	switch credentialType {
 	case AccountTypeAPIKey:
 		return func(ctx context.Context) (*http.Request, string, error) {
 			apiKey := account.GetCredential("api_key")

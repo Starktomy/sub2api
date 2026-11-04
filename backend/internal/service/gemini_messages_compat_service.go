@@ -531,6 +531,9 @@ func (s *GeminiMessagesCompatService) HasAntigravityAccounts(ctx context.Context
 }
 
 func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte) (*ForwardResult, error) {
+	if err := validateUpstreamProviderBinding(account); err != nil {
+		return nil, err
+	}
 	beginUpstreamResponseModelObservation(c)
 	beginGeminiImageOutputObservation(c)
 	startTime := time.Now()
@@ -577,7 +580,11 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 		useUpstreamStream = true
 	}
 
-	switch account.Type {
+	credentialType, credentialErr := moduleCredentialType(account)
+	if credentialErr != nil {
+		return nil, credentialErr
+	}
+	switch credentialType {
 	case AccountTypeAPIKey:
 		buildReq = func(ctx context.Context) (*http.Request, string, error) {
 			apiKey := account.GetCredential("api_key")
@@ -1093,6 +1100,9 @@ func isGeminiSignatureRelatedError(respBody []byte) bool {
 }
 
 func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.Context, account *Account, originalModel string, action string, stream bool, body []byte) (*ForwardResult, error) {
+	if err := validateUpstreamProviderBinding(account); err != nil {
+		return nil, err
+	}
 	beginUpstreamResponseModelObservation(c)
 	beginGeminiImageOutputObservation(c)
 	startTime := time.Now()
@@ -1148,7 +1158,11 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 	var requestIDHeader string
 	var buildReq func(ctx context.Context) (*http.Request, string, error)
 
-	switch account.Type {
+	credentialType, credentialErr := moduleCredentialType(account)
+	if credentialErr != nil {
+		return nil, credentialErr
+	}
+	switch credentialType {
 	case AccountTypeAPIKey:
 		buildReq = func(ctx context.Context) (*http.Request, string, error) {
 			apiKey := account.GetCredential("api_key")

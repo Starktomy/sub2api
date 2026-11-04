@@ -39,6 +39,9 @@ func (s *OpenAIGatewayService) forwardAnthropicViaNativeAnthropicEndpoint(
 	body []byte,
 	defaultMappedModel string,
 ) (*OpenAIForwardResult, error) {
+	if err := validateNativeCompatibleMessages(account, body, resolveMappedUpstreamModel(account, body, defaultMappedModel)); err != nil {
+		return nil, err
+	}
 	startTime := time.Now()
 
 	originalModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
@@ -140,7 +143,7 @@ func (s *OpenAIGatewayService) nativeAnthropicTargetURL(account *Account) (strin
 // 连接测试共用。按模型分流的聚合平台（OpenCode、Command Code 等）的基址可能沿用带 /v1
 // 的 Chat Completions 基址，用版本感知拼接避免 /v1/v1/messages；其余供应商朴素拼接。
 func nativeAnthropicMessagesURL(account *Account, validatedBaseURL string) string {
-	if account.routesByModel() {
+	if account.routesByModel() || (account.providerProfile() != nil && account.providerProfile().SimpleCompatible) {
 		return buildOpenAIEndpointURL(validatedBaseURL, "/v1/messages")
 	}
 	return strings.TrimRight(validatedBaseURL, "/") + "/v1/messages"
@@ -161,6 +164,9 @@ func (s *OpenAIGatewayService) buildNativeAnthropicUpstreamRequest(
 	targetURL string,
 	sessionBodies ...[]byte,
 ) (*http.Request, []byte, error) {
+	if err := validateNativeCompatibleMessages(account, body, gjson.GetBytes(body, "model").String()); err != nil {
+		return nil, nil, err
+	}
 	// 能力维度 body sanitize：与 Anthropic 平台 passthrough 相同，按 beta
 	// header 决定是否保留 body 中的 beta 能力字段，避免客户端"body 带字段但
 	// header 忘带 token"的 bug 让第三方上游 400。

@@ -1,5 +1,13 @@
 export default {
     accounts: {
+      upstreamProvider: {
+        label: 'Upstream module',
+        legacy: 'Legacy routing (no explicit binding)',
+        unknown: 'Unknown or incompatible binding',
+        hint: 'Modules are matched to this platform and credential type. Existing provider profile settings are unchanged.',
+        unavailable: 'Module metadata is unavailable. Explicit bindings cannot be saved until it is available.',
+        invalid: 'The upstream binding is unknown or incompatible. Select a matching module or explicitly choose legacy routing.'
+      },
       title: 'Account Management',
       description: 'Manage AI platform accounts and credentials',
       createAccount: 'Create Account',
@@ -838,6 +846,7 @@ export default {
       noMatchingModels: 'No matching models',
       fillRelatedModels: 'Sync latest supported models',
       syncUpstreamModels: 'Sync upstream supported models',
+      syncUpstreamModelsNotVerification: 'An upstream model listing is catalog evidence only. It does not verify this key can invoke each model or use every protocol; gateway conversion is not a native endpoint.',
       syncUpstreamModelsLoading: 'Syncing upstream...',
       syncUpstreamModelsSuccess: 'Synced {count} new model(s) from upstream ({total} upstream total)',
       syncUpstreamModelsNoChanges: 'All {count} upstream model(s) are already in the whitelist',

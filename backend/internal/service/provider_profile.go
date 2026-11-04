@@ -45,6 +45,14 @@ type ProviderProfile struct {
 	// ModelCatalog 表示上游 {Chat Completions 基址}/models 为每个模型给出
 	// supported_endpoints；按模型分流时据此判断模型支持哪些协议（见 model_protocol_catalog.go）。
 	ModelCatalog bool
+	// ModelDiscovery is an explicit native listing claim; nil retains legacy policy.
+	ModelDiscovery *bool
+	// SimpleCompatible forbids native/special protocol modes and legacy auth.
+	// StatelessResponses rejects unsupported stateful features before any upstream call.
+	StatelessResponses          bool
+	NativeAnthropicBearer       bool
+	NativeAnthropicNonStreaming bool
+	SimpleCompatible            bool
 }
 
 // providerDefaultTestModel 返回账号连接测试未指定模型时的默认模型；非多协议供应商或
@@ -88,6 +96,12 @@ func (p *ProviderProfile) SupportsProtocol(mode, protocol string) bool {
 // 上游协议分流方式、Responses 路径约定与 IsMultiProtocolAPIKeyProvider 归属。
 // 默认端点需与前端 credentialsBuilder.ts 的预设保持一致。
 var providerProfiles = map[string]*ProviderProfile{
+	PlatformOpenRouter:  {Platform: PlatformOpenRouter, DefaultMode: AccountModePayG, Routing: ProviderRoutingByInbound, ModelDiscovery: boolPointer(true), StatelessResponses: true, NativeAnthropicBearer: true, NativeAnthropicNonStreaming: false, SimpleCompatible: true, Modes: map[string]ProviderEndpoints{AccountModePayG: {BaseURLs: map[string]string{APIProtocolAnthropic: "https://openrouter.ai/api/v1", APIProtocolChatCompletions: "https://openrouter.ai/api/v1", APIProtocolResponses: "https://openrouter.ai/api/v1"}}}},
+	PlatformSiliconFlow: {Platform: PlatformSiliconFlow, DefaultMode: AccountModePayG, Routing: ProviderRoutingByInbound, ModelDiscovery: boolPointer(false), NativeAnthropicBearer: true, NativeAnthropicNonStreaming: true, SimpleCompatible: true, Modes: map[string]ProviderEndpoints{AccountModePayG: {BaseURLs: map[string]string{APIProtocolAnthropic: "https://api.siliconflow.cn/v1", APIProtocolChatCompletions: "https://api.siliconflow.cn/v1"}}}},
+	PlatformMistral:     {Platform: PlatformMistral, DefaultMode: AccountModePayG, Routing: ProviderRoutingByInbound, ModelDiscovery: boolPointer(true), StatelessResponses: true, SimpleCompatible: true, Modes: map[string]ProviderEndpoints{AccountModePayG: {BaseURLs: map[string]string{APIProtocolChatCompletions: "https://api.mistral.ai/v1", APIProtocolResponses: "https://api.mistral.ai/v1"}}}},
+	PlatformBailian:     {Platform: PlatformBailian, DefaultMode: AccountModePayG, Routing: ProviderRoutingByInbound, ModelDiscovery: boolPointer(false), NativeAnthropicBearer: false, NativeAnthropicNonStreaming: false, SimpleCompatible: true, Modes: map[string]ProviderEndpoints{AccountModePayG: {BaseURLs: map[string]string{APIProtocolAnthropic: "https://dashscope.aliyuncs.com/apps/anthropic", APIProtocolChatCompletions: "https://dashscope.aliyuncs.com/compatible-mode/v1"}}}},
+	PlatformTokenHub:    {Platform: PlatformTokenHub, DefaultMode: AccountModePayG, Routing: ProviderRoutingByInbound, ModelDiscovery: boolPointer(false), NativeAnthropicBearer: false, NativeAnthropicNonStreaming: false, SimpleCompatible: true, Modes: map[string]ProviderEndpoints{AccountModePayG: {BaseURLs: map[string]string{APIProtocolAnthropic: "https://tokenhub.tencentmaas.com/v1", APIProtocolChatCompletions: "https://tokenhub.tencentmaas.com/v1"}}}},
+	PlatformQianfanV2:   {Platform: PlatformQianfanV2, DefaultMode: AccountModePayG, Routing: ProviderRoutingByInbound, ModelDiscovery: boolPointer(true), SimpleCompatible: true, Modes: map[string]ProviderEndpoints{AccountModePayG: {BaseURLs: map[string]string{APIProtocolChatCompletions: "https://qianfan.baidubce.com/v2"}}}},
 	PlatformKimi: {
 		Platform:    PlatformKimi,
 		DefaultMode: AccountModePayG,
@@ -265,3 +279,5 @@ func (a *Account) RoutesProtocolByInbound() bool {
 	profile := a.providerProfile()
 	return profile != nil && profile.Routing != ProviderRoutingByModel
 }
+
+func boolPointer(value bool) *bool { return &value }

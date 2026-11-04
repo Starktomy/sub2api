@@ -45,6 +45,8 @@ func RegisterAdminRoutes(
 		// 分组管理
 		registerGroupRoutes(admin, h)
 
+		// Static module catalog uses the existing admin authentication boundary.
+		admin.GET("/upstream-providers", h.Admin.Account.GetUpstreamProviders)
 		// 账号管理
 		registerAccountRoutes(admin, h, stepUpAuth)
 

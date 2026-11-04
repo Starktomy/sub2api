@@ -52,6 +52,12 @@ const (
 	PlatformTypeSafe    = domain.PlatformTypeSafe
 	PlatformCommandCode = domain.PlatformCommandCode
 	PlatformCline       = domain.PlatformCline
+	PlatformOpenRouter  = domain.PlatformOpenRouter
+	PlatformSiliconFlow = domain.PlatformSiliconFlow
+	PlatformMistral     = domain.PlatformMistral
+	PlatformBailian     = domain.PlatformBailian
+	PlatformTokenHub    = domain.PlatformTokenHub
+	PlatformQianfanV2   = domain.PlatformQianfanV2
 	PlatformComposite   = domain.PlatformComposite
 	// PlatformKiro is retained for unsupported-platform threshold tests and legacy
 	// account rows. Scheduling-threshold evaluation never pauses kiro accounts.

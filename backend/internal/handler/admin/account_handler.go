@@ -973,6 +973,11 @@ func (h *AccountHandler) GetByID(c *gin.Context) {
 	response.Success(c, result)
 }
 
+// GetUpstreamProviders exposes only static, credential-free module metadata.
+func (h *AccountHandler) GetUpstreamProviders(c *gin.Context) {
+	response.Success(c, gin.H{"providers": service.UpstreamProviderCatalog()})
+}
+
 // CheckMixedChannel handles checking mixed channel risk for account-group binding.
 // POST /api/v1/admin/accounts/check-mixed-channel
 func (h *AccountHandler) CheckMixedChannel(c *gin.Context) {

@@ -34,6 +34,8 @@ export interface ProviderProfileInfo {
   responses_path?: string
   /** 上游 /models 为每个模型给出 supported_endpoints，按模型分流时未命中规则的模型据此选协议。 */
   model_catalog?: boolean
+  /** Explicit upstream model discovery policy; absent preserves existing platform behavior. */
+  model_discovery?: boolean
   /** 默认模式在前。 */
   modes: ProviderModeInfo[]
 }
@@ -89,6 +91,7 @@ export function isKnownPlatform(platform: string | null | undefined): boolean {
 export function supportsUpstreamModelSync(platform: string | null | undefined): boolean {
   const spec = getPlatformSpec(platform?.trim().toLowerCase())
   if (!spec) return false
+  if (spec.multi_protocol?.model_discovery !== undefined) return spec.multi_protocol.model_discovery
   return !!spec.multi_protocol || ['anthropic', 'openai', 'gemini', 'antigravity', 'grok'].includes(spec.id)
 }
 

@@ -234,6 +234,9 @@ func (s *AccountTestService) testCNProviderAnthropicConnection(c *gin.Context, a
 		testModelID = claude.DefaultTestModel
 	}
 	testModelID = account.GetMappedModel(testModelID)
+	if err := validateNativeCompatibleMessages(account, []byte(`{"stream":true}`), testModelID); err != nil {
+		return s.sendErrorAndEnd(c, err.Error())
+	}
 
 	authToken := strings.TrimSpace(account.GetOpenAIProtocolAPIKey())
 	if authToken == "" {

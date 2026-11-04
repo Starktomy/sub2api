@@ -73,6 +73,9 @@ vi.mock('vue-i18n', async () => {
   }
 })
 
+const { upstreamCatalogMock } = vi.hoisted(() => ({ upstreamCatalogMock: vi.fn() }))
+vi.mock('@/api/admin/upstreamProviders', () => ({ getUpstreamProviders: upstreamCatalogMock }))
+
 import CreateAccountModal from '../CreateAccountModal.vue'
 
 const BaseDialogStub = defineComponent({
@@ -202,6 +205,7 @@ async function openCodexImportStep(toggleClicks = 0) {
 describe('CreateAccountModal OpenAI long-context billing', () => {
   beforeEach(() => {
     authIsSimpleMode.value = true
+    upstreamCatalogMock.mockReset().mockResolvedValue([])
     createAccountMock.mockReset().mockResolvedValue({ id: 42, platform: 'openai', type: 'apikey' })
     probeUpstreamBillingMock.mockReset().mockResolvedValue({})
     syncUpstreamModelsMock.mockReset().mockResolvedValue({ models: [], metadata: {} })
@@ -218,6 +222,23 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
   })
 
   afterEach(() => vi.useRealTimers())
+
+  it('creates an API-key account with an explicit matching module from metadata', async () => {
+    upstreamCatalogMock.mockResolvedValue([{ id: 'openai-compatible', display_name: 'OpenAI compatible', platform: 'openai', account_types: ['apikey'], protocols: [], capabilities: { responses: 'unknown', chat_completions: 'unknown', streaming: 'unknown', model_discovery: 'unknown' } }])
+    const wrapper = await submitApiKeyAccount('openai')
+    expect(createAccountMock.mock.calls[0]?.[0]?.extra?.upstream_provider).toBe('openai-compatible')
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials?.api_key).toBe('test-api-key')
+    wrapper.unmount()
+  })
+
+  it('does not expose a module selector or request metadata for OAuth creation', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="upstream-provider-binding"]').exists()).toBe(false)
+    expect(upstreamCatalogMock).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
 
   it('sets month and year expiry presets without submitting the account form', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
@@ -510,6 +531,40 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     })
   })
 
+  describe('standard compatible profiles from the authoritative catalog', () => {
+    it.each(['openrouter', 'siliconflow', 'mistral', 'bailian', 'tokenhub', 'qianfan_v2'])('creates %s with profile-only endpoints and no unsupported operation advertisement', async platform => {
+      const spec = BUILTIN_PLATFORM_CATALOG.platforms.find(item => item.id === platform)!
+      expect(spec.multi_protocol).toBeDefined()
+      const profile = spec.multi_protocol!
+      const defaults = profile.modes.find(item => item.mode === profile.default_mode)!.base_urls
+      upstreamCatalogMock.mockResolvedValue([{
+        id: platform, platform, account_types: ['apikey'], protocols: Object.keys(defaults),
+        capabilities: { responses: defaults.responses ? 'unknown' : 'unsupported', chat_completions: 'unknown', streaming: 'unknown', model_discovery: profile.model_discovery ? 'unknown' : 'unsupported' }
+      }])
+      const wrapper = mountModal()
+      await wrapper.get(`[data-testid="platform-button-${platform}"]`).trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-testid="generic-account-mode"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="openai-endpoint-capability-rerank"]').exists()).toBe(false)
+      await wrapper.get('form#create-account-form input[type="text"]').setValue(`${platform} account`)
+      await wrapper.get('form#create-account-form input[type="password"]').setValue('test-compatible-key')
+      await wrapper.get('form#create-account-form').trigger('submit.prevent')
+      await flushPromises()
+      const payload = createAccountMock.mock.calls.at(-1)?.[0]
+      expect(payload).toMatchObject({ platform, type: 'apikey', extra: { upstream_provider: platform } })
+      expect(payload.credentials).toMatchObject({
+        account_mode: profile.default_mode, api_protocol: 'adaptive', api_key: 'test-compatible-key',
+        base_url: defaults.chat_completions, api_base_urls: defaults
+      })
+      expect(Object.keys(payload.credentials.api_base_urls).sort()).toEqual(Object.keys(defaults).sort())
+      if (defaults.anthropic) expect(payload.credentials.api_base_urls.anthropic).toBe(defaults.anthropic)
+      else expect(payload.credentials.api_base_urls).not.toHaveProperty('anthropic')
+      expect(payload.credentials).not.toHaveProperty('protocol_rules')
+      expect(payload.credentials).not.toHaveProperty('header_overrides')
+      wrapper.unmount()
+    })
+  })
+
   describe('providers using the generic form', () => {
     const serverOnlyProviders = {
       platforms: [
@@ -660,7 +715,12 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     const labels = (testid: string) =>
       wrapper.get(`[data-testid="${testid}"]`).findAll('button').map(button => button.text().trim())
     expect(labels('platform-row-cn')).toEqual(['Kimi', 'Zhipu GLM', 'DeepSeek', 'MiniMax'])
-    expect(labels('platform-row-aggregators')).toEqual(['OpenCode', 'Command Code', 'Cline'])
+    expect(labels('platform-row-aggregators')).toEqual([
+      'OpenCode',
+      ...BUILTIN_PLATFORM_CATALOG.platforms
+        .filter(spec => !!spec.multi_protocol && !spec.cn_provider && spec.id !== 'opencode_go')
+        .map(spec => spec.display_name)
+    ])
   })
 
   it('creates a Cline account without an account type and with only the Chat Completions endpoint', async () => {

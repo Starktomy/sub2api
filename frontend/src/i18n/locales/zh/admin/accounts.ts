@@ -1,5 +1,13 @@
 export default {
     accounts: {
+      upstreamProvider: {
+        label: '上游模块',
+        legacy: '兼容路由（不显式绑定）',
+        unknown: '未知或不兼容的绑定',
+        hint: '模块按当前平台与凭据类型匹配，不改变已有供应商配置。',
+        unavailable: '模块元数据不可用，恢复前无法保存显式绑定。',
+        invalid: '上游绑定未知或不兼容，请选择匹配的模块，或明确选择兼容路由。'
+      },
       title: '账号管理',
       description: '管理 AI 平台账号和 Cookie',
       createAccount: '添加账号',
@@ -945,6 +953,7 @@ export default {
       noMatchingModels: '没有匹配的模型',
       fillRelatedModels: '同步最新支持模型',
       syncUpstreamModels: '同步上游支持的模型',
+      syncUpstreamModelsNotVerification: '上游模型列表仅作为目录信息，不证明当前密钥可调用每个模型或使用全部协议；网关转换不代表上游原生端点。',
       syncUpstreamModelsLoading: '同步上游中...',
       syncUpstreamModelsSuccess: '已从上游同步 {count} 个新模型（上游共 {total} 个）',
       syncUpstreamModelsNoChanges: '上游 {count} 个模型均已在白名单中',

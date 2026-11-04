@@ -100,6 +100,31 @@ function findModelRow(wrapper: ReturnType<typeof mountSelector>, modelId: string
 }
 
 describe('ModelWhitelistSelector', () => {
+  it('explains that listing models does not verify callability or native protocol support', () => {
+    const wrapper = mountSelector({ accountId: 42 })
+    expect(wrapper.get('[data-testid="model-discovery-not-verification"]').text()).toBe('admin.accounts.syncUpstreamModelsNotVerification')
+    wrapper.unmount()
+  })
+
+  it('hides model sync when the profile explicitly disables discovery', async () => {
+    setPlatformCatalog({
+      ...BUILTIN_PLATFORM_CATALOG,
+      platforms: [...BUILTIN_PLATFORM_CATALOG.platforms, {
+        id: 'restricted-compatible', display_name: 'Restricted', gateway: 'openai', cn_provider: false,
+        multi_protocol: {
+          default_mode: 'payg', routing: 'by_inbound', model_discovery: false,
+          modes: [{ mode: 'payg', base_urls: { chat_completions: 'https://example.invalid/v1' } }]
+        }
+      }]
+    })
+    const wrapper = mountSelector({ platform: 'restricted-compatible', accountId: 42 })
+    expect(wrapper.find('[data-testid="sync-upstream-models"]').exists()).toBe(false)
+    await wrapper.setProps({ accountId: undefined, syncCredentials: { platform: 'restricted-compatible', credentials: { api_key: 'test-key' } } })
+    expect(wrapper.find('[data-testid="sync-upstream-models"]').exists()).toBe(false)
+    wrapper.unmount()
+    resetPlatformCatalog()
+  })
+
   beforeEach(() => {
     copyToClipboard.mockClear()
     showError.mockReset()

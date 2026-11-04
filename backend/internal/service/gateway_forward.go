@@ -89,6 +89,9 @@ func sleepWithContext(ctx context.Context, d time.Duration) error {
 
 // Forward 转发请求到Claude API
 func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, parsed *ParsedRequest) (result *ForwardResult, err error) {
+	if err := validateUpstreamProviderBinding(account); err != nil {
+		return nil, err
+	}
 	startTime := time.Now()
 	if parsed == nil {
 		return nil, fmt.Errorf("parse request: empty request")
@@ -147,7 +150,11 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		})
 	}
 
-	if account != nil && account.IsBedrock() {
+	module, moduleErr := resolveAccountUpstreamModule(account)
+	if moduleErr != nil {
+		return nil, moduleErr
+	}
+	if account != nil && (module.ExecutionFamily == "bedrock" || account.IsBedrock()) {
 		return s.forwardBedrock(ctx, c, account, parsed, startTime)
 	}
 

@@ -30,7 +30,11 @@ import (
 func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte, isStickySession bool) (*ForwardResult, error) {
 	beginUpstreamResponseModelObservation(c)
 	// 上游透传账号直接转发，不走 OAuth token 刷新
-	if account.Type == AccountTypeUpstream {
+	module, moduleErr := resolveAccountUpstreamModule(account)
+	if moduleErr != nil {
+		return nil, moduleErr
+	}
+	if module.ExecutionFamily == "antigravity_upstream" || account.Type == AccountTypeUpstream {
 		return s.ForwardUpstream(ctx, c, account, body)
 	}
 

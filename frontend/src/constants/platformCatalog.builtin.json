@@ -278,6 +278,126 @@
           }
         ]
       }
+    },
+    {
+      "id": "openrouter",
+      "display_name": "OpenRouter",
+      "gateway": "openai",
+      "cn_provider": false,
+      "multi_protocol": {
+        "default_mode": "payg",
+        "routing": "by_inbound",
+        "model_discovery": true,
+        "modes": [
+          {
+            "mode": "payg",
+            "base_urls": {
+              "anthropic": "https://openrouter.ai/api/v1",
+              "chat_completions": "https://openrouter.ai/api/v1",
+              "responses": "https://openrouter.ai/api/v1"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "siliconflow",
+      "display_name": "SiliconFlow",
+      "gateway": "openai",
+      "cn_provider": false,
+      "multi_protocol": {
+        "default_mode": "payg",
+        "routing": "by_inbound",
+        "model_discovery": false,
+        "modes": [
+          {
+            "mode": "payg",
+            "base_urls": {
+              "anthropic": "https://api.siliconflow.cn/v1",
+              "chat_completions": "https://api.siliconflow.cn/v1"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "mistral",
+      "display_name": "Mistral",
+      "gateway": "openai",
+      "cn_provider": false,
+      "multi_protocol": {
+        "default_mode": "payg",
+        "routing": "by_inbound",
+        "model_discovery": true,
+        "modes": [
+          {
+            "mode": "payg",
+            "base_urls": {
+              "chat_completions": "https://api.mistral.ai/v1",
+              "responses": "https://api.mistral.ai/v1"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "bailian",
+      "display_name": "Bailian (DashScope compatible)",
+      "gateway": "openai",
+      "cn_provider": false,
+      "multi_protocol": {
+        "default_mode": "payg",
+        "routing": "by_inbound",
+        "model_discovery": false,
+        "modes": [
+          {
+            "mode": "payg",
+            "base_urls": {
+              "anthropic": "https://dashscope.aliyuncs.com/apps/anthropic",
+              "chat_completions": "https://dashscope.aliyuncs.com/compatible-mode/v1"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "tokenhub",
+      "display_name": "Tencent TokenHub",
+      "gateway": "openai",
+      "cn_provider": false,
+      "multi_protocol": {
+        "default_mode": "payg",
+        "routing": "by_inbound",
+        "model_discovery": false,
+        "modes": [
+          {
+            "mode": "payg",
+            "base_urls": {
+              "anthropic": "https://tokenhub.tencentmaas.com/v1",
+              "chat_completions": "https://tokenhub.tencentmaas.com/v1"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "qianfan_v2",
+      "display_name": "Qianfan V2",
+      "gateway": "openai",
+      "cn_provider": false,
+      "multi_protocol": {
+        "default_mode": "payg",
+        "routing": "by_inbound",
+        "model_discovery": true,
+        "modes": [
+          {
+            "mode": "payg",
+            "base_urls": {
+              "chat_completions": "https://qianfan.baidubce.com/v2"
+            }
+          }
+        ]
+      }
     }
   ],
   "composite_precedence": [
@@ -293,6 +413,12 @@
     "opencode_go",
     "typesafe",
     "command_code",
-    "cline"
+    "cline",
+    "openrouter",
+    "siliconflow",
+    "mistral",
+    "bailian",
+    "tokenhub",
+    "qianfan_v2"
   ]
 }

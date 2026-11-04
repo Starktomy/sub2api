@@ -81,6 +81,9 @@ func (p *GeminiAPIBatchImageProvider) Name() string {
 }
 
 func (p *GeminiAPIBatchImageProvider) SupportsAccount(account *Account) bool {
+	if err := validateUpstreamProviderBinding(account); err != nil {
+		return false
+	}
 	return account != nil &&
 		account.Platform == PlatformGemini &&
 		account.Type == AccountTypeAPIKey &&
@@ -88,6 +91,10 @@ func (p *GeminiAPIBatchImageProvider) SupportsAccount(account *Account) bool {
 }
 
 func (p *GeminiAPIBatchImageProvider) Submit(ctx context.Context, job *BatchImageJob, account *Account, input BatchImageInput) (*BatchProviderJob, error) {
+	if err := validateUpstreamProviderBinding(account); err != nil {
+		return nil, err
+	}
+
 	if account == nil || account.Platform != PlatformGemini || account.Type != AccountTypeAPIKey {
 		return nil, ErrBatchImageProviderUnsupportedAccount
 	}
@@ -136,6 +143,10 @@ func (p *GeminiAPIBatchImageProvider) Submit(ctx context.Context, job *BatchImag
 }
 
 func (p *GeminiAPIBatchImageProvider) Get(ctx context.Context, job *BatchImageJob, account *Account) (*BatchProviderStatus, error) {
+	if err := validateUpstreamProviderBinding(account); err != nil {
+		return nil, err
+	}
+
 	if account == nil || account.Platform != PlatformGemini || account.Type != AccountTypeAPIKey {
 		return nil, ErrBatchImageProviderUnsupportedAccount
 	}
@@ -174,6 +185,10 @@ func (p *GeminiAPIBatchImageProvider) Get(ctx context.Context, job *BatchImageJo
 }
 
 func (p *GeminiAPIBatchImageProvider) Cancel(ctx context.Context, job *BatchImageJob, account *Account) error {
+	if err := validateUpstreamProviderBinding(account); err != nil {
+		return err
+	}
+
 	if account == nil || account.Platform != PlatformGemini || account.Type != AccountTypeAPIKey {
 		return ErrBatchImageProviderUnsupportedAccount
 	}
@@ -189,6 +204,10 @@ func (p *GeminiAPIBatchImageProvider) Cancel(ctx context.Context, job *BatchImag
 }
 
 func (p *GeminiAPIBatchImageProvider) OpenResult(ctx context.Context, job *BatchImageJob, account *Account) (io.ReadCloser, string, error) {
+	if err := validateUpstreamProviderBinding(account); err != nil {
+		return nil, "", err
+	}
+
 	if account == nil || account.Platform != PlatformGemini || account.Type != AccountTypeAPIKey {
 		return nil, "", ErrBatchImageProviderUnsupportedAccount
 	}
@@ -205,6 +224,10 @@ func (p *GeminiAPIBatchImageProvider) OpenResult(ctx context.Context, job *Batch
 }
 
 func (p *GeminiAPIBatchImageProvider) Cleanup(ctx context.Context, job *BatchImageJob, account *Account, target CleanupTarget) error {
+	if err := validateUpstreamProviderBinding(account); err != nil {
+		return err
+	}
+
 	if account == nil || account.Platform != PlatformGemini || account.Type != AccountTypeAPIKey {
 		return ErrBatchImageProviderUnsupportedAccount
 	}

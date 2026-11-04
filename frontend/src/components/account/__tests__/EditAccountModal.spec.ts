@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import {
   BUILTIN_PLATFORM_CATALOG,
   resetPlatformCatalog,
@@ -58,6 +58,9 @@ vi.mock('vue-i18n', async () => {
     })
   }
 })
+
+const { upstreamCatalogMock } = vi.hoisted(() => ({ upstreamCatalogMock: vi.fn() }))
+vi.mock('@/api/admin/upstreamProviders', () => ({ getUpstreamProviders: upstreamCatalogMock }))
 
 import EditAccountModal from '../EditAccountModal.vue'
 
@@ -332,9 +335,75 @@ function mountModal(account = buildAccount(), renderGroupSelector = false) {
 describe('EditAccountModal', () => {
   beforeEach(() => {
     authIsSimpleMode.value = true
+    upstreamCatalogMock.mockReset().mockResolvedValue([])
   })
 
   afterEach(() => vi.useRealTimers())
+
+  it('saves an explicit module binding without wiping credentials or provider settings', async () => {
+    upstreamCatalogMock.mockResolvedValue([{ id: 'openai-compatible', platform: 'openai', account_types: ['apikey'], protocols: [], capabilities: { responses: 'unknown', chat_completions: 'unknown', streaming: 'unknown', model_discovery: 'unknown' } }])
+    const account = buildAccount()
+    account.extra = { upstream_provider: 'openai-compatible', preserved_setting: true }
+    account.credentials.custom_provider_setting = 'retained'
+    const wrapper = mountModal(account)
+    await flushPromises()
+    await wrapper.find('#edit-account-form').trigger('submit')
+    const payload = updateAccountMock.mock.calls.at(-1)?.[1]
+    expect(payload.extra.upstream_provider).toBe('openai-compatible')
+    expect(payload.extra.preserved_setting).toBe(true)
+    expect(payload.credentials.custom_provider_setting).toBe('retained')
+    expect(payload.credentials.api_key).toBe(account.credentials.api_key)
+    wrapper.unmount()
+  })
+
+  it('blocks saving mismatched provider metadata without losing the stored binding', async () => {
+    upstreamCatalogMock.mockResolvedValue([{ id: 'openai-compatible', platform: 'gemini', account_types: ['apikey'], protocols: [], capabilities: { responses: 'unknown', chat_completions: 'unknown', streaming: 'unknown', model_discovery: 'unknown' } }])
+    const account = buildAccount()
+    account.extra = { upstream_provider: 'openai-compatible' }
+    const wrapper = mountModal(account)
+    await flushPromises()
+    updateAccountMock.mockClear()
+    await wrapper.find('#edit-account-form').trigger('submit')
+    expect(updateAccountMock).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="upstream-provider-binding"]').text()).toContain('openai-compatible')
+    expect(account.extra.upstream_provider).toBe('openai-compatible')
+    wrapper.unmount()
+  })
+
+  it.each(['openrouter', 'siliconflow', 'mistral', 'bailian', 'tokenhub', 'qianfan_v2'])('preserves %s custom endpoints, headers, and redacted API-key credentials', async platform => {
+    const account = buildAccount()
+    account.platform = platform
+    account.credentials = {
+      account_mode: 'payg', api_protocol: 'adaptive',
+      base_url: 'https://custom-compatible.invalid/api/v2',
+      api_base_urls: { chat_completions: 'https://custom-compatible.invalid/api/v2' },
+      header_override_enabled: true, header_overrides: { 'X-Operator-Label': 'retained' },
+      custom_setting: 'retained'
+    }
+    account.credentials_status = { has_api_key: true }
+    account.extra = { upstream_provider: platform }
+    upstreamCatalogMock.mockResolvedValue([{
+      id: platform, platform, account_types: ['apikey'], protocols: ['chat_completions'],
+      capabilities: { responses: 'unsupported', chat_completions: 'supported', streaming: 'unknown', model_discovery: 'unsupported' }
+    }])
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+    await flushPromises()
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    const payload = updateAccountMock.mock.calls.at(-1)?.[1]
+    expect(payload.extra.upstream_provider).toBe(platform)
+    expect(payload.credentials).toMatchObject({
+      ...account.credentials, header_overrides: { 'x-operator-label': 'retained' }
+    })
+    expect(payload.credentials).not.toHaveProperty('api_key')
+    const defaults = BUILTIN_PLATFORM_CATALOG.platforms.find(spec => spec.id === platform)!.multi_protocol!.modes[0].base_urls
+    if (defaults.responses) expect(payload.credentials.api_base_urls.responses).toBe(defaults.responses)
+    else expect(payload.credentials.api_base_urls).not.toHaveProperty('responses')
+    if (defaults.anthropic) expect(payload.credentials.api_base_urls.anthropic).toBe(defaults.anthropic)
+    else expect(payload.credentials.api_base_urls).not.toHaveProperty('anthropic')
+    wrapper.unmount()
+  })
 
   it('passes existing non-identity mappings to the whitelist selector and preserves them on save', async () => {
     const account = buildAccount()

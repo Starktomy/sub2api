@@ -167,6 +167,9 @@ func (p *VertexBatchImageProvider) Name() string {
 }
 
 func (p *VertexBatchImageProvider) SupportsAccount(account *Account) bool {
+	if err := validateUpstreamProviderBinding(account); err != nil {
+		return false
+	}
 	if account == nil || account.Platform != PlatformGemini || account.Type != AccountTypeServiceAccount {
 		return false
 	}
@@ -175,6 +178,10 @@ func (p *VertexBatchImageProvider) SupportsAccount(account *Account) bool {
 }
 
 func (p *VertexBatchImageProvider) Submit(ctx context.Context, job *BatchImageJob, account *Account, input BatchImageInput) (*BatchProviderJob, error) {
+	if err := validateUpstreamProviderBinding(account); err != nil {
+		return nil, err
+	}
+
 	if err := p.validateAccount(account); err != nil {
 		return nil, err
 	}
@@ -242,6 +249,10 @@ func (p *VertexBatchImageProvider) Submit(ctx context.Context, job *BatchImageJo
 }
 
 func (p *VertexBatchImageProvider) Get(ctx context.Context, job *BatchImageJob, account *Account) (*BatchProviderStatus, error) {
+	if err := validateUpstreamProviderBinding(account); err != nil {
+		return nil, err
+	}
+
 	if err := p.validateAccount(account); err != nil {
 		return nil, err
 	}
@@ -273,6 +284,10 @@ func (p *VertexBatchImageProvider) Get(ctx context.Context, job *BatchImageJob, 
 }
 
 func (p *VertexBatchImageProvider) Cancel(ctx context.Context, job *BatchImageJob, account *Account) error {
+	if err := validateUpstreamProviderBinding(account); err != nil {
+		return err
+	}
+
 	if err := p.validateAccount(account); err != nil {
 		return err
 	}
@@ -288,6 +303,10 @@ func (p *VertexBatchImageProvider) Cancel(ctx context.Context, job *BatchImageJo
 }
 
 func (p *VertexBatchImageProvider) OpenResult(ctx context.Context, job *BatchImageJob, account *Account) (io.ReadCloser, string, error) {
+	if err := validateUpstreamProviderBinding(account); err != nil {
+		return nil, "", err
+	}
+
 	if err := p.validateAccount(account); err != nil {
 		return nil, "", err
 	}
@@ -319,6 +338,10 @@ func (p *VertexBatchImageProvider) OpenResult(ctx context.Context, job *BatchIma
 }
 
 func (p *VertexBatchImageProvider) Cleanup(ctx context.Context, job *BatchImageJob, account *Account, target CleanupTarget) error {
+	if err := validateUpstreamProviderBinding(account); err != nil {
+		return err
+	}
+
 	if err := p.validateAccount(account); err != nil {
 		return err
 	}

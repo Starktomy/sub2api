@@ -1256,7 +1256,11 @@ func (s *GatewayService) hashContent(content string) string {
 
 // GetAccessToken 获取账号凭证
 func (s *GatewayService) GetAccessToken(ctx context.Context, account *Account) (string, string, error) {
-	switch account.Type {
+	credentialType, err := moduleCredentialType(account)
+	if err != nil {
+		return "", "", err
+	}
+	switch credentialType {
 	case AccountTypeOAuth, AccountTypeSetupToken:
 		// Both oauth and setup-token use OAuth token flow
 		return s.getOAuthToken(ctx, account)

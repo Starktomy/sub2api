@@ -97,6 +97,9 @@ func (s *OpenAIGatewayService) GetRequestCredential(ctx context.Context, c *gin.
 }
 
 func (s *OpenAIGatewayService) getRequestCredential(ctx context.Context, c *gin.Context, account *Account) (string, string, error) {
+	if err := validateUpstreamProviderBinding(account); err != nil {
+		return "", "", err
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}

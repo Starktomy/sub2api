@@ -67,6 +67,16 @@
         <p class="input-hint">{{ t('admin.accounts.notesHint') }}</p>
       </div>
 
+      <UpstreamProviderSelect
+        v-if="upstreamBinding.active.value"
+        id="create-upstream-provider"
+        v-model="upstreamBinding.selected.value"
+        :options="upstreamBinding.options.value"
+        :loading="upstreamBinding.loading.value"
+        :failed="upstreamBinding.failed.value"
+        :unknown-selection="upstreamBinding.unknownSelection.value"
+      />
+
       <!-- Platform Selection - Segmented Control Style -->
       <div>
         <label class="input-label">{{ t('admin.accounts.platform') }}</label>
@@ -4112,6 +4122,8 @@
 </template>
 
 <script setup lang="ts">
+import UpstreamProviderSelect from './UpstreamProviderSelect.vue'
+import { useUpstreamProviderBinding } from '@/composables/useUpstreamProviderBinding'
 import { ref, reactive, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
@@ -5034,6 +5046,10 @@ const form = reactive({
   expires_at: null as number | null
 })
 
+const upstreamBinding = useUpstreamProviderBinding(
+  computed(() => props.show), computed(() => form.platform), computed(() => form.type)
+)
+
 // Helper to check if current type needs OAuth flow
 const isOAuthFlow = computed(() => {
   // Antigravity upstream 类型不需要 OAuth 流程
@@ -5849,6 +5865,12 @@ const buildAnthropicExtra = (base?: Record<string, unknown>): Record<string, unk
 
 // Helper function to create account with mixed channel warning handling
 const doCreateAccount = async (payload: CreateAccountRequest) => {
+  try {
+    payload = { ...payload, extra: upstreamBinding.apply(payload.extra, payload.platform, payload.type) }
+  } catch {
+    appStore.showError(t('admin.accounts.upstreamProvider.invalid'))
+    return
+  }
   const canContinue = await ensureAntigravityMixedChannelConfirmed(async () => {
     await submitCreateAccount(payload)
   })

@@ -48,6 +48,12 @@ var platformList = []PlatformSpec{
 	{ID: PlatformTypeSafe, DisplayName: "TypeSafe / Jev", Gateway: PlatformGatewayAnthropic, LiteLLMProvider: "typesafe"},
 	{ID: PlatformCommandCode, DisplayName: "Command Code", Gateway: PlatformGatewayOpenAI},
 	{ID: PlatformCline, DisplayName: "Cline", Gateway: PlatformGatewayOpenAI},
+	{ID: PlatformOpenRouter, DisplayName: "OpenRouter", Gateway: PlatformGatewayOpenAI},
+	{ID: PlatformSiliconFlow, DisplayName: "SiliconFlow", Gateway: PlatformGatewayOpenAI},
+	{ID: PlatformMistral, DisplayName: "Mistral", Gateway: PlatformGatewayOpenAI},
+	{ID: PlatformBailian, DisplayName: "Bailian (DashScope compatible)", Gateway: PlatformGatewayOpenAI},
+	{ID: PlatformTokenHub, DisplayName: "Tencent TokenHub", Gateway: PlatformGatewayOpenAI},
+	{ID: PlatformQianfanV2, DisplayName: "Qianfan V2", Gateway: PlatformGatewayOpenAI},
 }
 
 var platformIndex = func() map[string]int {

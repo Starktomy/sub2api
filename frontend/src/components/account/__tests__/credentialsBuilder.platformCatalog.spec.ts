@@ -124,7 +124,8 @@ const legacyModes: Record<string, string[]> = {
 }
 
 const probePlatforms = [
-  ...BUILTIN_PLATFORM_CATALOG.platforms.map(spec => spec.id),
+  // Keep this equivalence assertion scoped to the legacy catalog, not later compatible additions.
+  ...BUILTIN_PLATFORM_CATALOG.platforms.filter(spec => !['openrouter', 'siliconflow', 'mistral', 'bailian', 'tokenhub', 'qianfan_v2'].includes(spec.id)).map(spec => spec.id),
   'composite',
   '',
   'bogus'
@@ -311,5 +312,27 @@ describe('credentialsBuilder picks up newly registered providers from the catalo
     expect(defaultProviderProtocolRules('acme_router', 'standard')).toEqual([
       { pattern: 'claude-*', protocol: 'anthropic' }
     ])
+  })
+})
+
+
+describe('standard compatible profile boundaries', () => {
+  it.each(['openrouter', 'siliconflow', 'mistral', 'bailian', 'tokenhub', 'qianfan_v2'])('keeps %s restricted to declared native endpoints without wallet claims', platform => {
+    expect(isMultiProtocolApiKeyPlatform(platform)).toBe(true)
+    expect(providerAccountModes(platform)).toEqual(['payg'])
+    const hasResponses = ['openrouter', 'mistral'].includes(platform)
+    const hasMessages = ['openrouter', 'siliconflow', 'bailian', 'tokenhub'].includes(platform)
+    expect(providerNativeProtocols(platform, 'payg')).toEqual([
+      'chat_completions', ...(hasMessages ? ['anthropic'] : []), ...(hasResponses ? ['responses'] : [])
+    ])
+    expect(cnSupportsNativeResponses(platform)).toBe(hasResponses)
+    expect(providerRoutesByModel(platform)).toBe(false)
+    expect(providerHasModelCatalog(platform)).toBe(false)
+    expect(defaultProviderProtocolRules(platform, 'payg')).toEqual([])
+    expect(isHeaderOverrideCapable(platform, 'apikey')).toBe(true)
+    expect(isHeaderOverrideCapable(platform, 'oauth')).toBe(false)
+    const account = { platform, type: 'apikey', credentials: { account_mode: 'payg' } }
+    expect(cnQuotaCellVisible(account)).toBe(false)
+    expect(cnBalanceCellVisible(account)).toBe(false)
   })
 })

@@ -120,6 +120,10 @@
       </button>
     </div>
 
+    <p v-if="canSyncUpstream && showSyncButton" data-testid="model-discovery-not-verification" class="mb-3 text-xs text-gray-500 dark:text-gray-400">
+      {{ t('admin.accounts.syncUpstreamModelsNotVerification') }}
+    </p>
+
     <!-- Custom Model Input -->
     <div class="mb-3">
       <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.accounts.customModelName') }}</label>

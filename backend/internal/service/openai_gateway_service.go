@@ -1218,7 +1218,11 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
 		}
 		account = credAccount
 	}
-	switch account.Type {
+	credentialType, credentialErr := moduleCredentialType(account)
+	if credentialErr != nil {
+		return "", "", credentialErr
+	}
+	switch credentialType {
 	case AccountTypeOAuth:
 		if account.IsOpenAIAgentIdentity() {
 			return "", OpenAIAuthModeAgentIdentity, nil

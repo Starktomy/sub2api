@@ -235,6 +235,11 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 		grokObservation = fetched.GrokObservation
 	}
 	liveListAvailable := err == nil
+	if err != nil && account != nil {
+		if profile := account.providerProfile(); profile != nil && profile.SimpleCompatible {
+			return nil, err
+		}
+	}
 	if err != nil {
 		configuredModels := configuredUpstreamModelsForCapabilitySync(account)
 		if !upstreamModelListEndpointUnsupported(err) || len(configuredModels) == 0 {
@@ -261,6 +266,11 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 		return nil, newUpstreamModelSyncInternalError("Failed to save upstream model catalog", saveErr)
 	}
 	catalog := &UpstreamModelCatalog{Models: models, Metadata: make(map[string]UpstreamModelMetadata)}
+	if liveListAvailable && account != nil {
+		if profile := account.providerProfile(); profile != nil && profile.SimpleCompatible {
+			catalog.DiscoverySource = "upstream"
+		}
+	}
 	if account != nil && account.IsGrok() {
 		if grokObservation != nil && grokObservation.Attempt.Status == grokCatalogStatusConfiguredFallback {
 			catalog.DiscoverySource = "configured_fallback"
@@ -802,6 +812,17 @@ func (s *AccountTestService) fetchUpstreamModelListRequest(ctx context.Context, 
 		return nil, nil, nil, newUpstreamModelSyncConfigError("Account is required", nil)
 	}
 
+	if err := validateUpstreamProviderBinding(account); err != nil {
+		return nil, nil, nil, err
+	}
+
+	if profile := account.providerProfile(); profile != nil && profile.ModelDiscovery != nil && !*profile.ModelDiscovery {
+		return nil, nil, nil, newUpstreamModelSyncUnsupportedError("Model discovery is not enabled for this compatible provider", nil)
+	}
+	if profile := account.providerProfile(); profile != nil && profile.SimpleCompatible && profile.ModelDiscovery != nil && *profile.ModelDiscovery {
+		models, body, err := s.fetchCompatibleModels(ctx, account)
+		return models, body, nil, err
+	}
 	if account.Platform == PlatformAntigravity && account.Type != AccountTypeAPIKey {
 		models, body, err := s.fetchAntigravityOAuthUpstreamModels(ctx, account)
 		return models, body, nil, err
@@ -989,6 +1010,9 @@ func listVertexGeminiPublisherModels(location string, fetchPage func(page int, l
 }
 
 func (s *AccountTestService) buildUpstreamModelsRequest(ctx context.Context, account *Account) (*http.Request, error) {
+	if err := validateUpstreamProviderBinding(account); err != nil {
+		return nil, err
+	}
 	switch {
 	case account.Platform == PlatformAntigravity:
 		return s.buildAntigravityAPIKeyModelsRequest(ctx, account)

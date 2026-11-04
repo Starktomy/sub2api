@@ -51,7 +51,11 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 		return nil, nil, err
 	}
 	body = stripDeferredToolCacheControl(body)
-	if account.Platform == PlatformAnthropic && account.Type == AccountTypeServiceAccount {
+	module, moduleErr := resolveAccountUpstreamModule(account)
+	if moduleErr != nil {
+		return nil, nil, moduleErr
+	}
+	if module.ExecutionFamily == "anthropic_vertex" || (account.Platform == PlatformAnthropic && account.Type == AccountTypeServiceAccount) {
 		req, err := s.buildUpstreamRequestAnthropicVertex(ctx, c, account, body, token, modelID, reqStream)
 		return req, body, err
 	}
