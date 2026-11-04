@@ -23,6 +23,11 @@ func TestTransportCLIProtocol(t *testing.T) {
 		}
 		return &http.Response{StatusCode: 401, Body: io.NopCloser(strings.NewReader(""))}, nil
 	}), TransportConfig{Endpoint: "cli", Region: "us-east-1"})
+	invalid := testRequest()
+	invalid.AdditionalModelRequestFields = []byte(`{"maxTokens":32}`)
+	if _, err := tr.Execute(context.Background(), invalid, testAuth(), func(Event) error { return nil }); err != ErrRequest || calls != 0 {
+		t.Fatal("unsupported extension reached CLI upstream")
+	}
 	_, err := tr.Execute(context.Background(), testRequest(), testAuth(), func(Event) error { return nil })
 	if err != ErrAuth || calls != 1 {
 		t.Fatalf("calls=%d err=%v", calls, err)

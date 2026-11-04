@@ -22,8 +22,8 @@ func TestConvertMessagesTextPreservesOrderAndBound(t *testing.T) {
 	if current["content"] != "three" || current["modelId"] != "explicit-model" {
 		t.Fatal("content changed")
 	}
-	if string(r.AdditionalModelRequestFields) != `{"maxTokens":32}` {
-		t.Fatal("bound not represented")
+	if len(r.AdditionalModelRequestFields) != 0 {
+		t.Fatal("unsupported fork extension emitted")
 	}
 }
 func TestConvertMessagesTextRejectsUnsupportedSemantics(t *testing.T) {
@@ -111,7 +111,7 @@ func FuzzConvertMessages(f *testing.F) {
 	f.Add([]byte(`{"model":"m","max_tokens":1,"messages":[{"role":"user","content":"x"}]}`))
 	f.Fuzz(func(t *testing.T, b []byte) {
 		r, err := ConvertMessagesText(b, "c")
-		if err == nil && (!json.Valid(r.ConversationState) || !json.Valid(r.AdditionalModelRequestFields)) {
+		if err == nil && (!json.Valid(r.ConversationState) || (len(r.AdditionalModelRequestFields) != 0 && !json.Valid(r.AdditionalModelRequestFields))) {
 			t.Fatal("invalid converted JSON")
 		}
 	})

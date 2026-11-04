@@ -138,6 +138,14 @@ body结构包含conversationState（conversationId、history、currentMessage、
 
 全部帧CRC有效。尚未保存stopReason枚举值，不能仅凭字段名就启用成功终态。现有Sub2API推理仍需从IDE路径对齐到已捕获CLI协议；本次成功是官方CLI成功，不是已完成本项目全部推理改造。
 
+### 平台推理400的实际根因与修复
+
+后续平台自身请求返回400，新增有界、白名单错误code/field诊断后定位为ValidationException/additionalmodelrequestfields。此前第三方fork的additionalModelRequestFields.maxTokens扩展在官方runtime路径被拒绝。
+
+修复：转换器不再输出扩展；CLI transport在发送前拒绝此字段，避免无声丢弃调用方语义。max_tokens未获得上游强制限制保证，受控私有调用必须独立限制时间/接收字节；公共收费入口继续关闭。
+
+复验使用平台ExecutePrivate而非官方CLI：HTTP200、5事件、2字节文本、clean TransportEOF；CompletionVerified仍false，不借此伪造完整SSE或可信token结算。这说明“HTTP可响应”和“完整商业渠道完成”是不同验收项。
+
 ## 7. 安装身份算法
 
 官方前身源码`crates/chat-cli/src/telemetry/mod.rs:538–564`：

@@ -178,7 +178,8 @@ func ConvertMessagesText(body []byte, conversationID string) (Request, error) {
 		state["history"] = history
 	}
 	output.ConversationState, _ = json.Marshal(state)
-	// Fork extension only; provider enforcement remains unverified.
-	output.AdditionalModelRequestFields, _ = json.Marshal(map[string]any{"maxTokens": in.MaxTokens})
+	// Official CLI runtime rejects the fork's additionalModelRequestFields.
+	// max_tokens is validated above but is NOT a provider-enforced output cap;
+	// private callers must enforce independent deadline and observation bounds.
 	return output, nil
 }

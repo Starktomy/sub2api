@@ -77,7 +77,7 @@ func run() error {
 			}
 			return nil
 		})
-		fmt.Printf("kind=inference http_status=%d events=%d text_bytes=%d completion_verified=%t transport_eof=%t\n", result.StatusCode, result.Events, textBytes, result.CompletionVerified, result.TransportEOF)
+		fmt.Printf("kind=inference http_status=%d events=%d text_bytes=%d completion_verified=%t transport_eof=%t error_code=%s error_field=%s\n", result.StatusCode, result.Events, textBytes, result.CompletionVerified, result.TransportEOF, result.ErrorCode, result.ErrorField)
 		if err != nil && !errors.Is(err, kiro.ErrIncomplete) {
 			return errors.New("inference failed; do not replay")
 		}

@@ -44,6 +44,9 @@ type Result struct {
 	Phase      Phase
 	StatusCode int
 	Events     int
+	// Bounded allowlisted diagnostics; never arbitrary upstream text.
+	ErrorCode  string
+	ErrorField string
 	// RetryAfter is metadata only. No sleep, retry, refresh or failover occurs.
 	RetryAfter        time.Duration
 	RetryAfterPresent bool
@@ -241,6 +244,9 @@ func (t *Transport) Execute(ctx context.Context, input Request, auth Auth, callb
 	if !validMaterial(auth.UserAgent) || !validMaterial(auth.AmzUserAgent) || !validMaterial(auth.InvocationID) {
 		return result, ErrIdentity
 	}
+	if t.config.Endpoint == "cli" && len(input.AdditionalModelRequestFields) != 0 {
+		return result, ErrRequest
+	}
 	max := t.config.MaxRequestBytes
 	// Bound caller fields before serialization, including worst-case JSON escaping.
 	if len(input.ConversationState) > max || len(input.ProfileARN) > max || len(input.AdditionalModelRequestFields) > max {
@@ -311,6 +317,26 @@ func (t *Transport) Execute(ctx context.Context, input Request, auth Auth, callb
 	case resp.StatusCode >= 500 && resp.StatusCode <= 599:
 		return result, ErrServer
 	case resp.StatusCode != 200:
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+		var diagnostic struct {
+			Message string `json:"message"`
+			Type    string `json:"__type"`
+		}
+		_ = json.Unmarshal(body, &diagnostic)
+		for _, code := range []string{"ValidationException", "InvalidRequestException", "UnknownOperationException"} {
+			if strings.Contains(diagnostic.Type+resp.Header.Get("X-Amzn-Errortype"), code) {
+				result.ErrorCode = code
+				break
+			}
+		}
+		message := strings.ToLower(diagnostic.Message)
+		for _, field := range []string{"agenttasktype", "conversationid", "additionalmodelrequestfields", "maxtokens", "profilearn", "origin", "modelid", "history", "currentmessage", "content"} {
+			if strings.Contains(message, field) {
+				result.ErrorField = field
+				break
+			}
+		}
+		clear(body)
 		return result, ErrHTTP
 	}
 	reader := &classifiedReader{reader: resp.Body}

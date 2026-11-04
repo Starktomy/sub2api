@@ -130,6 +130,14 @@ Authorization: Bearer <REDACTED>
 
 推送后使用本项目已提交的私有ExecutePrivate执行链、持久凭据/发送屏障/journal，对claude-haiku-4.5单次请求（32 max_tokens扩展、30秒、256文本字节取消界限）。返回HTTP400、events=0、text_bytes=0、completion_verified=false、transport_eof=false；无重试。没有通过公共HTTP Gateway/线上API测试，公共收费门禁保持关闭。这次证明本平台当前推理请求仍不匹配上游；不能把官方CLI先前HTTP200当本平台验收通过。具体拒绝原因尚待受限诊断，未输出认证材料或原始错误body。
 
+## 平台推理400修复与真实复验（2026-11-04）
+
+Author已按用户纠正统一为Starktomy、GitHub noreply邮箱，Claude协作署名保留，历史修正已推送。
+
+推理增加只输出白名单code/field的HTTP诊断，单次诊断返回ValidationException，field=additionalmodelrequestfields。官方CLI成功请求未带此字段；本项目此前继承fork的maxTokens扩展被runtime拒绝。Messages转换不再输出该扩展，CLI transport也在发送前拒绝调用方传入该字段。max_tokens不再假称有服务端执行保证，私有执行保留30秒及256文本字节取消界限。
+
+修正后本平台ExecutePrivate单次实测：HTTP200、events=5、text_bytes=2、transport_eof=true、completion_verified=false。执行链在发送前完成持久刷新至version=5/idle（加密备份已保留），无生成重试，未知用量仍待对账，公共HTTP收费Gateway未开放。模型为claude-haiku-4.5；不保存生成文本。协议/聚焦Kiro service测试通过0.053s/0.075s；其他后台大范围回归单独记录，不混作通过。
+
 ## 后续顺序：小米MiMo
 
 用户要求Kiro全部完成且真实测试后再加入小米MiMo。本轮不并行实现MiMo，不预先宣称其协议/模型/计费支持。Kiro仍有公共结算、完整工具/管理/模型额度等缺口，真实smoke也尚未执行；不能以内部包通过替代该前置。后续MiMo按官方认证/协议/模型及用量契约核对，复用唯一模块体系。
