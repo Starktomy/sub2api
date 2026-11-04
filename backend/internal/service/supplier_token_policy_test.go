@@ -11,6 +11,52 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type supplierTokenUsers struct {
+	UserRepository
+	user *User
+}
+
+func (r *supplierTokenUsers) GetByEmail(context.Context, string) (*User, error) {
+	return r.user, nil
+}
+
+func (r *supplierTokenUsers) GetByID(context.Context, int64) (*User, error) {
+	return r.user, nil
+}
+
+func TestSupplierDisabledUserCannotLoginOrRefresh(t *testing.T) {
+	ctx := context.Background()
+	users := &supplierTokenUsers{user: &User{ID: 7, Email: "blocked@example.com", Role: RoleUser, Status: StatusActive}}
+	s := &AuthService{userRepo: users, cfg: &config.Config{
+		JWT:            config.JWTConfig{ExpireHour: 1},
+		SupplierPortal: config.SupplierPortalConfig{Enabled: true, JWTSecret: strings.Repeat("s", 32)},
+	}}
+	hash, err := s.HashPassword("password")
+	require.NoError(t, err)
+	users.user.PasswordHash = hash
+	token, user, err := s.Login(ctx, users.user.Email, "password")
+	require.NoError(t, err)
+	require.Equal(t, users.user, user)
+	claims, err := s.ValidateToken(token)
+	require.NoError(t, err)
+	require.Equal(t, jwt.ClaimStrings{"supplier"}, claims.Audience)
+	refreshed, err := s.RefreshToken(ctx, token)
+	require.NoError(t, err)
+	require.NotEmpty(t, refreshed)
+
+	// The upstream admin blacklist operation disables users. Auth must consult
+	// current user status rather than treating an already-issued JWT as proof
+	// that login or refresh is still permitted.
+	users.user.Status = StatusDisabled
+	tokenOut, user, err := s.Login(ctx, users.user.Email, "password")
+	require.ErrorIs(t, err, ErrUserNotActive)
+	require.Empty(t, tokenOut)
+	require.Nil(t, user)
+	tokenOut, err = s.RefreshToken(ctx, token)
+	require.ErrorIs(t, err, ErrUserNotActive)
+	require.Empty(t, tokenOut)
+}
+
 func TestSupplierExpiredAccessCannotCrossLegacyRefreshAudience(t *testing.T) {
 	secret := strings.Repeat("c", 32)
 	c := &AuthService{cfg: &config.Config{JWT: config.JWTConfig{Secret: secret}}}

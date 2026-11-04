@@ -175,6 +175,7 @@ issues/
 !docs/AURORA_CUTOVER_RUNBOOK.zh-CN.md
 !docs/SUPPLIER_PORTAL_DESIGN.zh-CN.md
 !docs/MODULAR_UPSTREAMS.zh-CN.md
+!docs/UPSTREAM_PORTING_PLAN_20261104.zh-CN.md
 
 # Python operational tooling creates no versioned bytecode.
 __pycache__/
