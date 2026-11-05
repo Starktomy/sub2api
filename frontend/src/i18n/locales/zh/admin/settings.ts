@@ -477,6 +477,8 @@ export default {
         maxVersionHint: '拒绝高于此版本的 Claude Code 客户端请求（semver 格式）。留空则不限制最高版本。'
       },
       scheduling: {
+        costFirstTitle: '采购成本优先（全平台）',
+        costFirstDescription: '全平台现有调度均生效（含旧调度，不依赖 OpenAI 高级开关）。复用渠道账号统计采购定价与实际上游模型映射：token 定价池比较 100 万未缓存输入 + 100 万输出，按次定价池比较一次请求；混合单位或缺少媒体尺寸等信息时成本未知，不当作免费。支持显式零价。不同成本时低价优先；成本相同（含零价）或都未知时，符合资格的软粘性优先于评分、优先级和负载。不绕过硬亲和、资格及路由限制。不自动推算供应商手续费 BPS，不保证实际最终费用最低。',
         title: '网关调度设置',
         description: '控制 API Key 的调度行为',
         allowUngroupedKey: '允许未分组 Key 调度',

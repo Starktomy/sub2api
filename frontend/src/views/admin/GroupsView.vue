@@ -4141,6 +4141,22 @@
               </p>
             </div>
 
+            <fieldset data-testid="composite-candidates" class="space-y-3">
+              <legend class="input-label">{{ t("admin.groups.compositeRoutes.candidates") }}</legend>
+              <p class="text-xs text-gray-500">{{ t("admin.groups.compositeRoutes.candidatesHint") }}</p>
+              <div v-for="(source, index) in compositeRouteForm.candidates" :key="index" class="space-y-2 rounded border p-2">
+                <Select v-model="source.target_platform" :options="compositeRoutePlatformOptions" />
+                <input v-model.trim="source.upstream_model" class="input" :aria-label="t('admin.groups.compositeRoutes.upstreamModel')" />
+                <label class="flex gap-2"><input v-model="source.enabled" type="checkbox" />{{ t("admin.groups.compositeRoutes.enabled") }}</label>
+                <div class="flex gap-2">
+                  <button type="button" class="btn btn-secondary" :disabled="index === 0" @click="[compositeRouteForm.candidates[index - 1], compositeRouteForm.candidates[index]] = [source, compositeRouteForm.candidates[index - 1]]">↑</button>
+                  <button type="button" class="btn btn-secondary" :disabled="index === compositeRouteForm.candidates.length - 1" @click="[compositeRouteForm.candidates[index + 1], compositeRouteForm.candidates[index]] = [source, compositeRouteForm.candidates[index + 1]]">↓</button>
+                  <button type="button" class="btn btn-secondary" @click="compositeRouteForm.candidates.splice(index, 1)">{{ t("common.delete") }}</button>
+                </div>
+              </div>
+              <button type="button" class="btn btn-secondary" :disabled="compositeRouteForm.candidates.length >= 16" @click="compositeRouteForm.candidates.push({ target_platform: compositeRouteForm.target_platform, upstream_model: compositeRouteForm.upstream_model || compositeRouteForm.public_model, enabled: true })">{{ t("admin.groups.compositeRoutes.addCandidate") }}</button>
+            </fieldset>
+
             <div>
               <label class="input-label">{{
                 t("admin.groups.compositeRoutes.notes")
@@ -4877,6 +4893,7 @@ const rpmOverridesGroup = ref<AdminGroup | null>(null);
 const sortableGroups = ref<AdminGroup[]>([]);
 type ConcreteGroupPlatform = Exclude<GroupPlatform, "composite">;
 type CompositeRouteFormState = {
+  candidates: NonNullable<CompositeModelRouteInput["candidates"]>;
   public_model: string;
   match_type: CompositeRouteMatchType;
   target_platform: ConcreteGroupPlatform;
@@ -4898,6 +4915,7 @@ const compositePreviewEndpoint = ref<CompositeRouteEndpoint>("any");
 const compositePreviewLoading = ref(false);
 const compositePreviewDecision = ref<CompositeRouteDecision | null>(null);
 const compositeRouteForm = reactive<CompositeRouteFormState>({
+  candidates: [],
   public_model: "",
   match_type: "exact",
   target_platform: "openai",
@@ -6524,6 +6542,7 @@ const compositeRouteSourceLabel = (source: string) => {
 
 const resetCompositeRouteForm = () => {
   compositeRouteEditingId.value = null;
+  compositeRouteForm.candidates = [];
   compositeRouteForm.public_model = "";
   compositeRouteForm.match_type = "exact";
   compositeRouteForm.target_platform = "openai";
@@ -6535,6 +6554,7 @@ const resetCompositeRouteForm = () => {
 };
 
 const toCompositeRouteInput = (): CompositeModelRouteInput => ({
+  candidates: compositeRouteForm.candidates.map(source => ({ ...source, upstream_model: source.upstream_model.trim() })),
   public_model: compositeRouteForm.public_model.trim(),
   match_type: compositeRouteForm.match_type,
   target_platform: compositeRouteForm.target_platform,
@@ -6588,6 +6608,7 @@ const closeCompositeRoutesModal = () => {
 
 const editCompositeRoute = (route: CompositeModelRoute) => {
   compositeRouteEditingId.value = route.id;
+  compositeRouteForm.candidates = (route.candidates || []).map(source => ({ ...source }));
   compositeRouteForm.public_model = route.public_model;
   compositeRouteForm.match_type = route.match_type;
   compositeRouteForm.target_platform = route.target_platform;

@@ -32,7 +32,7 @@ func TestSupplierProbeDurablePostgres(t *testing.T) {
  CREATE TABLE groups(id BIGINT PRIMARY KEY,status TEXT,deleted_at TIMESTAMPTZ,platform TEXT)`)
 	require.NoError(t, e)
 	defer db.Exec(`DROP SCHEMA supplier_probe_fixture CASCADE`)
-	for _, file := range []string{"254_supplier_resources.sql", "255_supplier_probe_jobs.sql", "255_supplier_probe_jobs.sql", "256_supplier_admission.sql", "258_supplier_supply_controls.sql", "260_supplier_identity_verification.sql"} {
+	for _, file := range []string{"254_supplier_resources.sql", "255_supplier_probe_jobs.sql", "255_supplier_probe_jobs.sql", "256_supplier_admission.sql", "258_supplier_supply_controls.sql", "260_supplier_identity_verification.sql", "261_supplier_resource_email.sql"} {
 		m, e := os.ReadFile("../../migrations/" + file)
 		require.NoError(t, e)
 		_, e = db.Exec(string(m))

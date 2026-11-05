@@ -256,6 +256,7 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingPaymentVisibleMethodWxpayEnabled:                      "false",
 		openAIAdvancedSchedulerSettingKey:                            "false",
 		SettingKeyOpenAIAdvancedSchedulerStickyWeightedEnabled:       "false",
+		SettingKeyCostFirstRoutingEnabled:                            "false",
 		SettingKeyOpenAIAdvancedSchedulerSubscriptionPriorityEnabled: "false",
 		SettingKeyOpenAIAdvancedSchedulerLBTopK:                      "",
 		SettingKeyOpenAIAdvancedSchedulerWeightPriority:              "",
@@ -931,6 +932,7 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	result.OpenAIOAuthSchedulingRateMultiplier = parseOpenAIOAuthSchedulingRateMultiplier(settings)
 	result.OpenAIAdvancedSchedulerEnabled = settings[openAIAdvancedSchedulerSettingKey] == "true"
 	result.OpenAIAdvancedSchedulerStickyWeightedEnabled = settings[SettingKeyOpenAIAdvancedSchedulerStickyWeightedEnabled] == "true"
+	result.CostFirstRoutingEnabled = settings[SettingKeyCostFirstRoutingEnabled] == "true"
 	result.OpenAIAdvancedSchedulerSubscriptionPriorityEnabled = settings[SettingKeyOpenAIAdvancedSchedulerSubscriptionPriorityEnabled] == "true"
 	result.OpenAIAdvancedSchedulerLBTopK = strings.TrimSpace(settings[SettingKeyOpenAIAdvancedSchedulerLBTopK])
 	result.OpenAIAdvancedSchedulerWeightPriority = strings.TrimSpace(settings[SettingKeyOpenAIAdvancedSchedulerWeightPriority])

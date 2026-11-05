@@ -32,9 +32,14 @@ func ResolvedTargetPlatformFromContext(ctx context.Context) (string, bool) {
 	return platform, true
 }
 
+type compositeCandidatesKey struct{}
+
 func WithCompositeRouteDecision(ctx context.Context, decision CompositeRouteDecision) context.Context {
 	if ctx == nil || !decision.Matched {
 		return ctx
+	}
+	if decision.Route != nil && len(decision.Route.Candidates) > 0 {
+		ctx = context.WithValue(ctx, compositeCandidatesKey{}, decision)
 	}
 	ctx = WithResolvedTargetPlatform(ctx, decision.TargetPlatform)
 	if model := strings.TrimSpace(decision.UpstreamModel); model != "" {

@@ -28,7 +28,7 @@ func TestSupplierResourcePostgresOwnershipCAS(t *testing.T) {
 	defer db.Exec(`DROP SCHEMA ` + schema + ` CASCADE`)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_, e = db.Exec(`CREATE TABLE supplier_profiles(id BIGINT PRIMARY KEY); INSERT INTO supplier_profiles VALUES(1),(2); CREATE TABLE accounts(id BIGINT PRIMARY KEY,platform TEXT,credentials JSONB,deleted_at TIMESTAMPTZ)`)
+	_, e = db.Exec(`CREATE TABLE supplier_profiles(id BIGINT PRIMARY KEY,display_name TEXT DEFAULT 'supplier',user_id BIGINT DEFAULT 7); INSERT INTO supplier_profiles(id) VALUES(1),(2); CREATE TABLE accounts(id BIGINT PRIMARY KEY,platform TEXT,credentials JSONB,deleted_at TIMESTAMPTZ)`)
 	require.NoError(t, e)
 	m, e := os.ReadFile("../../migrations/254_supplier_resources.sql")
 	require.NoError(t, e)
@@ -52,11 +52,22 @@ func TestSupplierResourcePostgresOwnershipCAS(t *testing.T) {
 	require.NoError(t, e)
 	_, e = db.Exec(string(identity))
 	require.NoError(t, e)
+	emailMigration, e := os.ReadFile("../../migrations/261_supplier_resource_email.sql")
+	require.NoError(t, e)
+	for range 2 {
+		_, e = db.Exec(string(emailMigration))
+		require.NoError(t, e)
+	}
 	r := &supplierResourceRepository{db}
-	v := &service.SupplierResource{ID: "00000000-0000-4000-8000-000000000001", SupplierID: 1, DisplayName: "name", MaskedEmail: "u***@example.test", PlanType: "plus", Envelope: []byte("ciphertext-only"), KeyID: "key-v1", AccountHint: "account-a", IdentityFingerprint: "identity-a", TokenFingerprint: "token-a", TokenExpiresAt: time.Now().Add(time.Hour)}
+	v := &service.SupplierResource{ID: "00000000-0000-4000-8000-000000000001", SupplierID: 1, DisplayName: "name", Email: "user@example.test", MaskedEmail: "u***@example.test", PlanType: "plus", Envelope: []byte("ciphertext-only"), KeyID: "key-v1", AccountHint: "account-a", IdentityFingerprint: "identity-a", TokenFingerprint: "token-a", TokenExpiresAt: time.Now().Add(time.Hour)}
 	v.ConsentVersion = service.SupplierConsentVersion
 	v.AuthorizationExpiresAt = &v.TokenExpiresAt
 	require.NoError(t, r.Create(ctx, 1, v))
+	inserted, e := r.Get(ctx, 1, v.ID)
+	require.NoError(t, e)
+	require.Equal(t, v.Email, inserted.Email)
+	_, e = db.Exec(`UPDATE supplier_resources SET email='' WHERE id=$1`, v.ID)
+	require.NoError(t, e)
 	_, e = r.Get(ctx, 2, v.ID)
 	require.ErrorIs(t, e, service.ErrSupplierResource)
 	_, e = r.Transition(ctx, 2, v.ID, 1, true)
@@ -64,6 +75,8 @@ func TestSupplierResourcePostgresOwnershipCAS(t *testing.T) {
 	current, e := r.Get(ctx, 1, v.ID)
 	require.NoError(t, e)
 	require.Equal(t, int64(1), current.Version)
+	require.Empty(t, current.Email, "legacy masked-only rows must not invent an address")
+	require.Equal(t, v.MaskedEmail, current.MaskedEmail)
 	_, e = r.Transition(ctx, 1, v.ID, 9, true)
 	require.ErrorIs(t, e, service.ErrSupplierResourceVersion)
 	v2 := *v
@@ -79,8 +92,20 @@ func TestSupplierResourcePostgresOwnershipCAS(t *testing.T) {
 	require.NoError(t, e)
 	require.Equal(t, v.ID, reimport.ID)
 	reimport.Envelope = []byte("new-ciphertext")
+	reimport.Email = "user@example.test"
 	stale := *reimport
 	require.NoError(t, r.Create(ctx, 1, reimport))
+	require.Equal(t, "user@example.test", reimport.Email)
+	persisted, e := r.Get(ctx, 1, reimport.ID)
+	require.NoError(t, e)
+	require.Equal(t, reimport.Email, persisted.Email)
+	inventory, e := r.ListAdminResources(ctx)
+	require.NoError(t, e)
+	require.Len(t, inventory, 1)
+	require.Equal(t, reimport.Email, inventory[0].Resource.Email)
+	require.Empty(t, inventory[0].Resource.Envelope)
+	require.Empty(t, inventory[0].Resource.AccountHint)
+	require.Empty(t, inventory[0].Resource.TokenFingerprint)
 	require.Equal(t, int64(3), reimport.Version)
 	require.Equal(t, int64(2), reimport.CredentialVersion)
 	require.ErrorIs(t, r.Create(ctx, 1, &stale), service.ErrSupplierResourceVersion)

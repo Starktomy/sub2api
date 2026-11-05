@@ -265,6 +265,16 @@ func GroupIDNotIn(vs ...int64) predicate.CompositeModelRoute {
 	return predicate.CompositeModelRoute(sql.FieldNotIn(FieldGroupID, vs...))
 }
 
+// CandidatesIsNil applies the IsNil predicate on the "candidates" field.
+func CandidatesIsNil() predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldIsNull(FieldCandidates))
+}
+
+// CandidatesNotNil applies the NotNil predicate on the "candidates" field.
+func CandidatesNotNil() predicate.CompositeModelRoute {
+	return predicate.CompositeModelRoute(sql.FieldNotNull(FieldCandidates))
+}
+
 // PublicModelEQ applies the EQ predicate on the "public_model" field.
 func PublicModelEQ(v string) predicate.CompositeModelRoute {
 	return predicate.CompositeModelRoute(sql.FieldEQ(FieldPublicModel, v))

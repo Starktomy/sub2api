@@ -228,6 +228,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			return
 		}
 		account := selection.Account
+		c.Request = c.Request.WithContext(service.ApplyCompositeSelection(c.Request.Context(), selection))
 		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
 		reqLog.Debug("openai_chat_completions.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
 		_ = scheduleDecision
@@ -252,6 +253,9 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		forwardBody := body
 		if channelMapping.Mapped {
 			forwardBody = h.gatewayService.ReplaceModelInBody(body, channelMapping.MappedModel)
+		}
+		if selection.CompositeSource != nil {
+			forwardBody = h.gatewayService.ReplaceModelInBody(forwardBody, selection.CompositeSource.UpstreamModel)
 		}
 		writerSizeBeforeForward := c.Writer.Size()
 		result, err := func() (*service.OpenAIForwardResult, error) {

@@ -19707,27 +19707,29 @@ func (m *ChannelMonitorRequestTemplateMutation) ResetEdge(name string) error {
 // CompositeModelRouteMutation represents an operation that mutates the CompositeModelRoute nodes in the graph.
 type CompositeModelRouteMutation struct {
 	config
-	op              Op
-	typ             string
-	id              *int64
-	created_at      *time.Time
-	updated_at      *time.Time
-	deleted_at      *time.Time
-	public_model    *string
-	match_type      *string
-	target_platform *string
-	upstream_model  *string
-	endpoint        *string
-	priority        *int
-	addpriority     *int
-	enabled         *bool
-	notes           *string
-	clearedFields   map[string]struct{}
-	group           *int64
-	clearedgroup    bool
-	done            bool
-	oldValue        func(context.Context) (*CompositeModelRoute, error)
-	predicates      []predicate.CompositeModelRoute
+	op               Op
+	typ              string
+	id               *int64
+	created_at       *time.Time
+	updated_at       *time.Time
+	deleted_at       *time.Time
+	candidates       *[]map[string]interface{}
+	appendcandidates []map[string]interface{}
+	public_model     *string
+	match_type       *string
+	target_platform  *string
+	upstream_model   *string
+	endpoint         *string
+	priority         *int
+	addpriority      *int
+	enabled          *bool
+	notes            *string
+	clearedFields    map[string]struct{}
+	group            *int64
+	clearedgroup     bool
+	done             bool
+	oldValue         func(context.Context) (*CompositeModelRoute, error)
+	predicates       []predicate.CompositeModelRoute
 }
 
 var _ ent.Mutation = (*CompositeModelRouteMutation)(nil)
@@ -19983,6 +19985,71 @@ func (m *CompositeModelRouteMutation) OldGroupID(ctx context.Context) (v int64, 
 // ResetGroupID resets all changes to the "group_id" field.
 func (m *CompositeModelRouteMutation) ResetGroupID() {
 	m.group = nil
+}
+
+// SetCandidates sets the "candidates" field.
+func (m *CompositeModelRouteMutation) SetCandidates(value []map[string]interface{}) {
+	m.candidates = &value
+	m.appendcandidates = nil
+}
+
+// Candidates returns the value of the "candidates" field in the mutation.
+func (m *CompositeModelRouteMutation) Candidates() (r []map[string]interface{}, exists bool) {
+	v := m.candidates
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCandidates returns the old "candidates" field's value of the CompositeModelRoute entity.
+// If the CompositeModelRoute object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CompositeModelRouteMutation) OldCandidates(ctx context.Context) (v []map[string]interface{}, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCandidates is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCandidates requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCandidates: %w", err)
+	}
+	return oldValue.Candidates, nil
+}
+
+// AppendCandidates adds value to the "candidates" field.
+func (m *CompositeModelRouteMutation) AppendCandidates(value []map[string]interface{}) {
+	m.appendcandidates = append(m.appendcandidates, value...)
+}
+
+// AppendedCandidates returns the list of values that were appended to the "candidates" field in this mutation.
+func (m *CompositeModelRouteMutation) AppendedCandidates() ([]map[string]interface{}, bool) {
+	if len(m.appendcandidates) == 0 {
+		return nil, false
+	}
+	return m.appendcandidates, true
+}
+
+// ClearCandidates clears the value of the "candidates" field.
+func (m *CompositeModelRouteMutation) ClearCandidates() {
+	m.candidates = nil
+	m.appendcandidates = nil
+	m.clearedFields[compositemodelroute.FieldCandidates] = struct{}{}
+}
+
+// CandidatesCleared returns if the "candidates" field was cleared in this mutation.
+func (m *CompositeModelRouteMutation) CandidatesCleared() bool {
+	_, ok := m.clearedFields[compositemodelroute.FieldCandidates]
+	return ok
+}
+
+// ResetCandidates resets all changes to the "candidates" field.
+func (m *CompositeModelRouteMutation) ResetCandidates() {
+	m.candidates = nil
+	m.appendcandidates = nil
+	delete(m.clearedFields, compositemodelroute.FieldCandidates)
 }
 
 // SetPublicModel sets the "public_model" field.
@@ -20367,7 +20434,7 @@ func (m *CompositeModelRouteMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *CompositeModelRouteMutation) Fields() []string {
-	fields := make([]string, 0, 12)
+	fields := make([]string, 0, 13)
 	if m.created_at != nil {
 		fields = append(fields, compositemodelroute.FieldCreatedAt)
 	}
@@ -20379,6 +20446,9 @@ func (m *CompositeModelRouteMutation) Fields() []string {
 	}
 	if m.group != nil {
 		fields = append(fields, compositemodelroute.FieldGroupID)
+	}
+	if m.candidates != nil {
+		fields = append(fields, compositemodelroute.FieldCandidates)
 	}
 	if m.public_model != nil {
 		fields = append(fields, compositemodelroute.FieldPublicModel)
@@ -20420,6 +20490,8 @@ func (m *CompositeModelRouteMutation) Field(name string) (ent.Value, bool) {
 		return m.DeletedAt()
 	case compositemodelroute.FieldGroupID:
 		return m.GroupID()
+	case compositemodelroute.FieldCandidates:
+		return m.Candidates()
 	case compositemodelroute.FieldPublicModel:
 		return m.PublicModel()
 	case compositemodelroute.FieldMatchType:
@@ -20453,6 +20525,8 @@ func (m *CompositeModelRouteMutation) OldField(ctx context.Context, name string)
 		return m.OldDeletedAt(ctx)
 	case compositemodelroute.FieldGroupID:
 		return m.OldGroupID(ctx)
+	case compositemodelroute.FieldCandidates:
+		return m.OldCandidates(ctx)
 	case compositemodelroute.FieldPublicModel:
 		return m.OldPublicModel(ctx)
 	case compositemodelroute.FieldMatchType:
@@ -20505,6 +20579,13 @@ func (m *CompositeModelRouteMutation) SetField(name string, value ent.Value) err
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetGroupID(v)
+		return nil
+	case compositemodelroute.FieldCandidates:
+		v, ok := value.([]map[string]interface{})
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCandidates(v)
 		return nil
 	case compositemodelroute.FieldPublicModel:
 		v, ok := value.(string)
@@ -20610,6 +20691,9 @@ func (m *CompositeModelRouteMutation) ClearedFields() []string {
 	if m.FieldCleared(compositemodelroute.FieldDeletedAt) {
 		fields = append(fields, compositemodelroute.FieldDeletedAt)
 	}
+	if m.FieldCleared(compositemodelroute.FieldCandidates) {
+		fields = append(fields, compositemodelroute.FieldCandidates)
+	}
 	if m.FieldCleared(compositemodelroute.FieldNotes) {
 		fields = append(fields, compositemodelroute.FieldNotes)
 	}
@@ -20629,6 +20713,9 @@ func (m *CompositeModelRouteMutation) ClearField(name string) error {
 	switch name {
 	case compositemodelroute.FieldDeletedAt:
 		m.ClearDeletedAt()
+		return nil
+	case compositemodelroute.FieldCandidates:
+		m.ClearCandidates()
 		return nil
 	case compositemodelroute.FieldNotes:
 		m.ClearNotes()
@@ -20652,6 +20739,9 @@ func (m *CompositeModelRouteMutation) ResetField(name string) error {
 		return nil
 	case compositemodelroute.FieldGroupID:
 		m.ResetGroupID()
+		return nil
+	case compositemodelroute.FieldCandidates:
+		m.ResetCandidates()
 		return nil
 	case compositemodelroute.FieldPublicModel:
 		m.ResetPublicModel()

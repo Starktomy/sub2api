@@ -1,4 +1,11 @@
 export default {
+  workspaceHint: 'Authorize once. Verification and supply run automatically. Pause anytime.',
+  refreshList: 'Refresh list',
+  importHint: 'Name your resource and paste its session to begin verification.',
+  emptyHint: 'Add your first account. The platform handles verification, quota sync and supply. Check earnings or pause here anytime.',
+  resourceDetails: 'Quota and resource details',
+  supplyRules: 'Supply and authorization terms',
+
   verificationPending: 'Waiting for verification',
   supplyUnavailable: 'Supply is currently unavailable. Refresh the resource list and check authorization and verification status before retrying.',
   authorizeAndStart: 'Authorize all available quota and start supplying',

@@ -48,6 +48,7 @@ type SupplierResource struct {
 	Product                   string                 `json:"product"`
 	Schedulable               bool                   `json:"schedulable"`
 	AccountID                 int64                  `json:"account_id,omitempty"`
+	Email                     string                 `json:"email"`
 	MaskedEmail               string                 `json:"masked_email"`
 	PlanType                  string                 `json:"plan_type"`
 	TokenExpiresAt            time.Time              `json:"token_expires_at"`
@@ -199,7 +200,7 @@ func (s *SupplierResourceService) Import(ctx context.Context, user int64, name, 
 	default:
 		session.Plan = ""
 	}
-	r := &SupplierResource{ID: id, SupplierID: p.ID, DisplayName: name, Status: "paused", Version: 1, AutoSyncEnabled: true, CredentialVersion: 1, ProbeState: "pending", KeyID: s.active, AccountHint: session.AccountID, IdentityFingerprint: digest(session.AccountID), TokenFingerprint: digest(session.AccessToken), MaskedEmail: MaskEmail(session.Email), PlanType: session.Plan, TokenExpiresAt: session.ExpiresAt}
+	r := &SupplierResource{ID: id, SupplierID: p.ID, DisplayName: name, Status: "paused", Version: 1, AutoSyncEnabled: true, CredentialVersion: 1, ProbeState: "pending", KeyID: s.active, AccountHint: session.AccountID, IdentityFingerprint: digest(session.AccountID), TokenFingerprint: digest(session.AccessToken), Email: session.Email, MaskedEmail: MaskEmail(session.Email), PlanType: session.Plan, TokenExpiresAt: session.ExpiresAt}
 	r.ConsentVersion = SupplierConsentVersion
 	r.AuthorizationVersion = 1
 	r.AuthorizationExpiresAt = &expires

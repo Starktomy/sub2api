@@ -31,6 +31,19 @@ async function importer() {
   return wrapper
 }
 describe('supplier Codex resources', () => {
+  it.each([
+    ['supplier.account@example.test', 'supplier.account@example.test'],
+    ['', 's***@example.test'],
+    [undefined, 's***@example.test']
+  ])('shows full email %s with legacy masked fallback and no credentials', async (email, expected) => {
+    mocks.resources.mockResolvedValue({ items: [{ ...resource, email, access_token: 'credential-canary', envelope: 'vault-canary', account_hint: 'identity-canary' }], vault_configured: true })
+    const wrapper = mount(Resources)
+    await flushPromises()
+    expect(wrapper.text()).toContain(expected)
+    if (email) expect(wrapper.text()).not.toContain(resource.masked_email)
+    for (const secret of ['credential-canary', 'vault-canary', 'identity-canary']) expect(wrapper.html()).not.toContain(secret)
+  })
+
   it('rejects contradictory declared emails without interpreting tokens', () => {
     expect(extractSessionJSON(JSON.stringify({ accessToken: 'synthetic', email: 'one@example.invalid', user: { email: 'two@example.invalid' } }))).toBeNull()
     expect(extractSessionJSON(JSON.stringify({ accessToken: 'synthetic', email: ' Same@example.invalid ', user: { email: 'same@EXAMPLE.invalid' } }))).not.toBeNull()
@@ -299,12 +312,33 @@ describe('supplier Codex resources', () => {
     await vi.advanceTimersByTimeAsync(30000)
     expect(mocks.resources).toHaveBeenCalledTimes(2)
   })
+  it('keeps technical controls collapsed and shows a single supply toggle', async () => {
+    mocks.resources.mockResolvedValue({ items: [{ ...resource, supply_enabled: true }], vault_configured: true })
+    const wrapper = mount(Resources)
+    await flushPromises()
+    const card = wrapper.get('li')
+    expect(card.get('details').attributes('open')).toBeUndefined()
+    const primaryActions = card.findAll('button').filter(button => !button.element.closest('details'))
+    expect(primaryActions.map(button => button.text())).toEqual(['supplier.pauseSupply', 'supplier.updateAuthorization'])
+    expect(card.get('details').text()).toContain('supplier.disconnect')
+    expect(card.get('details').text()).toContain('supplier.refreshUsage')
+  })
+  it('shows one actionable notice instead of duplicate probe and availability errors', async () => {
+    mocks.resources.mockResolvedValue({ items: [{ ...resource, availability_reason: 'phone_verification_required', probe_error_code: 'phone_verification_required' }], vault_configured: true })
+    const wrapper = mount(Resources)
+    await flushPromises()
+    expect(wrapper.get('li').findAll('[role="status"]')).toHaveLength(1)
+    expect(wrapper.get('li [role="status"]').text()).toBe('supplier.phoneVerificationRequired')
+  })
   it('uses explicit versioned read-only snapshot and disconnect confirmation', async () => {
     mocks.resources.mockResolvedValue({ items: [resource], vault_configured: true })
     const wrapper = mount(Resources)
     await flushPromises()
     const buttons = () => wrapper.findAll('li button')
-    await buttons()[0].trigger('click')
+    const details = wrapper.get('li details')
+    expect(details.attributes('open')).toBeUndefined()
+    await details.get('summary').trigger('click')
+    await buttons().find(button => button.text() === 'supplier.refreshUsage')!.trigger('click')
     await flushPromises()
     expect(mocks.resourceUsage).toHaveBeenCalledWith(resource.id, 1)
     await buttons().find(button => button.text() === 'supplier.disconnect')!.trigger('click')

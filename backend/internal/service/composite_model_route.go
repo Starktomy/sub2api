@@ -46,21 +46,30 @@ var (
 	ErrCompositeRouteExists   = infraerrors.Conflict("COMPOSITE_ROUTE_EXISTS", "composite route already exists")
 )
 
+// CompositeRouteCandidate is an explicitly declared equivalent model source.
+// Sources never grant account or group membership.
+type CompositeRouteCandidate struct {
+	TargetPlatform string `json:"target_platform"`
+	UpstreamModel  string `json:"upstream_model"`
+	Enabled        bool   `json:"enabled"`
+}
+
 // CompositeModelRoute maps one public model identifier in a composite group to
 // the concrete provider/model that should handle the request.
 type CompositeModelRoute struct {
-	ID             int64     `json:"id"`
-	GroupID        int64     `json:"group_id"`
-	PublicModel    string    `json:"public_model"`
-	MatchType      string    `json:"match_type"`
-	TargetPlatform string    `json:"target_platform"`
-	UpstreamModel  string    `json:"upstream_model"`
-	Endpoint       string    `json:"endpoint"`
-	Priority       int       `json:"priority"`
-	Enabled        bool      `json:"enabled"`
-	Notes          string    `json:"notes"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	Candidates     []CompositeRouteCandidate `json:"candidates,omitempty"`
+	ID             int64                     `json:"id"`
+	GroupID        int64                     `json:"group_id"`
+	PublicModel    string                    `json:"public_model"`
+	MatchType      string                    `json:"match_type"`
+	TargetPlatform string                    `json:"target_platform"`
+	UpstreamModel  string                    `json:"upstream_model"`
+	Endpoint       string                    `json:"endpoint"`
+	Priority       int                       `json:"priority"`
+	Enabled        bool                      `json:"enabled"`
+	Notes          string                    `json:"notes"`
+	CreatedAt      time.Time                 `json:"created_at"`
+	UpdatedAt      time.Time                 `json:"updated_at"`
 }
 
 type CompositeRoutePreviewRequest struct {
@@ -81,6 +90,7 @@ type CompositeRouteDecision struct {
 }
 
 type CompositeRouteInput struct {
+	Candidates     []CompositeRouteCandidate
 	PublicModel    string
 	MatchType      string
 	TargetPlatform string

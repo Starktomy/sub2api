@@ -651,6 +651,7 @@ const (
 	SettingKeyOpenAIOAuthSchedulingRateMultiplier = "openai_oauth_scheduling_rate_multiplier"
 	// SettingKeyOpenAIAdvancedSchedulerStickyWeightedEnabled OpenAI 高级调度下是否启用粘性加权。
 	SettingKeyOpenAIAdvancedSchedulerStickyWeightedEnabled = "openai_advanced_scheduler_sticky_weighted_enabled"
+	SettingKeyCostFirstRoutingEnabled                      = "cost_first_routing_enabled"
 	// SettingKeyOpenAIAdvancedSchedulerSubscriptionPriorityEnabled OpenAI 高级调度下是否优先使用订阅账号池。
 	SettingKeyOpenAIAdvancedSchedulerSubscriptionPriorityEnabled = "openai_advanced_scheduler_subscription_priority_enabled"
 	SettingKeyOpenAIAdvancedSchedulerLBTopK                      = "openai_advanced_scheduler_lb_top_k"

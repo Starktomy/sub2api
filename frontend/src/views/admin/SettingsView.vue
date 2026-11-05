@@ -5109,6 +5109,20 @@
                 </div>
               </div>
 
+              <div
+                class="flex items-center justify-between border-t border-gray-100 pt-5 dark:border-dark-700"
+              >
+                <div>
+                  <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t("admin.settings.scheduling.costFirstTitle") }}
+                  </label>
+                  <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t("admin.settings.scheduling.costFirstDescription") }}
+                  </p>
+                </div>
+                <Toggle v-model="form.cost_first_routing_enabled" data-testid="cost-first-routing-toggle" />
+              </div>
+
               <div class="flex items-center justify-between border-t border-gray-100 pt-5 dark:border-dark-700">
                 <div>
                   <label
@@ -5127,6 +5141,7 @@
                   data-testid="openai-advanced-scheduler-toggle"
                 />
               </div>
+
 
               <div
                 v-if="form.openai_advanced_scheduler_enabled"
@@ -9709,6 +9724,7 @@ type SettingsForm = Omit<
   openai_oauth_scheduling_rate_multiplier: number | "" | null;
   openai_advanced_scheduler_enabled: boolean;
   openai_advanced_scheduler_sticky_weighted_enabled: boolean;
+  cost_first_routing_enabled: boolean;
   openai_advanced_scheduler_subscription_priority_enabled: boolean;
   openai_advanced_scheduler_lb_top_k: string;
   openai_advanced_scheduler_weight_priority: string;
@@ -9966,6 +9982,7 @@ const form = reactive<SettingsForm>({
   openai_oauth_scheduling_rate_multiplier: 1,
   openai_advanced_scheduler_enabled: false,
   openai_advanced_scheduler_sticky_weighted_enabled: false,
+  cost_first_routing_enabled: false,
   openai_advanced_scheduler_subscription_priority_enabled: false,
   openai_advanced_scheduler_lb_top_k: "",
   openai_advanced_scheduler_weight_priority: "",
@@ -11711,6 +11728,7 @@ async function saveSettings() {
       openai_advanced_scheduler_enabled: form.openai_advanced_scheduler_enabled,
       openai_advanced_scheduler_sticky_weighted_enabled:
         form.openai_advanced_scheduler_sticky_weighted_enabled,
+      cost_first_routing_enabled: form.cost_first_routing_enabled,
       openai_advanced_scheduler_subscription_priority_enabled:
         form.openai_advanced_scheduler_subscription_priority_enabled,
       openai_advanced_scheduler_lb_top_k:

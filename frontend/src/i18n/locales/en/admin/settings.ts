@@ -484,6 +484,8 @@ export default {
           'Reject Claude Code clients above this version (semver format). Leave empty to allow any version.'
       },
       scheduling: {
+        costFirstTitle: 'Purchase cost first (all providers)',
+        costFirstDescription: 'Global across existing provider schedulers, including legacy mode. Uses explicit channel account-statistics purchase rules after provider model mapping. Token-priced pools compare 1M uncached input + 1M output; request-priced pools compare one request. Mixed units or unavailable media dimensions are unknown, not free. Explicit zero is valid. Lower cost beats soft sticky and subscription priority. Equal cost (including zero) or both unknown: eligible soft sticky wins before scores/priority/load. Hard affinity, eligibility and route restrictions remain. No automatic supplier fee-BPS estimate or cheapest-final-usage guarantee.',
         title: 'Gateway Scheduling Settings',
         description: 'Control API Key scheduling behavior',
         allowUngroupedKey: 'Allow Ungrouped Key Scheduling',

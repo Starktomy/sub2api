@@ -2332,6 +2332,8 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_PreviousResponseSticky(
 		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
 	}
 
+	svc.openAIAdvancedSchedulerSettingRepo().(*openAIAdvancedSchedulerSettingRepoStub).values[SettingKeyCostFirstRoutingEnabled] = "true"
+
 	store := svc.getOpenAIWSStateStore()
 	require.NoError(t, store.BindResponseAccount(ctx, groupID, "resp_prev_001", account.ID, time.Hour))
 

@@ -1,81 +1,118 @@
 <template>
-  <section class="card min-w-0 space-y-5 p-4 sm:p-6">
-    <h2 class="text-xl font-semibold">{{ t('supplier.resourcesTitle') }}</h2>
-    <p>{{ t('supplier.resourceBoundary') }}</p>
-    <div class="flex flex-wrap gap-3">
-      <button class="btn btn-primary" :disabled="busy || !vaultConfigured" @click="openImport">{{ t('supplier.authorizeAndStart') }}</button>
-      <button class="btn btn-secondary" :disabled="busy || loading || importOpen" @click="load">{{ t('supplier.reloadResources') }}</button>
-    </div>
-    <p v-if="!loading && !loadFailed && !vaultConfigured" role="status">{{ t('supplier.importUnconfigured') }}</p>
-    <form v-if="importOpen" class="space-y-4 rounded-lg border border-gray-200 p-4 dark:border-dark-700" @submit.prevent="importSession">
-      <h3 class="font-semibold">{{ t(updatingResource ? 'supplier.updateAuthorization' : 'supplier.importSession') }}</h3>
-      <p v-if="updatingResource">{{ t('supplier.updateAuthorizationNotice') }}</p>
-      <p>{{ t('supplier.sessionSafety') }}</p>
-      <label for="resource-name" class="block">{{ t('supplier.displayName') }}</label>
-      <input id="resource-name" v-model="name" class="input" required maxlength="100" autocomplete="off" :disabled="busy" />
-      <label for="resource-session" class="block">{{ t('supplier.sessionJSON') }}</label>
-      <textarea id="resource-session" v-model="content" class="input min-h-40" required autocomplete="off" autocapitalize="off" spellcheck="false" data-private="true" :disabled="busy" />
-      <p id="resource-consent" class="text-sm">{{ t('supplier.supplyConsent') }}</p>
-      <label class="flex items-start gap-2">
-        <input id="resource-consent-check" v-model="consented" type="checkbox" required aria-describedby="resource-consent" :disabled="busy" />
-        <span>{{ t('supplier.confirmSupplyConsent') }}</span>
-      </label>
-      <div class="flex flex-wrap gap-3">
+  <section class="min-w-0 space-y-5">
+    <header class="flex flex-wrap items-start justify-between gap-4">
+      <div>
+        <h2 class="text-2xl font-semibold tracking-tight">{{ t('supplier.resourcesTitle') }}</h2>
+        <p class="mt-1 text-sm text-gray-500 dark:text-dark-300">{{ t('supplier.workspaceHint') }}</p>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <button class="btn btn-primary" :disabled="busy || !vaultConfigured" @click="openImport">{{ t('supplier.authorizeAndStart') }}</button>
+        <button class="btn btn-secondary" :disabled="busy || loading || importOpen" @click="load">{{ t('supplier.refreshList') }}</button>
+      </div>
+    </header>
+    <p v-if="!loading && !loadFailed && !vaultConfigured" role="status" class="rounded-xl border border-gray-200 p-4 text-sm dark:border-dark-700">{{ t('supplier.importUnconfigured') }}</p>
+    <form v-if="importOpen" class="card space-y-4 p-5 sm:p-6" @submit.prevent="importSession">
+      <div>
+        <h3 class="text-lg font-semibold">{{ t(updatingResource ? 'supplier.updateAuthorization' : 'supplier.importSession') }}</h3>
+        <p class="mt-1 text-sm text-gray-500 dark:text-dark-300">{{ t(updatingResource ? 'supplier.updateAuthorizationNotice' : 'supplier.importHint') }}</p>
+      </div>
+      <div>
+        <label for="resource-name" class="mb-2 block text-sm font-medium">{{ t('supplier.displayName') }}</label>
+        <input id="resource-name" v-model="name" class="input w-full" required maxlength="100" autocomplete="off" :disabled="busy" />
+      </div>
+      <div>
+        <label for="resource-session" class="mb-2 block text-sm font-medium">{{ t('supplier.sessionJSON') }}</label>
+        <textarea id="resource-session" v-model="content" class="input min-h-32 w-full font-mono text-sm" required autocomplete="off" autocapitalize="off" spellcheck="false" data-private="true" :disabled="busy" aria-describedby="session-safety" />
+        <p id="session-safety" class="mt-2 text-xs text-gray-500 dark:text-dark-300">{{ t('supplier.sessionSafety') }}</p>
+      </div>
+      <div class="rounded-xl bg-gray-50 p-4 dark:bg-dark-900">
+        <p id="resource-consent" class="text-sm leading-relaxed">{{ t('supplier.supplyConsent') }}</p>
+        <label class="mt-3 flex items-start gap-2 text-sm font-medium">
+          <input id="resource-consent-check" v-model="consented" type="checkbox" required aria-describedby="resource-consent" :disabled="busy" class="mt-1" />
+          <span>{{ t('supplier.confirmSupplyConsent') }}</span>
+        </label>
+      </div>
+      <div class="flex flex-wrap gap-2">
         <button type="submit" class="btn btn-primary" :disabled="busy || !consented">{{ t(busy ? 'supplier.working' : 'supplier.authorizeAndStart') }}</button>
         <button type="button" class="btn btn-secondary" :disabled="busy" @click="closeImport">{{ t('supplier.cancel') }}</button>
       </div>
     </form>
-    <p v-if="error" role="alert" class="text-red-600 dark:text-red-400">{{ error }}</p>
-    <p v-if="success" role="status">{{ success }}</p>
-    <p v-if="listRefreshFailed" role="status">{{ t('supplier.syncDisplayStale') }}</p>
-    <p v-if="loading" role="status">{{ t('supplier.loadingResources') }}</p>
-    <div v-else-if="loadFailed">
-      <p>{{ t('supplier.resourcesFailed') }}</p>
+    <p v-if="error" role="alert" class="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">{{ error }}</p>
+    <p v-if="success" role="status" class="rounded-xl border border-gray-200 bg-white p-4 text-sm dark:border-dark-700 dark:bg-dark-900">{{ success }}</p>
+    <p v-if="listRefreshFailed" role="status" class="text-sm text-gray-500 dark:text-dark-300">{{ t('supplier.syncDisplayStale') }}</p>
+    <p v-if="loading" role="status" class="py-12 text-center text-gray-500">{{ t('supplier.loadingResources') }}</p>
+    <div v-else-if="loadFailed" class="card space-y-3 p-8 text-center">
+      <p role="alert">{{ t('supplier.resourcesFailed') }}</p>
       <button class="btn btn-secondary" :disabled="busy" @click="load">{{ t('supplier.retry') }}</button>
     </div>
-    <p v-else-if="!resources.length">{{ t('supplier.noResources') }}</p>
-    <ul v-else class="space-y-4">
-      <li v-for="resource in resources" :key="resource.id" class="min-w-0 break-words space-y-3 rounded-lg border border-gray-200 p-4 dark:border-dark-700">
-        <h3 class="font-semibold">{{ resource.display_name }}</h3>
-        <p>{{ resource.masked_email || t('supplier.unknown') }} · {{ t(resource.usage ? 'supplier.observedPlan' : 'supplier.declaredPlan') }}: {{ resource.usage?.plan_type || resource.plan_type || t('supplier.unknown') }}</p>
-        <p>{{ supplyState(resource) }} · {{ t(resource.schedulable ? 'supplier.schedulable' : 'supplier.notSchedulable') }}</p>
-        <p v-if="resource.admin_disabled" role="status">{{ t('supplier.adminDisabledNotice') }}</p>
-        <p v-if="resource.availability_reason" role="status">{{ availabilityReason(resource.availability_reason) }}</p>
-        <p>{{ t('supplier.authorizationExpiry') }}: {{ date(resource.authorization_expires_at) }}</p>
-        <div class="space-y-2 rounded-lg bg-gray-50 p-3 dark:bg-dark-900">
-          <p>{{ t('supplier.autoSync') }}: {{ t(resource.auto_sync_enabled ? 'supplier.syncRequested' : 'supplier.syncDisabled') }}</p>
-          <p>{{ t('supplier.syncState') }}: {{ syncState(resource.probe_state) }}</p>
-          <p>{{ t('supplier.lastProbe') }}: {{ date(resource.last_probe_at) }}</p>
-          <p>{{ t('supplier.nextProbe') }}: {{ date(resource.next_probe_at) }}</p>
-          <p v-if="resource.probe_error_code" role="status">{{ probeError(resource.probe_error_code) }}</p>
-          <p class="text-sm text-gray-600 dark:text-dark-300">{{ t('supplier.syncWorkerCaveat') }}</p>
+    <div v-else-if="!resources.length" class="card space-y-3 px-6 py-12 text-center">
+      <h3 class="text-lg font-semibold">{{ t('supplier.noResources') }}</h3>
+      <p class="mx-auto max-w-md text-sm leading-relaxed text-gray-500 dark:text-dark-300">{{ t('supplier.emptyHint') }}</p>
+    </div>
+    <ul v-else class="space-y-5">
+      <li v-for="resource in resources" :key="resource.id" class="card min-w-0 overflow-hidden">
+        <div class="space-y-4 p-5 sm:p-6">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div class="min-w-0 break-words">
+              <h3 class="text-lg font-semibold">{{ resource.display_name }}</h3>
+              <p class="mt-1 text-sm text-gray-500 dark:text-dark-300">{{ resource.email || resource.masked_email || t('supplier.unknown') }} · {{ resource.usage?.plan_type || resource.plan_type || t('supplier.unknown') }}</p>
+            </div>
+            <div class="text-right">
+              <span class="inline-flex rounded-full border border-gray-200 px-3 py-1 text-xs font-medium dark:border-dark-600">{{ supplyState(resource) }}</span>
+              <p class="mt-1 text-xs text-gray-500 dark:text-dark-300">{{ t(resource.schedulable ? 'supplier.schedulable' : 'supplier.notSchedulable') }}</p>
+            </div>
+          </div>
+          <p v-if="resourceNotice(resource)" role="status" class="rounded-lg bg-gray-50 px-4 py-3 text-sm leading-relaxed dark:bg-dark-900">{{ resourceNotice(resource) }}</p>
+          <ResourceStats :resource-id="resource.id" />
+          <div class="flex flex-wrap gap-2">
+            <template v-if="resource.status !== 'disconnected'">
+              <button v-if="resource.supply_enabled || resource.availability_reason === 'verification_required'" class="btn btn-secondary" :disabled="busy || importOpen" @click="action(resource, 'pause')">{{ t('supplier.pauseSupply') }}</button>
+              <button v-else class="btn btn-primary" :disabled="busy || importOpen || !canStart(resource)" @click="action(resource, 'start')">{{ t('supplier.startSupply') }}</button>
+            </template>
+            <button class="btn btn-secondary" :disabled="busy || importOpen || !vaultConfigured" @click="updateAuthorization(resource)">{{ t('supplier.updateAuthorization') }}</button>
+          </div>
         </div>
-        <p>{{ t('supplier.updatedAt') }}: {{ date(resource.updated_at) }}</p>
-        <p>{{ t('supplier.tokenExpiry') }}: {{ date(resource.token_expires_at) }}</p>
-        <p>{{ t('supplier.usageUpdatedAt') }}: {{ date(resource.last_usage_at) }} · {{ t(resource.usage_state === 'fresh' ? 'supplier.snapshot' : resource.usage_state === 'stale' ? 'supplier.stale' : 'supplier.unknown') }}</p>
-        <dl class="space-y-2">
-          <template v-for="window in ['primary_window', 'secondary_window'] as const" :key="window">
-            <dt>{{ t(window === 'primary_window' ? 'supplier.primaryWindow' : 'supplier.secondaryWindow') }}</dt>
-            <dd>{{ percent(resource.usage?.rate_limit?.[window]?.used_percent) }} · {{ t('supplier.resetsAt') }}: {{ unixDate(resource.usage?.rate_limit?.[window]?.reset_at) }}</dd>
-          </template>
-        </dl>
-        <div class="flex flex-wrap gap-3">
-          <template v-if="resource.status !== 'disconnected'">
-            <button class="btn btn-secondary" :disabled="busy || importOpen" @click="action(resource, 'usage')">{{ t('supplier.refreshUsage') }}</button>
-            <button class="btn btn-primary" :disabled="busy || importOpen || !canStart(resource)" @click="action(resource, 'start')">{{ t('supplier.startSupply') }}</button>
-            <button class="btn btn-secondary" :disabled="busy || importOpen" @click="action(resource, 'pause')">{{ t('supplier.pauseSupply') }}</button>
-            <button class="btn btn-secondary" :disabled="busy || importOpen" @click="disconnecting = resource.id">{{ t('supplier.disconnect') }}</button>
-          </template>
-          <button class="btn btn-secondary" :disabled="busy || !vaultConfigured" @click="updateAuthorization(resource)">{{ t('supplier.updateAuthorization') }}</button>
-        </div>
-        <div v-if="disconnecting === resource.id" class="space-y-2">
-          <p>{{ t('supplier.disconnectConfirm') }}</p>
-          <button class="btn btn-danger" :disabled="busy" @click="action(resource, 'disconnect')">{{ t('supplier.confirmDisconnect') }}</button>
-          <button class="btn btn-secondary" :disabled="busy" @click="disconnecting = null">{{ t('supplier.cancel') }}</button>
-        </div>
-        <ResourceStats :resource-id="resource.id" />
+        <details class="border-t border-gray-100 dark:border-dark-700">
+          <summary class="cursor-pointer px-5 py-3 text-sm font-medium text-gray-600 focus-visible:outline focus-visible:outline-2 sm:px-6 dark:text-dark-300">{{ t('supplier.resourceDetails') }}</summary>
+          <div class="space-y-4 px-5 pb-5 text-sm sm:px-6">
+            <div class="grid gap-3 sm:grid-cols-2">
+              <p>{{ t(resource.usage ? 'supplier.observedPlan' : 'supplier.declaredPlan') }}: {{ resource.usage?.plan_type || resource.plan_type || t('supplier.unknown') }}</p>
+              <p>{{ t('supplier.authorizationExpiry') }}: {{ date(resource.authorization_expires_at) }}</p>
+              <p>{{ t('supplier.tokenExpiry') }}: {{ date(resource.token_expires_at) }}</p>
+              <p>{{ t('supplier.updatedAt') }}: {{ date(resource.updated_at) }}</p>
+            </div>
+            <dl class="grid gap-3 sm:grid-cols-2">
+              <div v-for="window in ['primary_window', 'secondary_window'] as const" :key="window" class="rounded-lg bg-gray-50 p-3 dark:bg-dark-900">
+                <dt class="text-gray-500 dark:text-dark-300">{{ t(window === 'primary_window' ? 'supplier.primaryWindow' : 'supplier.secondaryWindow') }}</dt>
+                <dd class="mt-1 font-medium">{{ percent(resource.usage?.rate_limit?.[window]?.used_percent) }}</dd>
+                <dd class="mt-1 text-xs text-gray-500 dark:text-dark-300">{{ t('supplier.resetsAt') }}: {{ unixDate(resource.usage?.rate_limit?.[window]?.reset_at) }}</dd>
+              </div>
+            </dl>
+            <p class="text-xs text-gray-500 dark:text-dark-300">{{ t('supplier.usageUpdatedAt') }}: {{ date(resource.last_usage_at) }} · {{ t(resource.usage_state === 'fresh' ? 'supplier.snapshot' : resource.usage_state === 'stale' ? 'supplier.stale' : 'supplier.unknown') }}</p>
+            <div class="space-y-1 text-xs text-gray-500 dark:text-dark-300">
+              <p>{{ t('supplier.autoSync') }}: {{ t(resource.auto_sync_enabled ? 'supplier.syncRequested' : 'supplier.syncDisabled') }} · {{ syncState(resource.probe_state) }}</p>
+              <p>{{ t('supplier.lastProbe') }}: {{ date(resource.last_probe_at) }} · {{ t('supplier.nextProbe') }}: {{ date(resource.next_probe_at) }}</p>
+              <p>{{ t('supplier.syncWorkerCaveat') }}</p>
+            </div>
+            <div v-if="resource.status !== 'disconnected'" class="flex flex-wrap gap-2 border-t border-gray-100 pt-4 dark:border-dark-700">
+              <button class="btn btn-secondary" :disabled="busy || importOpen" @click="action(resource, 'usage')">{{ t('supplier.refreshUsage') }}</button>
+              <button class="btn btn-secondary" :disabled="busy || importOpen" @click="disconnecting = resource.id">{{ t('supplier.disconnect') }}</button>
+            </div>
+            <div v-if="disconnecting === resource.id" class="space-y-3 rounded-lg border border-red-200 p-4 dark:border-red-900">
+              <p>{{ t('supplier.disconnectConfirm') }}</p>
+              <div class="flex flex-wrap gap-2">
+                <button class="btn btn-danger" :disabled="busy" @click="action(resource, 'disconnect')">{{ t('supplier.confirmDisconnect') }}</button>
+                <button class="btn btn-secondary" :disabled="busy" @click="disconnecting = null">{{ t('supplier.cancel') }}</button>
+              </div>
+            </div>
+          </div>
+        </details>
       </li>
     </ul>
+    <details class="text-sm text-gray-500 dark:text-dark-300">
+      <summary class="cursor-pointer font-medium">{{ t('supplier.supplyRules') }}</summary>
+      <p class="mt-2 max-w-3xl leading-relaxed">{{ t('supplier.resourceBoundary') }}</p>
+    </details>
   </section>
 </template>
 <script setup lang="ts">
@@ -141,6 +178,12 @@ function availabilityReason(reason: string) {
     quota_exhausted: 'quotaExhausted', quota_stale: 'quotaStale', unavailable: 'availabilityPending'
   }
   return t(`supplier.${reasons[reason] || 'availabilityPending'}`)
+}
+function resourceNotice(resource: SupplierResource) {
+  if (resource.admin_disabled) return t('supplier.adminDisabledNotice')
+  if (resource.availability_reason) return availabilityReason(resource.availability_reason)
+  if (resource.probe_error_code) return probeError(resource.probe_error_code)
+  return ''
 }
 function date(value?: string | null) {
   if (!value || !Number.isFinite(Date.parse(value))) return t('supplier.unknown')

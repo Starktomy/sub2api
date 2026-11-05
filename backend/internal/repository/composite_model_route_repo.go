@@ -42,6 +42,7 @@ func (r *compositeModelRouteRepository) Create(ctx context.Context, route *servi
 		return service.ErrCompositeRouteNotFound
 	}
 	created, err := clientFromContext(ctx, r.client).CompositeModelRoute.Create().
+		SetCandidates(routeCandidatesToEntity(route.Candidates)).
 		SetGroupID(route.GroupID).
 		SetPublicModel(route.PublicModel).
 		SetMatchType(route.MatchType).
@@ -64,6 +65,7 @@ func (r *compositeModelRouteRepository) Update(ctx context.Context, route *servi
 		return service.ErrCompositeRouteNotFound
 	}
 	updated, err := clientFromContext(ctx, r.client).CompositeModelRoute.UpdateOneID(route.ID).
+		SetCandidates(routeCandidatesToEntity(route.Candidates)).
 		SetPublicModel(route.PublicModel).
 		SetMatchType(route.MatchType).
 		SetTargetPlatform(route.TargetPlatform).
@@ -97,6 +99,7 @@ func compositeModelRouteEntityToService(row *dbent.CompositeModelRoute) *service
 		return nil
 	}
 	return &service.CompositeModelRoute{
+		Candidates:     routeCandidatesFromEntity(row.Candidates),
 		ID:             row.ID,
 		GroupID:        row.GroupID,
 		PublicModel:    row.PublicModel,
@@ -110,4 +113,28 @@ func compositeModelRouteEntityToService(row *dbent.CompositeModelRoute) *service
 		CreatedAt:      row.CreatedAt,
 		UpdatedAt:      row.UpdatedAt,
 	}
+}
+
+func routeCandidatesToEntity(c []service.CompositeRouteCandidate) []map[string]any {
+	if c == nil {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(c))
+	for _, source := range c {
+		out = append(out, map[string]any{"target_platform": source.TargetPlatform, "upstream_model": source.UpstreamModel, "enabled": source.Enabled})
+	}
+	return out
+}
+func routeCandidatesFromEntity(c []map[string]any) []service.CompositeRouteCandidate {
+	if c == nil {
+		return nil
+	}
+	out := make([]service.CompositeRouteCandidate, 0, len(c))
+	for _, source := range c {
+		platform, _ := source["target_platform"].(string)
+		model, _ := source["upstream_model"].(string)
+		enabled, _ := source["enabled"].(bool)
+		out = append(out, service.CompositeRouteCandidate{TargetPlatform: platform, UpstreamModel: model, Enabled: enabled})
+	}
+	return out
 }

@@ -61,6 +61,9 @@ func TestSupplierResourceEncryptedOnlyBindingAndMissingKey(t *testing.T) {
 	require.ErrorIs(t, e, ErrSupplierAuthorizationExpiry)
 	r, e := s.Import(ctx, 7, "name", string(input), SupplierImportOptions{ConsentVersion: SupplierConsentVersion})
 	require.NoError(t, e)
+	require.Equal(t, "u@example.test", r.Email)
+	require.Equal(t, "u@example.test", repo.saved.Email)
+	require.Equal(t, "u***@example.test", r.MaskedEmail)
 	require.Equal(t, "paused", r.Status)
 	require.False(t, r.Schedulable)
 	require.NotContains(t, string(repo.saved.Envelope), token)
@@ -77,6 +80,7 @@ func TestSupplierResourceEncryptedOnlyBindingAndMissingKey(t *testing.T) {
 	require.Error(t, e)
 	b, e := json.Marshal(r)
 	require.NoError(t, e)
+	require.Contains(t, string(b), `"email":"u@example.test"`)
 	require.NotContains(t, string(b), token)
 	require.NotContains(t, string(b), "account_hint")
 	_, e = s.Import(ctx, 7, "name", string(input), SupplierImportOptions{ConsentVersion: SupplierConsentVersion, ResourceID: r.ID, ResourceVersion: r.Version + 1})
@@ -91,12 +95,16 @@ func TestSupplierResourceEncryptedOnlyBindingAndMissingKey(t *testing.T) {
 	r.Version = 7
 	r.CredentialVersion = 4
 	r.Status = "disconnected"
-	again, e := s.Import(ctx, 7, "reconnected", string(input), SupplierImportOptions{ConsentVersion: SupplierConsentVersion})
+	updatedInput := strings.ReplaceAll(string(input), token, "e30."+base64.RawURLEncoding.EncodeToString([]byte(strings.ReplaceAll(payload, "u@example.test", "updated@example.test")))+".synthetic")
+	again, e := s.Import(ctx, 7, "reconnected", updatedInput, SupplierImportOptions{ConsentVersion: SupplierConsentVersion})
 	require.NoError(t, e)
+	require.Equal(t, "updated@example.test", again.Email)
+	require.Equal(t, "updated@example.test", repo.saved.Email)
 	require.Equal(t, r.ID, again.ID)
 	require.Equal(t, int64(7), again.Version, "carry observed CAS into repository")
 	require.Equal(t, int64(4), again.CredentialVersion)
 	plain, e = codec.Decrypt(ctx, resourceBinding(r), again.Envelope)
 	require.NoError(t, e)
-	require.Equal(t, token, plain["access_token"])
+	require.NotEmpty(t, plain["access_token"])
+	require.Len(t, plain, 2, "vault retains only access_token and account_id")
 }

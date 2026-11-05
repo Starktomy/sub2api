@@ -30,7 +30,7 @@ func TestSupplierAdmissionPostgres(t *testing.T) {
 	defer db.Exec(`DROP SCHEMA ` + schema + ` CASCADE`)
 	// Core tables and supplier tables use actual migration definitions. Only the
 	// later independently-added Account/group columns are supplied explicitly.
-	for _, file := range []string{"001_init.sql", "253_supplier_profiles.sql", "254_supplier_resources.sql", "255_supplier_probe_jobs.sql", "036_scheduler_outbox.sql", "152_scheduler_outbox_dedup_key.sql", "153_scheduler_outbox_pending_dedup_key_index_notx.sql", "256_supplier_admission.sql", "258_supplier_supply_controls.sql", "258_supplier_supply_controls.sql", "260_supplier_identity_verification.sql", "260_supplier_identity_verification.sql"} {
+	for _, file := range []string{"001_init.sql", "253_supplier_profiles.sql", "254_supplier_resources.sql", "255_supplier_probe_jobs.sql", "036_scheduler_outbox.sql", "152_scheduler_outbox_dedup_key.sql", "153_scheduler_outbox_pending_dedup_key_index_notx.sql", "256_supplier_admission.sql", "258_supplier_supply_controls.sql", "258_supplier_supply_controls.sql", "260_supplier_identity_verification.sql", "260_supplier_identity_verification.sql", "261_supplier_resource_email.sql"} {
 		b, e := os.ReadFile("../../migrations/" + file)
 		require.NoError(t, e)
 		_, e = db.Exec(string(b))

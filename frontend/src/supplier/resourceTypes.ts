@@ -31,6 +31,7 @@ export interface SupplierResource {
   provider: 'openai'
   product: 'codex'
   schedulable: boolean
+  email?: string | null
   masked_email: string | null
   plan_type: string | null
   token_expires_at: string | null

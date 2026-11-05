@@ -223,6 +223,7 @@ func TestSettingHandler_UpdateSettings_PersistsPaymentVisibleMethodsAndAdvancedS
 		"payment_visible_method_alipay_enabled":                   true,
 		"payment_visible_method_wxpay_enabled":                    false,
 		"openai_advanced_scheduler_enabled":                       true,
+		"cost_first_routing_enabled":                              true,
 		"openai_oauth_scheduling_rate_multiplier":                 0.05,
 		"openai_advanced_scheduler_subscription_priority_enabled": true,
 	}
@@ -242,6 +243,7 @@ func TestSettingHandler_UpdateSettings_PersistsPaymentVisibleMethodsAndAdvancedS
 	require.Equal(t, "true", repo.values[service.SettingPaymentVisibleMethodAlipayEnabled])
 	require.Equal(t, "false", repo.values[service.SettingPaymentVisibleMethodWxpayEnabled])
 	require.Equal(t, "true", repo.values["openai_advanced_scheduler_enabled"])
+	require.Equal(t, "true", repo.values[service.SettingKeyCostFirstRoutingEnabled])
 	require.Equal(t, "0.05", repo.values[service.SettingKeyOpenAIOAuthSchedulingRateMultiplier])
 	require.Equal(t, "true", repo.values[service.SettingKeyOpenAIAdvancedSchedulerSubscriptionPriorityEnabled])
 
@@ -254,6 +256,15 @@ func TestSettingHandler_UpdateSettings_PersistsPaymentVisibleMethodsAndAdvancedS
 	require.Equal(t, true, data["payment_visible_method_alipay_enabled"])
 	require.Equal(t, false, data["payment_visible_method_wxpay_enabled"])
 	require.Equal(t, true, data["openai_advanced_scheduler_enabled"])
+	require.Equal(t, true, data["cost_first_routing_enabled"])
+	// Omitted field preserves the existing setting.
+	rec = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPut, "/api/v1/admin/settings", bytes.NewBufferString(`{"promo_code_enabled":true}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	handler.UpdateSettings(c)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "true", repo.values[service.SettingKeyCostFirstRoutingEnabled])
 	require.Equal(t, 0.05, data["openai_oauth_scheduling_rate_multiplier"])
 	require.Equal(t, true, data["openai_advanced_scheduler_subscription_priority_enabled"])
 }

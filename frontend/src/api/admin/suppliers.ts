@@ -19,6 +19,7 @@ export interface AdminSupplierResource {
     schedulable: boolean
     probe_state: string
     plan_type: string | null
+    email?: string | null
     masked_email: string | null
     token_expires_at: string | null
     last_probe_at: string | null

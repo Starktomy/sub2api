@@ -39,6 +39,8 @@ vi.mock('@/api/admin', () => ({
       getUsageSummary,
       getCapacitySummary,
       getLiveCapability,
+      listCompositeRoutes: vi.fn().mockResolvedValue([]),
+      createCompositeRoute: vi.fn().mockResolvedValue({}),
       getAll: vi.fn(),
       create: vi.fn(),
       update: updateGroup,
@@ -215,6 +217,38 @@ describe('GroupsView duplicate action', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+  })
+
+  it('manages ordered enabled sources and serializes them on save', async () => {
+    listGroups.mockResolvedValueOnce({ items: [{ ...sourceGroup, platform: 'composite' }], total: 1, page: 1, page_size: 20, pages: 1 })
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('[data-testid="group-composite-routes"]').trigger('click')
+    await flushPromises()
+    const vm = wrapper.vm as any
+    vm.compositeRouteForm.public_model = 'gpt6luna'
+    vm.compositeRouteForm.endpoint = 'chat_completions'
+    vm.compositeRouteForm.target_platform = 'openai'
+    vm.compositeRouteForm.upstream_model = 'oauth-alias'
+    const field = wrapper.get('[data-testid="composite-candidates"]')
+    await field.get('button').trigger('click')
+    vm.compositeRouteForm.target_platform = 'opencode-go'
+    vm.compositeRouteForm.upstream_model = 'code-alias'
+    await field.findAll('button').at(-1)!.trigger('click')
+    expect(vm.compositeRouteForm.candidates).toHaveLength(2)
+    await field.findAll('button').find(button => button.text() === '↑' && button.attributes('disabled') === undefined)!.trigger('click')
+    const toggles = field.findAll('input[type="checkbox"]')
+    await toggles[1].setValue(false)
+    await vm.saveCompositeRoute()
+    expect(adminAPI.groups.createCompositeRoute).toHaveBeenCalledWith(42, expect.objectContaining({ candidates: [
+      { target_platform: 'opencode-go', upstream_model: 'code-alias', enabled: true },
+      { target_platform: 'openai', upstream_model: 'oauth-alias', enabled: false }
+    ] }))
+    vm.compositeRouteForm.candidates = [{ target_platform: 'openai', upstream_model: 'x', enabled: true }]
+    await wrapper.vm.$nextTick()
+    await field.findAll('button').find(button => button.text() === 'common.delete')!.trigger('click')
+    expect(vm.compositeRouteForm.candidates).toHaveLength(0)
+    wrapper.unmount()
   })
 
   it('duplicates the selected group, reports success, and refreshes the list', async () => {

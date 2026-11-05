@@ -1,20 +1,22 @@
 <template>
-  <section class="space-y-2 rounded-lg bg-gray-50 p-3 dark:bg-dark-900" :aria-busy="loading">
-    <h4 class="font-semibold">{{ t('supplier.statsTitle') }}</h4>
-    <p class="text-sm">{{ t('supplier.statsNotice') }}</p>
-    <button type="button" class="btn btn-secondary" :disabled="loading" @click="load">{{ t('supplier.statsRefresh') }}</button>
+  <section class="space-y-3 rounded-xl bg-gray-50 p-4 dark:bg-dark-900" :aria-busy="loading">
+    <div class="flex items-center justify-between gap-3">
+      <h4 class="text-sm font-medium">{{ t('supplier.statsTitle') }}</h4>
+      <button type="button" class="rounded px-2 py-1 text-xs text-gray-600 underline underline-offset-4 disabled:opacity-50 dark:text-dark-300" :disabled="loading" @click="load">{{ t('supplier.statsRefresh') }}</button>
+    </div>
     <p v-if="loading" role="status">{{ t('supplier.statsLoading') }}</p>
     <p v-else-if="failed" role="alert">{{ t('supplier.statsError') }}</p>
-    <dl v-else-if="stats" class="grid grid-cols-1 gap-2 text-sm sm:grid-cols-2">
-      <div v-for="field in tokenFields" :key="field">
-        <dt>{{ t(`supplier.stats_${field}`) }}</dt>
-        <dd>{{ stats[field] }}</dd>
+    <dl v-else-if="stats" class="grid grid-cols-2 gap-x-4 gap-y-3 text-sm sm:grid-cols-3">
+      <div v-for="field in tokenFields" :key="field" class="min-w-0">
+        <dt class="text-xs text-gray-500 dark:text-dark-300">{{ t(`supplier.stats_${field}`) }}</dt>
+        <dd class="mt-1 break-words font-medium tabular-nums">{{ stats[field] }}</dd>
       </div>
-      <div>
-        <dt>{{ t('supplier.statsFee') }}</dt>
-        <dd>{{ stats.fee_amount }} {{ stats.currency }}</dd>
+      <div class="order-first col-span-2 border-b border-gray-200 pb-3 sm:col-span-3 dark:border-dark-700">
+        <dt class="text-xs text-gray-500 dark:text-dark-300">{{ t('supplier.statsFee') }}</dt>
+        <dd class="mt-1 break-words text-2xl font-semibold tracking-tight tabular-nums">{{ stats.fee_amount }} {{ stats.currency }}</dd>
       </div>
     </dl>
+    <p class="text-xs leading-relaxed text-gray-500 dark:text-dark-300">{{ t('supplier.statsNotice') }}</p>
   </section>
 </template>
 

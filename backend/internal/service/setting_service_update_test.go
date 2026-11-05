@@ -413,6 +413,7 @@ func TestSettingService_UpdateSettings_PaymentVisibleMethodsAndAdvancedScheduler
 		OpenAIOAuthSchedulingRateMultiplier:                testPtrFloat64(0.05),
 		OpenAIAdvancedSchedulerEnabled:                     true,
 		OpenAIAdvancedSchedulerStickyWeightedEnabled:       true,
+		CostFirstRoutingEnabled:                            true,
 		OpenAIAdvancedSchedulerSubscriptionPriorityEnabled: true,
 		OpenAIAdvancedSchedulerLBTopK:                      " 3 ",
 		OpenAIAdvancedSchedulerWeightPriority:              "2.50",
@@ -435,6 +436,8 @@ func TestSettingService_UpdateSettings_PaymentVisibleMethodsAndAdvancedScheduler
 	require.Equal(t, "0.05", repo.updates[SettingKeyOpenAIOAuthSchedulingRateMultiplier])
 	require.Equal(t, "true", repo.updates[openAIAdvancedSchedulerSettingKey])
 	require.Equal(t, "true", repo.updates[SettingKeyOpenAIAdvancedSchedulerStickyWeightedEnabled])
+	require.Equal(t, "true", repo.updates[SettingKeyCostFirstRoutingEnabled])
+	require.True(t, (&OpenAIGatewayService{}).openAIAdvancedSchedulerRuntimeSettings(context.Background()).costFirstEnabled)
 	require.Equal(t, "true", repo.updates[SettingKeyOpenAIAdvancedSchedulerSubscriptionPriorityEnabled])
 	require.Equal(t, "3", repo.updates[SettingKeyOpenAIAdvancedSchedulerLBTopK])
 	require.Equal(t, "2.5", repo.updates[SettingKeyOpenAIAdvancedSchedulerWeightPriority])

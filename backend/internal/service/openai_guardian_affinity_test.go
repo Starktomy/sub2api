@@ -116,6 +116,7 @@ func TestOpenAIGatewayService_GuardianParentAffinitySelectsParentAccountAcrossSc
 	}{
 		{name: "legacy", advanced: "false"},
 		{name: "advanced", advanced: "true"},
+		{name: "advanced cost first", advanced: "true"},
 		{name: "advanced sticky weighted", advanced: "true", stickyWeighted: "true"},
 	} {
 		t.Run(mode.name, func(t *testing.T) {
@@ -140,6 +141,10 @@ func TestOpenAIGatewayService_GuardianParentAffinitySelectsParentAccountAcrossSc
 				cfg:                cfg,
 				rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService(mode.advanced, mode.stickyWeighted),
 				concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{acquireResults: map[int64]bool{39001: true, 39002: true}}),
+			}
+
+			if mode.name == "advanced cost first" {
+				svc.openAIAdvancedSchedulerSettingRepo().(*openAIAdvancedSchedulerSettingRepoStub).values[SettingKeyCostFirstRoutingEnabled] = "true"
 			}
 
 			ctx := guardianAffinityTestContext(t, codexAutoReviewModel, "guardian", parentID, "")

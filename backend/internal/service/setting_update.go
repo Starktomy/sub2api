@@ -513,6 +513,7 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	}
 	updates[openAIAdvancedSchedulerSettingKey] = strconv.FormatBool(settings.OpenAIAdvancedSchedulerEnabled)
 	updates[SettingKeyOpenAIAdvancedSchedulerStickyWeightedEnabled] = strconv.FormatBool(settings.OpenAIAdvancedSchedulerStickyWeightedEnabled)
+	updates[SettingKeyCostFirstRoutingEnabled] = strconv.FormatBool(settings.CostFirstRoutingEnabled)
 	updates[SettingKeyOpenAIAdvancedSchedulerSubscriptionPriorityEnabled] = strconv.FormatBool(settings.OpenAIAdvancedSchedulerSubscriptionPriorityEnabled)
 	updates[SettingKeyOpenAIAdvancedSchedulerLBTopK] = settings.OpenAIAdvancedSchedulerLBTopK
 	updates[SettingKeyOpenAIAdvancedSchedulerWeightPriority] = settings.OpenAIAdvancedSchedulerWeightPriority
@@ -757,6 +758,7 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 		oauthSchedulingRateMultiplier:  settings.OpenAIOAuthSchedulingRateMultiplier,
 		enabled:                        settings.OpenAIAdvancedSchedulerEnabled,
 		stickyWeightedEnabled:          settings.OpenAIAdvancedSchedulerStickyWeightedEnabled,
+		costFirstEnabled:               settings.CostFirstRoutingEnabled,
 		subscriptionPriorityEnabled:    settings.OpenAIAdvancedSchedulerSubscriptionPriorityEnabled,
 		lbTopKOverride:                 parsePositiveIntOverride(settings.OpenAIAdvancedSchedulerLBTopK),
 		weightOverrides: parseOpenAIAdvancedSchedulerWeightOverrides(map[string]string{

@@ -75,7 +75,7 @@
                   <div>{{ item.resource.display_name || t('admin.suppliers.unknown') }}</div>
                   <div class="text-xs text-gray-500">{{ item.resource.id }}</div>
                 </td>
-                <td class="whitespace-nowrap px-4 py-3">{{ item.resource.masked_email || t('admin.suppliers.unknown') }}</td>
+                <td class="whitespace-nowrap px-4 py-3">{{ item.resource.email || item.resource.masked_email || t('admin.suppliers.unknown') }}</td>
                 <td class="px-4 py-3">{{ item.resource.plan_type || t('admin.suppliers.unknown') }}</td>
                 <td class="px-4 py-3">{{ stateLabel(item.resource.status) }}</td>
                 <td class="whitespace-nowrap px-4 py-3" data-testid="admission">

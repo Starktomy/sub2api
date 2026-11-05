@@ -1,4 +1,11 @@
 export default {
+  workspaceHint: '授权后自动验证并供给，随时暂停。',
+  refreshList: '刷新列表',
+  importHint: '给资源起个名字，粘贴 Session 即可开始验证。',
+  emptyHint: '添加第一个账号后，验证、额度同步与供给由平台自动处理。你可以在这里查看收入或随时暂停。',
+  resourceDetails: '额度与资源详情',
+  supplyRules: '供给与授权说明',
+
   verificationPending: '等待验证',
   supplyUnavailable: '当前无法开启供给，请刷新资源列表并检查授权及验证状态后重试。',
   authorizeAndStart: '授权全部可用额度并开始供给',

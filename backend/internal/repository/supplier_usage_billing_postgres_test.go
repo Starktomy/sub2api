@@ -35,7 +35,7 @@ func supplierDispatchTestDB(t *testing.T) *sql.DB {
 	require.NoError(t, err)
 	db.SetMaxOpenConns(3)
 	t.Cleanup(func() { db.Close(); admin.Exec(`DROP SCHEMA ` + schema + ` CASCADE`); admin.Close() })
-	for _, file := range []string{"001_init.sql", "003_subscription.sql", "007_add_user_allowed_groups.sql", "012_add_user_subscription_soft_delete.sql", "032_add_api_key_ip_restriction.sql", "045_add_api_key_quota.sql", "064_add_api_key_rate_limits.sql", "071_add_usage_billing_dedup.sql", "073_add_usage_billing_dedup_archive.sql", "142_user_platform_quotas.sql", "184_auth_cache_invalidation_outbox.sql", "253_supplier_profiles.sql", "254_supplier_resources.sql", "255_supplier_probe_jobs.sql", "256_supplier_admission.sql", "257_supplier_usage.sql", "258_supplier_supply_controls.sql", "259_supplier_dispatch.sql", "259_supplier_dispatch.sql", "260_supplier_identity_verification.sql"} {
+	for _, file := range []string{"001_init.sql", "003_subscription.sql", "007_add_user_allowed_groups.sql", "012_add_user_subscription_soft_delete.sql", "032_add_api_key_ip_restriction.sql", "045_add_api_key_quota.sql", "064_add_api_key_rate_limits.sql", "071_add_usage_billing_dedup.sql", "073_add_usage_billing_dedup_archive.sql", "142_user_platform_quotas.sql", "184_auth_cache_invalidation_outbox.sql", "253_supplier_profiles.sql", "254_supplier_resources.sql", "255_supplier_probe_jobs.sql", "256_supplier_admission.sql", "257_supplier_usage.sql", "258_supplier_supply_controls.sql", "259_supplier_dispatch.sql", "259_supplier_dispatch.sql", "260_supplier_identity_verification.sql", "261_supplier_resource_email.sql"} {
 		b, e := os.ReadFile("../../migrations/" + file)
 		require.NoError(t, e)
 		_, e = db.Exec(string(b))

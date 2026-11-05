@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -258,6 +259,42 @@ func compositeRouteFromInput(groupID int64, input CompositeRouteInput) (*Composi
 	if input.PublicModel == "" {
 		return nil, fmt.Errorf("public_model is required")
 	}
+	if len(input.Candidates) > 16 {
+		return nil, fmt.Errorf("at most 16 candidate sources are allowed")
+	}
+	if len(input.Candidates) > 0 {
+		if input.MatchType != CompositeRouteMatchExact {
+			return nil, fmt.Errorf("candidate sources require an exact public model")
+		}
+		if input.Endpoint != CompositeRouteEndpointResponses && input.Endpoint != CompositeRouteEndpointChatCompletions && input.Endpoint != CompositeRouteEndpointMessages {
+			return nil, fmt.Errorf("candidate sources support messages, responses or chat_completions only")
+		}
+		seen := map[string]bool{}
+		primary := false
+		for i := range input.Candidates {
+			c := &input.Candidates[i]
+			c.TargetPlatform = strings.TrimSpace(c.TargetPlatform)
+			c.UpstreamModel = strings.TrimSpace(c.UpstreamModel)
+			if !isConcreteRequestPlatform(c.TargetPlatform) || !domain.UsesOpenAIGateway(c.TargetPlatform) || c.TargetPlatform == PlatformGrok {
+				return nil, fmt.Errorf("candidate source must use the shared OpenAI gateway (excluding stateful Grok)")
+			}
+			if c.UpstreamModel == "" || len(c.UpstreamModel) > 200 || strings.IndexFunc(c.UpstreamModel, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
+				return nil, fmt.Errorf("candidate upstream_model must be a nonempty model identifier of at most 200 bytes")
+			}
+			key := c.TargetPlatform + "\x00" + c.UpstreamModel
+			if seen[key] {
+				return nil, fmt.Errorf("duplicate candidate source")
+			}
+			seen[key] = true
+			if c.Enabled && !primary {
+				input.TargetPlatform, input.UpstreamModel = c.TargetPlatform, c.UpstreamModel
+				primary = true
+			}
+		}
+		if !primary {
+			return nil, fmt.Errorf("at least one candidate source must be enabled")
+		}
+	}
 	if !isConcreteRequestPlatform(input.TargetPlatform) {
 		return nil, fmt.Errorf("target_platform must be a concrete provider")
 	}
@@ -265,6 +302,7 @@ func compositeRouteFromInput(groupID int64, input CompositeRouteInput) (*Composi
 		input.Priority = 100
 	}
 	return &CompositeModelRoute{
+		Candidates:     input.Candidates,
 		GroupID:        groupID,
 		PublicModel:    input.PublicModel,
 		MatchType:      input.MatchType,

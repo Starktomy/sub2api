@@ -71,6 +71,12 @@ func (_c *CompositeModelRouteCreate) SetGroupID(v int64) *CompositeModelRouteCre
 	return _c
 }
 
+// SetCandidates sets the "candidates" field.
+func (_c *CompositeModelRouteCreate) SetCandidates(v []map[string]interface{}) *CompositeModelRouteCreate {
+	_c.mutation.SetCandidates(v)
+	return _c
+}
+
 // SetPublicModel sets the "public_model" field.
 func (_c *CompositeModelRouteCreate) SetPublicModel(v string) *CompositeModelRouteCreate {
 	_c.mutation.SetPublicModel(v)
@@ -357,6 +363,10 @@ func (_c *CompositeModelRouteCreate) createSpec() (*CompositeModelRoute, *sqlgra
 		_spec.SetField(compositemodelroute.FieldDeletedAt, field.TypeTime, value)
 		_node.DeletedAt = &value
 	}
+	if value, ok := _c.mutation.Candidates(); ok {
+		_spec.SetField(compositemodelroute.FieldCandidates, field.TypeJSON, value)
+		_node.Candidates = value
+	}
 	if value, ok := _c.mutation.PublicModel(); ok {
 		_spec.SetField(compositemodelroute.FieldPublicModel, field.TypeString, value)
 		_node.PublicModel = value
@@ -497,6 +507,24 @@ func (u *CompositeModelRouteUpsert) SetGroupID(v int64) *CompositeModelRouteUpse
 // UpdateGroupID sets the "group_id" field to the value that was provided on create.
 func (u *CompositeModelRouteUpsert) UpdateGroupID() *CompositeModelRouteUpsert {
 	u.SetExcluded(compositemodelroute.FieldGroupID)
+	return u
+}
+
+// SetCandidates sets the "candidates" field.
+func (u *CompositeModelRouteUpsert) SetCandidates(v []map[string]interface{}) *CompositeModelRouteUpsert {
+	u.Set(compositemodelroute.FieldCandidates, v)
+	return u
+}
+
+// UpdateCandidates sets the "candidates" field to the value that was provided on create.
+func (u *CompositeModelRouteUpsert) UpdateCandidates() *CompositeModelRouteUpsert {
+	u.SetExcluded(compositemodelroute.FieldCandidates)
+	return u
+}
+
+// ClearCandidates clears the value of the "candidates" field.
+func (u *CompositeModelRouteUpsert) ClearCandidates() *CompositeModelRouteUpsert {
+	u.SetNull(compositemodelroute.FieldCandidates)
 	return u
 }
 
@@ -699,6 +727,27 @@ func (u *CompositeModelRouteUpsertOne) SetGroupID(v int64) *CompositeModelRouteU
 func (u *CompositeModelRouteUpsertOne) UpdateGroupID() *CompositeModelRouteUpsertOne {
 	return u.Update(func(s *CompositeModelRouteUpsert) {
 		s.UpdateGroupID()
+	})
+}
+
+// SetCandidates sets the "candidates" field.
+func (u *CompositeModelRouteUpsertOne) SetCandidates(v []map[string]interface{}) *CompositeModelRouteUpsertOne {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.SetCandidates(v)
+	})
+}
+
+// UpdateCandidates sets the "candidates" field to the value that was provided on create.
+func (u *CompositeModelRouteUpsertOne) UpdateCandidates() *CompositeModelRouteUpsertOne {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.UpdateCandidates()
+	})
+}
+
+// ClearCandidates clears the value of the "candidates" field.
+func (u *CompositeModelRouteUpsertOne) ClearCandidates() *CompositeModelRouteUpsertOne {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.ClearCandidates()
 	})
 }
 
@@ -1085,6 +1134,27 @@ func (u *CompositeModelRouteUpsertBulk) SetGroupID(v int64) *CompositeModelRoute
 func (u *CompositeModelRouteUpsertBulk) UpdateGroupID() *CompositeModelRouteUpsertBulk {
 	return u.Update(func(s *CompositeModelRouteUpsert) {
 		s.UpdateGroupID()
+	})
+}
+
+// SetCandidates sets the "candidates" field.
+func (u *CompositeModelRouteUpsertBulk) SetCandidates(v []map[string]interface{}) *CompositeModelRouteUpsertBulk {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.SetCandidates(v)
+	})
+}
+
+// UpdateCandidates sets the "candidates" field to the value that was provided on create.
+func (u *CompositeModelRouteUpsertBulk) UpdateCandidates() *CompositeModelRouteUpsertBulk {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.UpdateCandidates()
+	})
+}
+
+// ClearCandidates clears the value of the "candidates" field.
+func (u *CompositeModelRouteUpsertBulk) ClearCandidates() *CompositeModelRouteUpsertBulk {
+	return u.Update(func(s *CompositeModelRouteUpsert) {
+		s.ClearCandidates()
 	})
 }
 

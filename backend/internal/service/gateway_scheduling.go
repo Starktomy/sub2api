@@ -98,6 +98,8 @@ func (s *GatewayService) SelectAccountForModelWithExclusions(ctx context.Context
 // metadataUserID: 用于客户端亲和调度，从中提取客户端 ID
 // sub2apiUserID: 系统用户 ID，用于二维亲和调度
 func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, metadataUserID string, sub2apiUserID int64) (*AccountSelectionResult, error) {
+	ctx = s.withPurchaseSession(ctx, groupID, sessionHash)
+	costFirst := s.costFirstEnabled(ctx) && purchaseCostAllowed(ctx)
 	// 调试日志：记录调度入口参数
 	excludedIDsList := make([]int64, 0, len(excludedIDs))
 	for id := range excludedIDs {
@@ -341,7 +343,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 		if len(routingCandidates) > 0 {
 			// 1.5. 在路由账号范围内检查粘性会话
-			if sessionHash != "" && stickyAccountID > 0 {
+			if !costFirst && sessionHash != "" && stickyAccountID > 0 {
 				slog.Debug("sticky.layer1_5_checking",
 					"sticky_account_id", stickyAccountID,
 					"in_routing_list", containsInt64(routingAccountIDs, stickyAccountID),
@@ -477,6 +479,12 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 					}
 				})
 				shuffleWithinSortGroups(routingAvailable)
+				if costFirst {
+					order := newPurchaseCostOrder(ctx, s.channelService, groupID, requestedModel, routingCandidates, false)
+					sort.SliceStable(routingAvailable, func(i, j int) bool {
+						return order.compare(routingAvailable[i].account, routingAvailable[j].account) < 0
+					})
+				}
 
 				// 4. 尝试获取槽位
 				for _, item := range routingAvailable {
@@ -521,7 +529,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	}
 
 	// ============ Layer 1.5: 粘性会话（仅在无模型路由配置时生效） ============
-	if len(routingAccountIDs) == 0 && sessionHash != "" && stickyAccountID > 0 && !isExcluded(stickyAccountID) {
+	if !costFirst && len(routingAccountIDs) == 0 && sessionHash != "" && stickyAccountID > 0 && !isExcluded(stickyAccountID) {
 		accountID := stickyAccountID
 		if accountID > 0 && !isExcluded(accountID) {
 			account, ok := accountByID[accountID]
@@ -628,7 +636,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 				)
 			}
 		}
-	} else if len(routingAccountIDs) == 0 && sessionHash != "" {
+	} else if !costFirst && len(routingAccountIDs) == 0 && sessionHash != "" {
 		slog.Debug("sticky.layer1_5_no_routing_skip",
 			"sticky_account_id", stickyAccountID,
 			"is_excluded", func() bool { return stickyAccountID > 0 && isExcluded(stickyAccountID) }(),
@@ -715,7 +723,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 	loadMap, err := s.concurrencyService.GetAccountsLoadBatch(ctx, accountLoads)
 	if err != nil {
-		if result, ok, legacyErr := s.tryAcquireByLegacyOrder(ctx, candidates, groupID, sessionHash, preferOAuth); legacyErr != nil {
+		if result, ok, legacyErr := s.tryAcquireByLegacyOrder(ctx, candidates, groupID, sessionHash, preferOAuth, requestedModel); legacyErr != nil {
 			return nil, legacyErr
 		} else if ok {
 			return result, nil
@@ -738,7 +746,11 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		// 分层过滤选择：优先级 →（可选）最早重置 → 负载率 → LRU
 		for len(available) > 0 {
 			// 1. 取优先级最小的集合
-			candidates := filterByMinPriority(available)
+			costPool := available
+			if costFirst {
+				costPool = newPurchaseCostOrder(ctx, s.channelService, groupID, requestedModel, candidates, false).filter(available)
+			}
+			candidates := filterByMinPriority(costPool)
 			// 2. （可选）use-it-or-lose-it：优先选用会话窗口最早重置的账号
 			if cfg.PreferSoonestReset {
 				candidates = filterBySoonestReset(candidates)
@@ -778,6 +790,9 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 	// ============ Layer 3: 兜底排队 ============
 	s.sortCandidatesForFallback(candidates, preferOAuth, cfg.FallbackSelectionMode)
+	if costFirst {
+		newPurchaseCostOrder(ctx, s.channelService, groupID, requestedModel, candidates, false).sort(candidates)
+	}
 	for _, acc := range candidates {
 		// 会话数量限制检查（等待计划也需要占用会话配额）
 		if !s.checkAndRegisterSession(ctx, acc, sessionHash) {
@@ -793,9 +808,12 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	return nil, ErrNoAvailableAccounts
 }
 
-func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates []*Account, groupID *int64, sessionHash string, preferOAuth bool) (*AccountSelectionResult, bool, error) {
+func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates []*Account, groupID *int64, sessionHash string, preferOAuth bool, requestedModels ...string) (*AccountSelectionResult, bool, error) {
 	ordered := append([]*Account(nil), candidates...)
 	sortAccountsByPriorityAndLastUsed(ordered, preferOAuth)
+	if len(requestedModels) > 0 && s.costFirstEnabled(ctx) && purchaseCostAllowed(ctx) {
+		newPurchaseCostOrder(ctx, s.channelService, groupID, requestedModels[0], ordered, false).sort(ordered)
+	}
 
 	for _, acc := range ordered {
 		result, err := s.tryAcquireAccountSlot(ctx, acc.ID, acc.Concurrency)
@@ -1902,6 +1920,9 @@ func shuffleWithinPriority(accounts []*Account) {
 
 // selectAccountForModelWithPlatform 选择单平台账户（完全隔离）
 func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, platform string) (*Account, error) {
+	ctx = s.withPurchaseSession(ctx, groupID, sessionHash)
+	costFirst := s.costFirstEnabled(ctx) && purchaseCostAllowed(ctx)
+	var costOrder *purchaseCostOrder
 	preferOAuth := platform == PlatformGemini
 	routingAccountIDs := s.routingAccountIDsForRequest(ctx, groupID, requestedModel, platform)
 
@@ -1923,7 +1944,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 				derefGroupID(groupID), requestedModel, platform, shortSessionHash(sessionHash), routingAccountIDs)
 		}
 		// 1) Sticky session only applies if the bound account is within the routing set.
-		if sessionHash != "" && s.cache != nil {
+		if !costFirst && sessionHash != "" && s.cache != nil {
 			accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 			if err == nil && accountID > 0 && containsInt64(routingAccountIDs, accountID) {
 				if _, excluded := excludedIDs[accountID]; !excluded {
@@ -2010,6 +2031,21 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 				selected = acc
 				continue
 			}
+			costCmp := 0
+			if costFirst {
+				if costOrder == nil {
+					order := newPurchaseCostOrder(ctx, s.channelService, groupID, requestedModel, purchaseAccountPointers(accounts), false)
+					costOrder = &order
+				}
+				costCmp = costOrder.compare(acc, selected)
+			}
+			if costCmp < 0 {
+				selected = acc
+				continue
+			}
+			if costCmp > 0 {
+				continue
+			}
 			if acc.Priority < selected.Priority {
 				selected = acc
 			} else if acc.Priority == selected.Priority {
@@ -2045,7 +2081,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 	}
 
 	// 1. 查询粘性会话
-	if sessionHash != "" && s.cache != nil {
+	if !costFirst && sessionHash != "" && s.cache != nil {
 		accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 		if err == nil && accountID > 0 {
 			if _, excluded := excludedIDs[accountID]; !excluded {
@@ -2127,6 +2163,21 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 			selected = acc
 			continue
 		}
+		costCmp := 0
+		if costFirst {
+			if costOrder == nil {
+				order := newPurchaseCostOrder(ctx, s.channelService, groupID, requestedModel, purchaseAccountPointers(accounts), false)
+				costOrder = &order
+			}
+			costCmp = costOrder.compare(acc, selected)
+		}
+		if costCmp < 0 {
+			selected = acc
+			continue
+		}
+		if costCmp > 0 {
+			continue
+		}
 		if acc.Priority < selected.Priority {
 			selected = acc
 		} else if acc.Priority == selected.Priority {
@@ -2168,6 +2219,9 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 // selectAccountWithMixedScheduling 选择账户（支持混合调度）
 // 查询原生平台账户 + 启用 mixed_scheduling 的 antigravity 账户
 func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, nativePlatform string) (*Account, error) {
+	ctx = s.withPurchaseSession(ctx, groupID, sessionHash)
+	costFirst := s.costFirstEnabled(ctx) && purchaseCostAllowed(ctx)
+	var costOrder *purchaseCostOrder
 	preferOAuth := nativePlatform == PlatformGemini
 	routingAccountIDs := s.routingAccountIDsForRequest(ctx, groupID, requestedModel, nativePlatform)
 
@@ -2187,7 +2241,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 				derefGroupID(groupID), requestedModel, nativePlatform, shortSessionHash(sessionHash), routingAccountIDs)
 		}
 		// 1) Sticky session only applies if the bound account is within the routing set.
-		if sessionHash != "" && s.cache != nil {
+		if !costFirst && sessionHash != "" && s.cache != nil {
 			accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 			if err == nil && accountID > 0 && containsInt64(routingAccountIDs, accountID) {
 				if _, excluded := excludedIDs[accountID]; !excluded {
@@ -2276,6 +2330,21 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 				selected = acc
 				continue
 			}
+			costCmp := 0
+			if costFirst {
+				if costOrder == nil {
+					order := newPurchaseCostOrder(ctx, s.channelService, groupID, requestedModel, purchaseAccountPointers(accounts), false)
+					costOrder = &order
+				}
+				costCmp = costOrder.compare(acc, selected)
+			}
+			if costCmp < 0 {
+				selected = acc
+				continue
+			}
+			if costCmp > 0 {
+				continue
+			}
 			if acc.Priority < selected.Priority {
 				selected = acc
 			} else if acc.Priority == selected.Priority {
@@ -2311,7 +2380,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 	}
 
 	// 1. 查询粘性会话
-	if sessionHash != "" && s.cache != nil {
+	if !costFirst && sessionHash != "" && s.cache != nil {
 		accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 		if err == nil && accountID > 0 {
 			if _, excluded := excludedIDs[accountID]; !excluded {
@@ -2392,6 +2461,21 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 		}
 		if selected == nil {
 			selected = acc
+			continue
+		}
+		costCmp := 0
+		if costFirst {
+			if costOrder == nil {
+				order := newPurchaseCostOrder(ctx, s.channelService, groupID, requestedModel, purchaseAccountPointers(accounts), false)
+				costOrder = &order
+			}
+			costCmp = costOrder.compare(acc, selected)
+		}
+		if costCmp < 0 {
+			selected = acc
+			continue
+		}
+		if costCmp > 0 {
 			continue
 		}
 		if acc.Priority < selected.Priority {

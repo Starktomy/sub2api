@@ -1,20 +1,18 @@
 <template>
   <div class="space-y-6">
-      <p class="text-gray-600 dark:text-dark-300">{{ authStore.user?.email }}</p>
+
       <p v-if="loading" role="status">{{ t('supplier.loading') }}</p>
       <section v-else-if="loadFailed" class="card space-y-4 p-6">
         <p role="alert">{{ t('supplier.loadFailed') }}</p>
         <button class="btn btn-secondary" @click="loadProfile">{{ t('supplier.retry') }}</button>
       </section>
-      <section v-else-if="profile" class="card space-y-4 p-6">
-        <h2 class="text-xl font-semibold">{{ profile.display_name }}</h2>
-        <dl class="space-y-2">
-          <dt class="text-gray-500 dark:text-dark-400">{{ t('supplier.verifiedEmail') }}</dt>
-          <dd>{{ profile.verified_email }}</dd>
-        </dl>
-        <p>{{ t('supplier.enrolled') }}</p>
+      <div v-else-if="profile" class="space-y-6">
+        <div class="flex flex-wrap items-center justify-between gap-2 text-sm text-gray-500 dark:text-dark-300">
+          <span class="font-medium text-gray-700 dark:text-dark-200">{{ profile.display_name }}</span>
+          <span>{{ profile.verified_email }}</span>
+        </div>
         <Resources />
-      </section>
+      </div>
       <form v-else class="card space-y-5 p-6" @submit.prevent="enroll">
         <h2 class="text-xl font-semibold">{{ t('supplier.enrollTitle') }}</h2>
         <p>{{ t('supplier.verifyDescription') }}</p>
@@ -45,12 +43,10 @@
 import { onMounted, onUnmounted, ref } from 'vue'
 import Resources from './Resources.vue'
 import { useI18n } from 'vue-i18n'
-import { supplierSession } from './session'
 import { isolatedSupplierAPI, supplierErrorReason } from './api'
 import type { SupplierProfile } from '@/api/supplier'
 
 const { t } = useI18n()
-const authStore = supplierSession
 const profile = ref<SupplierProfile | null>(null)
 const displayName = ref('')
 const verifyCode = ref('')

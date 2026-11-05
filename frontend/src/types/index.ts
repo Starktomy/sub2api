@@ -702,7 +702,14 @@ export type CompositeRouteEndpoint =
 
 export type CompositeRouteSource = 'route' | 'detector' | string
 
+export interface CompositeRouteCandidate {
+ target_platform: Exclude<GroupPlatform, 'composite'>
+ upstream_model: string
+ enabled: boolean
+}
+
 export interface CompositeModelRoute {
+ candidates?: CompositeRouteCandidate[]
   id: number
   group_id: number
   public_model: string
@@ -718,6 +725,7 @@ export interface CompositeModelRoute {
 }
 
 export interface CompositeModelRouteInput {
+ candidates?: CompositeRouteCandidate[]
   public_model: string
   match_type: CompositeRouteMatchType
   target_platform: Exclude<GroupPlatform, 'composite'>

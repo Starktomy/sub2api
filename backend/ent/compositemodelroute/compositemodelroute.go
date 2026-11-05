@@ -23,6 +23,8 @@ const (
 	FieldDeletedAt = "deleted_at"
 	// FieldGroupID holds the string denoting the group_id field in the database.
 	FieldGroupID = "group_id"
+	// FieldCandidates holds the string denoting the candidates field in the database.
+	FieldCandidates = "candidates"
 	// FieldPublicModel holds the string denoting the public_model field in the database.
 	FieldPublicModel = "public_model"
 	// FieldMatchType holds the string denoting the match_type field in the database.
@@ -59,6 +61,7 @@ var Columns = []string{
 	FieldUpdatedAt,
 	FieldDeletedAt,
 	FieldGroupID,
+	FieldCandidates,
 	FieldPublicModel,
 	FieldMatchType,
 	FieldTargetPlatform,

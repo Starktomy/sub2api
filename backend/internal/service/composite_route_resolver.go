@@ -113,6 +113,20 @@ func (r *CompositeRouteResolver) Resolve(ctx context.Context, groupID int64, mod
 			return decision, fmt.Errorf("list composite routes: %w", err)
 		}
 		if route, ok := matchCompositeRoute(routes, model, endpoint); ok {
+			if len(route.Candidates) > 0 {
+				found := false
+				for _, c := range route.Candidates {
+					if c.Enabled {
+						route.TargetPlatform, route.UpstreamModel = c.TargetPlatform, c.UpstreamModel
+						found = true
+						break
+					}
+				}
+				if !found {
+					decision.Reason = "no enabled candidate sources"
+					return decision, nil
+				}
+			}
 			upstreamModel := strings.TrimSpace(route.UpstreamModel)
 			if upstreamModel == "" {
 				upstreamModel = model

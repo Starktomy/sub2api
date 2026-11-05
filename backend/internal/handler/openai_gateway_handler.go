@@ -754,6 +754,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			zap.Float64("load_skew", scheduleDecision.LoadSkew),
 		)
 		account := selection.Account
+		c.Request = c.Request.WithContext(service.ApplyCompositeSelection(c.Request.Context(), selection))
 		if previousResponseID != "" && requestPlatform == service.PlatformOpenAI && !account.IsOpenAIApiKey() {
 			// The public Responses HTTP API supports previous_response_id on API-key
 			// accounts. OAuth/SetupToken upstreams do not, so keep searching instead
@@ -805,6 +806,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		// 从不可变的 canonical forwardBody 派生本次尝试 body 并整块剔除上游私有的加密
 		// reasoning item（含耦合的 id/summary），避免非透传上游 400 拒绝 Kiro reasoning 形态。
 		attemptBody := h.deriveOpenAIForwardAttemptBody(reqLog, forwardBody, account, &passthroughFailoverState)
+		if selection.CompositeSource != nil {
+			attemptBody = h.gatewayService.ReplaceModelInBody(attemptBody, selection.CompositeSource.UpstreamModel)
+		}
 		result, err := func() (*service.OpenAIForwardResult, error) {
 			defer func() {
 				if accountReleaseFunc != nil {
@@ -1375,6 +1379,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			return
 		}
 		account := selection.Account
+		c.Request = c.Request.WithContext(service.ApplyCompositeSelection(c.Request.Context(), selection))
 		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
 		reqLog.Debug("openai_messages.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
 		_ = scheduleDecision
@@ -1400,6 +1405,10 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		defaultMappedModel := strings.TrimSpace(effectiveMappedModel)
 		// 应用渠道模型映射到请求体
 		forwardBody := mappedBodyForMessages(channelMappingMsg.Mapped, channelMappingMsg.MappedModel)
+		if selection.CompositeSource != nil {
+			forwardBody = h.gatewayService.ReplaceModelInBody(forwardBody, selection.CompositeSource.UpstreamModel)
+			defaultMappedModel = selection.CompositeSource.UpstreamModel
+		}
 		writerSizeBeforeForward := c.Writer.Size()
 		result, err := func() (*service.OpenAIForwardResult, error) {
 			defer func() {
@@ -2310,6 +2319,7 @@ func (h *OpenAIGatewayHandler) acquireOpenAIAccountSlot(
 	// 门只存在于调度栈的局部 ctx，必须经选号结果重放到本函数的 ctx 上。
 	ctx := service.ContextWithSelectionProfitGate(c.Request.Context(), selection)
 	account := selection.Account
+	c.Request = c.Request.WithContext(service.ApplyCompositeSelection(c.Request.Context(), selection))
 	if selection.Acquired {
 		latest, vetoed, reason := h.gatewayService.ProfitControlVetoLatest(ctx, account)
 		if vetoed {
@@ -2562,6 +2572,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		if decision.OAuthAmbiguous() {
 			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalModelConfiguration)
 			closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, decision.AmbiguousMessage())
+			return
+		}
+		if decision.Route != nil && len(decision.Route.Candidates) > 0 {
+			closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "Multi-source composite routes currently require HTTP")
 			return
 		}
 		if decision.Matched {
@@ -2852,6 +2866,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		}
 
 		account := selection.Account
+		c.Request = c.Request.WithContext(service.ApplyCompositeSelection(c.Request.Context(), selection))
 		accountMaxConcurrency := account.Concurrency
 		if selection.WaitPlan != nil && selection.WaitPlan.MaxConcurrency > 0 {
 			accountMaxConcurrency = selection.WaitPlan.MaxConcurrency

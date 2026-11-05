@@ -28,6 +28,19 @@ beforeEach(() => {
 })
 
 describe('supplier management', () => {
+  it.each([
+    ['supplier.account@example.test', 'supplier.account@example.test'],
+    ['', 's***@example.test'],
+    [undefined, 's***@example.test']
+  ])('shows full account email %s with legacy fallback without rendering credentials', async (email, expected) => {
+    list.mockResolvedValue([{ supplier_name: 'Supplier', supplier_user_id: 3, resource: { id: 'r-1', display_name: 'Resource', status: 'paused', schedulable: false, probe_state: 'fresh', email, masked_email: 's***@example.test', access_token: 'credential-canary', envelope: 'vault-canary', account_hint: 'identity-canary' } }])
+    const wrapper = render()
+    await flushPromises()
+    expect(wrapper.text()).toContain(expected)
+    if (email) expect(wrapper.text()).not.toContain('s***@example.test')
+    for (const secret of ['credential-canary', 'vault-canary', 'identity-canary']) expect(wrapper.html()).not.toContain(secret)
+  })
+
   it('shows empty inventory honestly and saves policy with admission disabled', async () => {
     const wrapper = render()
     await flushPromises()

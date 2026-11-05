@@ -10,6 +10,7 @@ import (
 
 	"entgo.io/ent/dialect/sql"
 	"entgo.io/ent/dialect/sql/sqlgraph"
+	"entgo.io/ent/dialect/sql/sqljson"
 	"entgo.io/ent/schema/field"
 	"github.com/Wei-Shaw/sub2api/ent/compositemodelroute"
 	"github.com/Wei-Shaw/sub2api/ent/group"
@@ -66,6 +67,24 @@ func (_u *CompositeModelRouteUpdate) SetNillableGroupID(v *int64) *CompositeMode
 	if v != nil {
 		_u.SetGroupID(*v)
 	}
+	return _u
+}
+
+// SetCandidates sets the "candidates" field.
+func (_u *CompositeModelRouteUpdate) SetCandidates(v []map[string]interface{}) *CompositeModelRouteUpdate {
+	_u.mutation.SetCandidates(v)
+	return _u
+}
+
+// AppendCandidates appends value to the "candidates" field.
+func (_u *CompositeModelRouteUpdate) AppendCandidates(v []map[string]interface{}) *CompositeModelRouteUpdate {
+	_u.mutation.AppendCandidates(v)
+	return _u
+}
+
+// ClearCandidates clears the value of the "candidates" field.
+func (_u *CompositeModelRouteUpdate) ClearCandidates() *CompositeModelRouteUpdate {
+	_u.mutation.ClearCandidates()
 	return _u
 }
 
@@ -306,6 +325,17 @@ func (_u *CompositeModelRouteUpdate) sqlSave(ctx context.Context) (_node int, er
 	if _u.mutation.DeletedAtCleared() {
 		_spec.ClearField(compositemodelroute.FieldDeletedAt, field.TypeTime)
 	}
+	if value, ok := _u.mutation.Candidates(); ok {
+		_spec.SetField(compositemodelroute.FieldCandidates, field.TypeJSON, value)
+	}
+	if value, ok := _u.mutation.AppendedCandidates(); ok {
+		_spec.AddModifier(func(u *sql.UpdateBuilder) {
+			sqljson.Append(u, compositemodelroute.FieldCandidates, value)
+		})
+	}
+	if _u.mutation.CandidatesCleared() {
+		_spec.ClearField(compositemodelroute.FieldCandidates, field.TypeJSON)
+	}
 	if value, ok := _u.mutation.PublicModel(); ok {
 		_spec.SetField(compositemodelroute.FieldPublicModel, field.TypeString, value)
 	}
@@ -422,6 +452,24 @@ func (_u *CompositeModelRouteUpdateOne) SetNillableGroupID(v *int64) *CompositeM
 	if v != nil {
 		_u.SetGroupID(*v)
 	}
+	return _u
+}
+
+// SetCandidates sets the "candidates" field.
+func (_u *CompositeModelRouteUpdateOne) SetCandidates(v []map[string]interface{}) *CompositeModelRouteUpdateOne {
+	_u.mutation.SetCandidates(v)
+	return _u
+}
+
+// AppendCandidates appends value to the "candidates" field.
+func (_u *CompositeModelRouteUpdateOne) AppendCandidates(v []map[string]interface{}) *CompositeModelRouteUpdateOne {
+	_u.mutation.AppendCandidates(v)
+	return _u
+}
+
+// ClearCandidates clears the value of the "candidates" field.
+func (_u *CompositeModelRouteUpdateOne) ClearCandidates() *CompositeModelRouteUpdateOne {
+	_u.mutation.ClearCandidates()
 	return _u
 }
 
@@ -691,6 +739,17 @@ func (_u *CompositeModelRouteUpdateOne) sqlSave(ctx context.Context) (_node *Com
 	}
 	if _u.mutation.DeletedAtCleared() {
 		_spec.ClearField(compositemodelroute.FieldDeletedAt, field.TypeTime)
+	}
+	if value, ok := _u.mutation.Candidates(); ok {
+		_spec.SetField(compositemodelroute.FieldCandidates, field.TypeJSON, value)
+	}
+	if value, ok := _u.mutation.AppendedCandidates(); ok {
+		_spec.AddModifier(func(u *sql.UpdateBuilder) {
+			sqljson.Append(u, compositemodelroute.FieldCandidates, value)
+		})
+	}
+	if _u.mutation.CandidatesCleared() {
+		_spec.ClearField(compositemodelroute.FieldCandidates, field.TypeJSON)
 	}
 	if value, ok := _u.mutation.PublicModel(); ok {
 		_spec.SetField(compositemodelroute.FieldPublicModel, field.TypeString, value)

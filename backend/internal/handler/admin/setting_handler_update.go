@@ -279,6 +279,7 @@ type UpdateSettingsRequest struct {
 	OpenAIOAuthSchedulingRateMultiplier                *float64 `json:"openai_oauth_scheduling_rate_multiplier"`
 	OpenAIAdvancedSchedulerEnabled                     *bool    `json:"openai_advanced_scheduler_enabled"`
 	OpenAIAdvancedSchedulerStickyWeightedEnabled       *bool    `json:"openai_advanced_scheduler_sticky_weighted_enabled"`
+	CostFirstRoutingEnabled                            *bool    `json:"cost_first_routing_enabled"`
 	OpenAIAdvancedSchedulerSubscriptionPriorityEnabled *bool    `json:"openai_advanced_scheduler_subscription_priority_enabled"`
 	OpenAIAdvancedSchedulerLBTopK                      *string  `json:"openai_advanced_scheduler_lb_top_k"`
 	OpenAIAdvancedSchedulerWeightPriority              *string  `json:"openai_advanced_scheduler_weight_priority"`
@@ -1865,6 +1866,12 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return previousSettings.OpenAIAdvancedSchedulerStickyWeightedEnabled
 		}(),
+		CostFirstRoutingEnabled: func() bool {
+			if req.CostFirstRoutingEnabled != nil {
+				return *req.CostFirstRoutingEnabled
+			}
+			return previousSettings.CostFirstRoutingEnabled
+		}(),
 		OpenAIAdvancedSchedulerSubscriptionPriorityEnabled: func() bool {
 			if req.OpenAIAdvancedSchedulerSubscriptionPriorityEnabled != nil {
 				return *req.OpenAIAdvancedSchedulerSubscriptionPriorityEnabled
@@ -2374,6 +2381,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		OpenAIOAuthSchedulingRateMultiplier:                    updatedSettings.OpenAIOAuthSchedulingRateMultiplier,
 		OpenAIAdvancedSchedulerEnabled:                         updatedSettings.OpenAIAdvancedSchedulerEnabled,
 		OpenAIAdvancedSchedulerStickyWeightedEnabled:           updatedSettings.OpenAIAdvancedSchedulerStickyWeightedEnabled,
+		CostFirstRoutingEnabled:                                updatedSettings.CostFirstRoutingEnabled,
 		OpenAIAdvancedSchedulerSubscriptionPriorityEnabled:     updatedSettings.OpenAIAdvancedSchedulerSubscriptionPriorityEnabled,
 		OpenAIAdvancedSchedulerLBTopK:                          updatedSettings.OpenAIAdvancedSchedulerLBTopK,
 		OpenAIAdvancedSchedulerWeightPriority:                  updatedSettings.OpenAIAdvancedSchedulerWeightPriority,

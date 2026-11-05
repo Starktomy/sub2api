@@ -1178,6 +1178,9 @@ export default {
         selectAtLeastOne: '开启固定账号后至少选择一个账号'
       },
       compositeRoutes: {
+ candidates: '有序等价来源',
+ addCandidate: '添加来源',
+ candidatesHint: '仅填写明确等价的模型，账号必须属于当前分组。仅支持精确模型及 messages、responses、chat_completions 端点，共享 OpenAI 网关的平台（不含 Grok）；账号能力限制仍然生效。空列表保持旧单目标。成本模式按采购价格，否则按来源顺序。',
         action: '路由',
         title: 'Composite 路由',
         titleWithGroup: 'Composite 路由：{name}',

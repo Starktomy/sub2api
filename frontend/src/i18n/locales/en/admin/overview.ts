@@ -1181,6 +1181,9 @@ export default {
         selectAtLeastOne: 'Select at least one account after enabling pinned accounts'
       },
       compositeRoutes: {
+ candidates: 'Ordered equivalent sources',
+ addCandidate: 'Add source',
+ candidatesHint: 'Explicit equivalents only; same group. Use an exact route scoped to messages, responses or chat_completions. Supported shared OpenAI gateway providers only (not Grok); endpoint/account capability restrictions still apply. Empty list preserves the legacy target. Cost mode ranks procurement prices; otherwise source order wins.',
         action: 'Routes',
         title: 'Composite Routes',
         titleWithGroup: 'Composite Routes: {name}',

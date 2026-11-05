@@ -337,14 +337,15 @@ type UpdateGroupRequest struct {
 }
 
 type CompositeRouteRequest struct {
-	PublicModel    string `json:"public_model" binding:"required"`
-	MatchType      string `json:"match_type" binding:"omitempty,oneof=exact prefix"`
-	TargetPlatform string `json:"target_platform" binding:"required,concrete_platform"`
-	UpstreamModel  string `json:"upstream_model"`
-	Endpoint       string `json:"endpoint" binding:"omitempty,oneof=any messages count_tokens responses chat_completions embeddings images gemini"`
-	Priority       int    `json:"priority"`
-	Enabled        *bool  `json:"enabled"`
-	Notes          string `json:"notes"`
+	Candidates     []service.CompositeRouteCandidate `json:"candidates"`
+	PublicModel    string                            `json:"public_model" binding:"required"`
+	MatchType      string                            `json:"match_type" binding:"omitempty,oneof=exact prefix"`
+	TargetPlatform string                            `json:"target_platform" binding:"omitempty,concrete_platform"`
+	UpstreamModel  string                            `json:"upstream_model"`
+	Endpoint       string                            `json:"endpoint" binding:"omitempty,oneof=any messages count_tokens responses chat_completions embeddings images gemini"`
+	Priority       int                               `json:"priority"`
+	Enabled        *bool                             `json:"enabled"`
+	Notes          string                            `json:"notes"`
 }
 
 type CompositeRoutePreviewRequest struct {
@@ -521,6 +522,7 @@ func compositeRouteRequestToInput(req CompositeRouteRequest, defaultEnabled bool
 		enabled = *req.Enabled
 	}
 	return service.CompositeRouteInput{
+		Candidates:     req.Candidates,
 		PublicModel:    req.PublicModel,
 		MatchType:      req.MatchType,
 		TargetPlatform: req.TargetPlatform,

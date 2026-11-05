@@ -149,6 +149,7 @@ vi.mock("@/utils/apiError", () => ({
 vi.mock("vue-i18n", async () => {
   const actual = await vi.importActual<typeof import("vue-i18n")>("vue-i18n");
   const translations: Record<string, string> = {
+    "admin.settings.scheduling.costFirstTitle": "采购成本优先（全平台）",
     "admin.settings.wechatConnect.title": "微信登录",
     "admin.settings.wechatConnect.description": "用于微信开放平台或公众号/小程序的第三方登录配置。",
     "admin.settings.wechatConnect.enabledLabel": "启用微信登录",
@@ -1581,6 +1582,25 @@ describe("admin SettingsView payment visible method controls", () => {
     await flushPromises();
     expect(updateSettings).toHaveBeenCalledWith(expect.objectContaining({
       openai_oauth_scheduling_rate_multiplier: null,
+    }));
+  });
+
+  it("loads and saves global cost-first mode without advanced scheduling", async () => {
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      openai_advanced_scheduler_enabled: false,
+      cost_first_routing_enabled: true,
+    });
+    const wrapper = mountView();
+    await flushPromises();
+    const toggle = wrapper.get<HTMLInputElement>('[data-testid="cost-first-routing-toggle"]');
+    expect(toggle.element.checked).toBe(true);
+    expect(wrapper.text()).toContain("采购成本优先（全平台）");
+    await toggle.setValue(false);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings).toHaveBeenCalledWith(expect.objectContaining({
+      cost_first_routing_enabled: false,
     }));
   });
 

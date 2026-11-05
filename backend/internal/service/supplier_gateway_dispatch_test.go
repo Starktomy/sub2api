@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 type supplierDispatchRepoStub struct {
@@ -349,4 +350,23 @@ func TestSupplierStagePrecedesApplyAndPricingFailureStaysPending(t *testing.T) {
 			require.Equal(t, 7, repo.command.InputTokens)
 		})
 	}
+}
+
+func TestSupplierCompositeSourceAcceptsExactMappedModelOnce(t *testing.T) {
+	payload := `{"id":"resp_mapped","status":"completed","model":"gpt-5.2","output":[],"usage":{"input_tokens":10,"output_tokens":2}}`
+	svc, repo, upstream, account, _, c, ctx := supplierGatewayFixture(t, payload, false)
+	account.Credentials["model_mapping"] = map[string]any{"supplier-alias": "gpt-5.2"}
+	source := CompositeRouteCandidate{TargetPlatform: PlatformOpenAI, UpstreamModel: "supplier-alias", Enabled: true}
+	route := CompositeModelRoute{GroupID: 7, PublicModel: "gpt6luna", Candidates: []CompositeRouteCandidate{source}}
+	ctx = WithCompositeRouteDecision(ctx, CompositeRouteDecision{Matched: true, Source: CompositeRouteSourceExplicit, GroupID: 7, PublicModel: "gpt6luna", TargetPlatform: PlatformOpenAI, UpstreamModel: "supplier-alias", Route: &route})
+	ctx = ApplyCompositeSelection(ctx, &AccountSelectionResult{Account: account, CompositeSource: &source})
+	c.Request = c.Request.WithContext(ctx)
+	result, err := svc.Forward(ctx, c, account, []byte(`{"model":"supplier-alias","input":"hello","stream":false}`))
+	require.NoError(t, err)
+	require.NotNil(t, result.SupplierDispatch)
+	require.Equal(t, "gpt-5.2", repo.accepted.Model, "durable acceptance must bind actual mapped upstream model")
+	require.Len(t, upstream.requests, 1)
+	require.Equal(t, "gpt-5.2", gjson.GetBytes(upstream.lastBody, "model").String())
+	public, _ := RequestedPublicModelFromContext(ctx)
+	require.Equal(t, "gpt6luna", public)
 }

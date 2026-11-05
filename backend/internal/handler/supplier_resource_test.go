@@ -15,9 +15,10 @@ import (
 )
 
 func TestSupplierResourceDTOHasNoCredentialsOrUpstreamIdentity(t *testing.T) {
-	r := service.SupplierResource{ID: "uuid", Envelope: []byte("secret-canary"), KeyID: "key-canary", AccountHint: "upstream-id-canary", TokenFingerprint: "fingerprint-canary", IdentityFingerprint: "identity-canary", MaskedEmail: "u***@example.test"}
+	r := service.SupplierResource{ID: "uuid", Envelope: []byte("secret-canary"), KeyID: "key-canary", AccountHint: "upstream-id-canary", TokenFingerprint: "fingerprint-canary", IdentityFingerprint: "identity-canary", Email: "user@example.test", MaskedEmail: "u***@example.test"}
 	b, e := json.Marshal(r)
 	require.NoError(t, e)
+	require.Contains(t, string(b), `"email":"user@example.test"`)
 	for _, canary := range []string{"secret-canary", "key-canary", "upstream-id-canary", "fingerprint-canary", "identity-canary", "access_token", "refresh_token"} {
 		require.NotContains(t, string(b), canary)
 	}

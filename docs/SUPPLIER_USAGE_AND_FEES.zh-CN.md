@@ -216,3 +216,52 @@ session完整结构精简前端13测试、codexsession包测试及typecheck通�
 - 线上只读/me探测确认既有未手机认证资源返回phone_verification_required，availability同码且不可调度；DB绑定Account disabled/schedulable=false/account_groups=0。既有总dispatch仍1，没有本轮新生成。资源/历史收入不删除，重试状态允许完成官方手机验证后自动重新检查。
 - 最终鉴权/owner统计隔离smoke通过；真实HTTPS/SNI/证书及已发布index逐字节匹配通过，admin/supplier入口6/2个资产均200。原group43/customer_charge/100bps策略保留。
 - 同凭据成功后的quota-only路径与更新凭据重查由合成HTTP集成测试覆盖；未将已认证account.test导入线上，也未做真实生成验证。发布结果记录与脚本保存在独立临时release目录，不含可用凭据。
+
+## Supplier前端简化重构（2026-11-05，未部署）
+
+- 按用户要求减少默认信息密度：移除Portal多层卡片与重复邮箱/入驻说明，桌面工作区max-w-4xl，手机端单列。资源卡默认显示账号、状态、单条可操作问题、累计费用与常用操作；开始/暂停互斥展示，待验证仍可暂停。
+- 额度窗口、同步状态/时间、手动额度刷新与危险断开操作收进原生details，默认折叠；断开二次确认不变。完整授权说明移到页尾可展开区域，导入表单明确同意与凭据清空行为保留。累计费用保留原8位字符串，不新增内部比例/客户信息。
+- 原资源API、30秒只读列表轮询、版本CAS、owner隔离、更新授权保留历史均不改变。原生details支持键盘展开，不引入弹窗或新增组件依赖。
+- 首轮测试70项通过/1项失败：旧用例按第一个按钮定位额度刷新，重构后顺序改变。修正为按操作名定位并补充默认折叠、互斥主操作、去重通知断言；最终8文件73项Vitest通过9.87s，范围supplier/__tests__与locale完整性。变更组件/测试/中英文locale ESLint通过。
+- 最终vue-tsc --noEmit及供应隔离Vite生产构建通过exit0，产物仅在独立/tmp/supplier-workspace-ui-*，未覆盖线上静态。git diff --check通过。未改后端、未新增依赖、未部署/commit/push。
+- 环境未提供Chromium/Firefox或浏览器工具，未做真实浏览器截图/视觉验收；不将组件测试或静态构建称为截图验收。
+
+### 前端简化版静态发布完成
+
+- 用户随后明确要求部署。本次只发布supplier静态，不运行迁移、不重启后端、不改consumer静态、不commit/push。
+- 使用已通过类型/测试/生产构建的`/tmp/supplier-workspace-ui-w9NqeR`产物。先备份当前supplier目录至`/var/lib/sub2api-release-backups/supplier-ui-20261105-*`，先复制hashed assets再原子替换index；保留旧hash资产，未重命名bind mount根目录。
+- supplier.aquawhale.net的`/`与`/supplier/portal`通过真实HTTPS/SNI/证书验证，HTML与产物逐字节相同；全部JS/CSS（含懒加载Portal/Auth）逐字节匹配，入口index SHA256=`cbd69fb36cedc9268753ccf2cf465028a7e6ddf4204dca7682cdea2652de127c`。
+- 四角色仍healthy且uptime未重置。未做真实浏览器截图/点击验收，不将HTTPS资源验证称作视觉验收。
+
+## Supplier账号完整邮箱（2026-11-05，已实现/本地验证；后续部署结果见下）
+
+- 资源DTO新增`email`，导入/更新授权持久化解析得到的`session.Email`；保留原`masked_email`字段和值以兼容旧客户端。supplier资源卡与admin供应库存优先显示完整邮箱，空/缺失时回退旧掩码，再回退未知提示；不改supplier用户资料等其他身份脱敏。
+- 已核对SQL文件按名称排序：现有最大编号260，新添`261_supplier_resource_email.sql`（`TEXT NOT NULL DEFAULT ''`，幂等ADD COLUMN）。未改既有迁移；迁移只添加元数据列，不读凭据、不执行外部请求或secret bootstrap。发布前必须先通过专用migrator应用261，本轮未对运行库执行迁移。
+- owner查询/版本CAS/admin权限边界不变。admin库存SELECT仅新增`r.email`，仍不读取envelope/token指纹/account_hint；admin-control不新增vault依赖。凭据密文仍仅含access_token/account_id，未加入邮箱或新增批量解密。
+- 旧资源限制：只有masked_email无法恢复完整地址，现有加密envelope也没有独立email字段。本轮不解密全部vault、不从token猜测/回填、不新增/me请求；旧行email保持空并显示掩码，需供应者更新授权/重新导入后才能持久化完整邮箱。若新session本身无可解析邮箱，也不会编造地址。
+- 后端覆盖导入/更新邮箱、JSON允许完整邮箱但不泄露凭据、PG插入/读取/旧行空值/重新授权更新、admin库存只读元数据与owner隔离；相关PG fixture均加入261，资源测试重复执行261验证幂等。前端新增两端完整邮箱优先、空/缺失兼容fallback，以及不渲染token/envelope/account_hint canary。
+- 验证命令与结果（均串行）：
+  - `cd backend && SUPPLIER_TEST_PG_SOCKET=/tmp/supplier-pg-20261105-eADiDK GOMAXPROCS=2 go test -p=1 ./internal/service ./internal/repository ./internal/handler -run 'TestSupplier' -count=1`：全部通过（service 0.328s/repository 4.841s/handler 0.419s）；仅使用既有临时Unix socket PG，测试创建并清理隔离schema，未接触运行库。
+  - `cd backend && GOMAXPROCS=2 go test -p=1 ./migrations -count=1`：通过0.004s。
+  - `cd backend && GOMAXPROCS=2 go build -p=1 -o /tmp/sub2api-supplier-email-server ./cmd/server`：通过exit0，未启动/发布。
+  - frontend先`export PATH="$(cat /tmp/sub2api-node24-toolchain-path)/bin:$PATH"`；`NODE_OPTIONS=--max-old-space-size=512 ./node_modules/.bin/vitest run src/supplier/__tests__ src/views/admin/__tests__/SuppliersView.spec.ts src/i18n/__tests__/localeKeyCompleteness.spec.ts`：9文件91项通过12.61s。首次尝试`pnpm exec vitest ...`因环境无pnpm退出127，随后使用已有本地Vitest，无安装依赖。
+  - 同一Node PATH下`NODE_OPTIONS=--max-old-space-size=2048 ./node_modules/.bin/vue-tsc --noEmit`：通过exit0。
+  - 同一Node PATH下`NODE_OPTIONS=--max-old-space-size=512 ./node_modules/.bin/eslint src/supplier/resourceTypes.ts src/supplier/Resources.vue src/supplier/__tests__/Resources.spec.ts src/api/admin/suppliers.ts src/views/admin/SuppliersView.vue src/views/admin/__tests__/SuppliersView.spec.ts`：通过exit0。
+  - `git diff --check`：通过。保留本轮开始前既有supplier UI简化变更；未commit/push/deploy，未进行真实浏览器验收或外部账号请求。
+
+### 完整邮箱上线验收完成（2026-11-05，未commit/push）
+
+- 用户明确授权部署当前dirty tree；发布仅包含完整邮箱实现和此前supplier简化UI，未包含后续动态成本路由开发。冻结发布目录`/tmp/sub2api-release-email-20261105-7bZYuo`，源码/二进制/静态SHA256及脚本、日志均保存在该目录。构建开始时分支`feat/modular-upstream-adapters`；后续仅分支切换不改变冻结产物，不把新分支功能宣称为已部署。
+- 精确现网备份`/var/lib/sub2api-release-backups/sub2api-release-email-20261105-7bZYuo`：`state-before.json`、`release-before.json`、`supplier-compose-before.yaml`、监督器、`consumer-before/`和`supplier-before/`。supplier备份是实际已发布简化UI（index SHA256 `cbd69fb36cedc9268753ccf2cf465028a7e6ddf4204dca7682cdea2652de127c`），不是identity旧静态。旧四角色digest `0a989fb17622ee00ad21710a1cb889b742f56f90c2051b341b54373ed75c6d6a`保留为previous。
+- AWS MCP连接失败，改用现有AWS CLI；`AWS_CONFIG_FILE=/etc/sub2api-roles/aws-deploy-config AWS_PROFILE=sub2api-deploy aws sts get-caller-identity --region us-west-2 --output json`核验账号250088785444、专用`sub2api-integration-deployer`。没有新增AWS资源、ECR publish或DNS变更；运行密钥、JWT、数据库密码仅在内存，不输出env或登录文件。
+- 串行后端构建：backend目录`GOMAXPROCS=1 GOMEMLIMIT=600MiB GOGC=30 GOPROXY=off CGO_ENABLED=0 go build -p=1 -o "$release/prebuilt/server" ./cmd/server`及同环境`go build -p=1 -o "$release/prebuilt/migrate" ./cmd/migrate`。server SHA256 `d399429fbec1c4f1e266de76593ffc9c80e84e7fba81cf732328e59ff8e92009`，与已测试`/tmp/sub2api-supplier-email-server`一致；migrate `5f92f95541cbfc432bc76a0b4421a2e760f49252f88fdbf2c2fb8bbf635c97ed`。
+- 最终后端复核：`SUPPLIER_TEST_PG_SOCKET=/tmp/supplier-pg-20261105-eADiDK GOMAXPROCS=1 GOMEMLIMIT=600MiB GOGC=30 GOPROXY=off go test -p=1 ./internal/service ./internal/repository ./internal/handler ./migrations -run 'TestSupplier|Test.*Migration' -count=1`全部通过（0.397s/4.668s/0.435s/0.007s）。`python3 -I deploy/tests/ec2-role-deploy-test.py`14项通过0.019s；最初在deploy顶层unittest discovery发现0项，不将其作为测试覆盖。
+- 前端先设置`PATH="$(cat /tmp/sub2api-node24-toolchain-path)/bin:$PATH"`。`NODE_OPTIONS=--max-old-space-size=2048 ./node_modules/.bin/vue-tsc --noEmit`通过。supplier隔离构建`NODE_OPTIONS=--max-old-space-size=1024 ./node_modules/.bin/vite build --config vite.supplier.config.ts --outDir "$release/supplier" --emptyOutDir`通过6.37s。consumer最终从经哈希验证的`$release/frontend-source`（含原docs/legal相对导入和现有node_modules链接）运行`NODE_OPTIONS=--max-old-space-size=2048 ./node_modules/.bin/vite build --config vite.config.ts --outDir "$release/consumer" --emptyOutDir`通过1m16s；输出index798字节/140JS，supplier index371字节/4JS。没有安装新依赖或重叠重型构建。
+- 失败如实记录：首次vue-tsc和consumer checker使用1536MiB堆而OOM；2048MiB类型检查通过。第一次隔离consumer因遗漏docs/legal相对导入失败，补齐原文后重建通过。早期shell复合命令错误地返回后续成功状态，实际consumer无index，部署预检拒绝（没有重启旧服务）；早期对旧后端smoke因缺少email字段失败、HTTPS因缺少consumer index失败。最终改为Python `subprocess.run(check=True)`、非空index和引用资产门禁，完整重跑通过；不以后台shell exit0代替实际产物/服务验收。Browserslist旧数据、Node shell调用弃用与大chunk警告非阻断。
+- 已检查`deploy/build_cloud_image.sh`安全上下文流程，本次按既有release模板在本机固定基础digest镜像上仅COPY冻结server/migrate，`docker build --pull=false --network=none`，再用既有containerd本地digest标签方式预载。最终本地镜像`sub2api-cloud@sha256:654c8a3a0e2dd32c60c4881e1e07bd16218f0fbebd802739179f2aa725b3d240`。无registry登录/拉取/推送。
+- `python3 -I "$release/apply-migrations.py"`使用冻结manifest确认唯一pending为`261_supplier_resource_email.sql`后apply成功；migrator `-check`及普通/supplier两个运行身份`-check`均通过，运行身份只读验证email列TEXT/NOT NULL/空默认值可读。只新增前向列，未回填、解密或改资源/账号。
+- `python3 -I "$release/complete-rollout.py"`最终完整通过：监督器回滚感知部署三个角色，supplier compose `up -d --no-deps --pull never supplier-control`，等待四角色健康后复制hashed assets、最后原子替换index。bind mount根目录未重命名，保留旧hash文件。OpenResty是有意保留的compose orphan，未使用`--remove-orphans`。canonical `/etc/sub2api-roles/release.json`、`/var/lib/sub2api-roles/state.json`及supplier compose均持久化最终digest，pending=false；四角色Docker inspect精确digest且healthy。
+- `smoke-email.py`只提取`smoke-identity.py`中`at=`以前的helper定义/只读用户查找，不运行其manual usage POST。admin/owner库存和详情均存在字符串email，禁止凭据字段/Token泄漏；本次观察两条旧资源均空email，按掩码fallback预期，不编造或回填。新资源`ad5d5421-996d-405d-ae97-ea2ee33533c9`为paused/quota_exhausted、phone_verified/email_matched=true、无绑定account；旧`c9f750fc-be3f-49d6-9a25-a155e05c53fb`仍disconnected。只报告观察值，不硬编码库存数量断言。owner stats200、admin token访问owner stats401、未知资源404，supplier admin路由404；原group43/customer_charge/100bps策略不变。
+- `python3 -I "$release/verify-assets.py"`逐一执行等效`curl --silent --show-error --fail --noproxy '*' --resolve HOST:443:127.0.0.1 https://HOST/PATH`，验证证书、hostname/SNI、入口和supplier portal路由。app/admin各183个HTML/JS/CSS、supplier6个（含全部懒加载块）与冻结文件逐字节相同。consumer index SHA256 `e181ef6be977fe1b00fc42b7a34526ee766e46077cdc0bcbbd38781bcb46e4af`；supplier `de509e39ca285e0542d0c142f31e02f5154e9fb983c0076e66050ec75af50073`。
+- 回滚资料：三角色监督器previous仍指向旧digest，可用既有`python3 -I /opt/sub2api-roles/ec2-role-deploy.py rollback`；supplier使用备份compose同一`up -d --no-deps --pull never supplier-control`；静态从备份先资产后index原子恢复。261为旧版兼容的新增列，回滚不DROP列，不删除数据。本轮实际无启动回滚，早期失败均在切换前。
+- 跳过/禁止项：未进行外部generation、额度探测、usage POST、credential import或用户/账号/资源变更；未做真实非空邮箱导入验收（由本地测试覆盖）、浏览器截图/视觉点击验收；没有commit/push。最终日志`migration.log`、`rollout-verified.log`、`smoke-verified.log`、`https-verified.log`和`verified-complete`均在release目录，只有最终这些验收成功才记为完成。
