@@ -117,3 +117,21 @@
 - `python3 -I <release>/check-business.py before|after`：全 settings 的 key/value digest 与现有路由旧字段 digest 相同，成本开关 false/默认 false；未保存设置明文。回滚后使用 `curl --resolve <hostname>:443:127.0.0.1 https://<hostname>/<path>` 正确 TLS/SNI 校验，app/admin 各 752 个、supplier 31 个备份 HTML/JS/CSS 文件全部字节相同，含 lazy chunks；新 bundle 的全量 HTTPS 验证因先前 smoke 失败没有执行，不宣称通过。
 - 可复查结果：`<release>/final-result.json` 状态 `blocked_and_rolled_back`；对应 build/test/migration/rollout/smoke/rollback 日志留在隔离目录，未写凭据。未运行全 service suite；此前完整 suite 的已知失败为 `TestMatchingPlatforms`、`TestAccountTestService_ByInboundProviderSkipsMissingNativeEndpoints`、`TestPlatformListDerivedListsMatchLegacy`，不宣称 all-tests pass。
 - 仍跳过真实推理、provider 探测、浏览器交互、旧 POST/usage smoke；未启用成本路由、未创建/修改路由、账号、用户或资源，无 AWS 网络/资源/DNS 变更。后续应先诊断修复路由列表 HTTP 500，再获得继续发布的指示；本次停在安全回滚状态。
+
+
+### 后续诊断、修复与成功重发（2026-11-06，替代上述阻断终态）
+
+协调任务要求在原明确授权范围内继续诊断可修复阻断，因此保留上述失败/回滚记录后继续，不改写历史。**当前最终结果为重新部署成功，成本开关仍关闭。**
+
+- 已确认根因：只读 SQL `SELECT id,platform FROM groups WHERE deleted_at IS NULL ORDER BY id` 显示线上 1=anthropic、41/42/43=openai，没有 composite 分组或 composite 路由。旧 `requireCompositeGroup` 对普通分组返回普通 `fmt.Errorf`，HTTP error mapper 将其映射成 500；并非 candidates 列权限、Ent JSON 或迁移故障。初版 smoke 不区分分组平台，误将普通分组的拒绝路径当成正向列表路径。
+- 修复提交 `08ff74700458c3a08432a61400d7eaf1b2cef01d`：普通分组改为 structured BadRequest reason `GROUP_NOT_COMPOSITE`，不放宽 composite 权限，不更改线上分组/路由。新增 `TestAdminService_ListCompositeRoutes_RejectsNonCompositeGroupAsBadRequest`，验证 service 错误映射 HTTP400。`GOMAXPROCS=2 GOMEMLIMIT=1800MiB go test -p=1 -tags=unit ./internal/service -run 'TestAdminService_.*CompositeRoute|TestComposite|TestCostFirst' -count=1` 通过；正常 commit/push 到同一分支。
+- 新隔离目录 `/tmp/sub2api-release-costfix-20261105-9alt31ix`，从修复提交 `git archive HEAD` 全新冻结，重新 hash 全部 4858 个跟踪文件；新精确备份 `/var/lib/sub2api-release-backups/sub2api-release-costfix-20261105-9alt31ix`。未复用旧服务二进制或将失败版本冒充最终版本。
+- 实际执行 `python3 -I <new-release>/prepare.py`、`python3 -I <new-release>/check-business.py before`、`python3 -I <new-release>/build.py`、`python3 -I <new-release>/extra-tests.py`、`bash <new-release>/build-image.sh`：全部 exit0。同前述 Go 串行资源限制，聚焦后端五包测试、server/migrate 构建、Node24 2048MiB vue-tsc、consumer/supplier Vite 构建、非空 index/引用与 JS 门禁全部通过；57 项 frontend tests、21 文件 ESLint、隔离 PostgreSQL CRUD、production HTTP handler mock 最低价及 failover 子用例均再次通过。全 service suite 未重跑，不改变上文 3 个已知失败的披露。
+- 最终本地镜像 **`sub2api-cloud@sha256:b5403f8ac84edcd828fa18fc3f1aa003c7e9143b6b0458e526a7d4d9a8a63ef0`**；仍为本机 Docker `--pull=false --network=none` 与本机 preload，未推送 registry/ECR。
+- `python3 -I <new-release>/apply-migrations.py`：本次严格要求 pending **精确为空**（262 在第一次发布中已应用），无额外迁移文件；migrator manifest 校验以及两种 runtime 的 `-check` / candidates 列 SELECT / nullable JSONB 元数据验证全部通过。262 未重复改写或回退，应用流程没有新增 schema 变更。
+- `python3 -I <new-release>/finalize.py` exit0：既有 supervisor 三角色部署、supplier compose 部署、健康等待、保留目录挂载的 assets-first / atomic-index 发布全部通过；canonical `/etc/sub2api-roles/release.json` 与 `/var/lib/sub2api-roles/state.json` current 一致、pending=false，supplier compose 持久化引用最终 digest。
+- 认证 GET smoke：health、admin/owner 邮箱资源列表、owner detail/stats、未认证/错误 audience/不存在资源的 401/404、credential non-leakage 均通过；`GET /api/v1/admin/settings` 返回新全局字段 **false**。现有普通分组 1/41/42/43 的 `/composite-routes` 均返回 **400 + GROUP_NOT_COMPOSITE**。不存在真实 composite 分组/路由，因此没有伪造线上正向 candidates 列表成功；正向 legacy/new candidate CRUD 和完整 middleware/production-handler 转发在隔离 PG/mock HTTP 中通过。未为了验收创建业务数据，线上路由列表正向数据验证明确受现有数据为空限制。
+- `python3 -I <new-release>/verify-assets.py`（由 finalize 调用）：以 `curl --resolve <hostname>:443:127.0.0.1 https://<hostname>/<path>` 验证 app/admin **各183**、supplier **6** 个本次发布 HTML/JS/CSS 文件全部字节相同，包含动态导入 lazy chunks；supplier portal SPA 入口同样验证。旧 hashed assets 保留供缓存客户端使用。
+- 最终再次实际 `docker inspect sub2api-roles-gateway sub2api-roles-control sub2api-roles-worker sub2api-supplier-control --format '{{.Name}} {{.Config.Image}} {{.State.Health.Status}}'`：四者均为最终 digest 且 **healthy**。`python3 -I <new-release>/check-business.py after` 再次通过 settings/旧路由字段摘要不变、cost-first false/default。两条旧供应商资源 email 仍为空，未授权回填，不承诺已生成新邮箱数据。
+- 最终机器结果 `<new-release>/final-result.json`，构建/测试/迁移/只读 smoke/HTTPS 日志和全静态 SHA256 同目录，不含可用凭据。最终前端确为新发布 bundle，非只更新服务端。
+- 继续明确跳过真实推理/provider 探测、浏览器交互和旧 POST/usage smoke；未启用成本路由，未创建/修改线上设置、分组、路由、账号、用户、资源；无 AWS 基础设施、DNS、registry publication 或真实生成。全局成本排序覆盖现有各 provider 候选池；跨平台显式多来源仍仅限共享 OpenAI-compatible HTTP 精确文本路由，不扩展原生 Claude/Gemini、WS、媒体。
