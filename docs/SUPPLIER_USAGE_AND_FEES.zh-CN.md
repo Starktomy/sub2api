@@ -107,3 +107,82 @@ session完整结构精简前端13测试、codexsession包测试及typecheck通�
 - worker自动探测fresh、auto_sync=true、无错误、verified版本匹配且15分钟内更新。gateway/worker只读vault挂载验证通过，普通Control无vault。
 - 自动准入未开启、bindings=0、supplier_usage=0。这是未选择目标分组及费用策略的预期安全状态，不等于已经真实供应推理成功。未生成模型请求、未伪造收益、未提现。
 - Git未commit/push；镜像未推ECR；无DNS或新AWS基础设施变更。
+
+## P0 供给授权与接单快照优化（2026-11-05，源码与聚焦回归完成，未上线）
+
+用户确认已取得上游授权；本次按授权资源使用设计，不把该陈述扩展为其他供应商/套餐的通用许可。
+
+### 已确定产品规则
+
+- 导入入口按钮与表单提交按钮均为：授权全部可用额度并开始供给（最后复核已补齐入口文案断言）。持续授权覆盖当前及后续重置窗口，直到供应商撤回或授权到期；不预留散户自用额度。
+- 操作：开始供给、暂停供给、更新授权、断开并删除凭据。暂停接单与只读额度探测分离；更新授权不先删除旧凭据，保持资源/Account及历史收入；新凭据验证成功后恢复供给。
+- 平台独立禁供标记，供应商更新授权或开启供给均不能清除。解除平台禁供也不能凭空补同意或覆盖供应商暂停。
+- 供应商保留调用/token统计，费用只展示累计总金额，不公开动态比例/内部成本/客户信息；后台逐请求冻结适用的供应计酬策略。无提现扩展。
+- 五道检查复用单一网关与调度器：授权、凭据、模型/分组资格、所有适用额度窗口、现有并发槽位；未知额度不能按0占用/无限额度处理。
+
+### 已实现并纳入回归的可靠性约束
+
+- 新前向258保存显式同意版本、授权版本/到期/撤回及独立禁供；已有资源不静默补同意。
+- 新前向259保存服务器生成请求/尝试标识、资源/供应者/Account、凭据与授权版本、计酬策略快照；不存prompt/output/headers/token/envelope。
+- 发送前持久化接单及发送意图；数据库提交不明确时不发送。可信用量在异步队列之前持久化，构建的记账命令持久化后才执行既有UsageBillingRepository.Apply。
+- 客户扣费、供应事实、幂等与任务完成同事务；后台恢复只重放同一条本地记账命令，不重选账号、不解密、不调用上游、不重新取价格计算。
+- 已发送但没有可信用量、进程在用量落盘前退出、定价失败均保留待核对，不编造0消费；该边界不承诺从不存在的证据恢复精确token。
+- 供应计酬mode/比例/version在接单时固定；模型客户侧全部价格表/倍数的预发送版本化不在本批最小快照中，不混称两者。
+- 仅对完成持久化插桩的供应HTTP路径放行；未完成的WS/插件/媒体/其他兼容路径先拒绝，不影响普通非供应渠道。具体支持范围以最终验证记录为准。
+
+上述源码已实现；验证范围及未完成项见后文。尚未应用线上258/259、未发布新镜像/前端、未进行真实上游调用、未提交推送。不把聚焦测试通过等同于已上线或真实供应推理成功。
+
+### P0 当前验证进度
+
+- 前端定向Vitest首轮因node未在PATH退出127；使用现有Node工具链后，10文件80测试通过。最终复验曾因从backend目录启动而退出127，改为frontend目录后10文件83测试通过（14.52s），含最后授权有效期与断开后更新授权修正。
+- 最终前端命令：`cd frontend && PATH="$(cat /tmp/sub2api-node24-toolchain-path)/bin:$PATH" NODE_OPTIONS=--max-old-space-size=512 ./node_modules/.bin/vitest run --maxWorkers=1 --minWorkers=1 --no-file-parallelism src/supplier/__tests__ src/views/admin/__tests__/SuppliersView.spec.ts src/api/__tests__/supplier.spec.ts src/i18n/__tests__/localeKeyCompleteness.spec.ts`。
+- 最终`NODE_OPTIONS=--max-old-space-size=2048 vue-tsc --noEmit`通过；最终供应资源/管理页/API/types、相关测试及en/zh locale范围ESLint通过（exit0）。
+- `python3 -I deploy/tests/ec2-role-deploy-test.py`：14项离线测试通过（0.025s）；其中容器健康/回滚文字来自测试替身，不是本轮实际部署或回滚。
+- 后端源码已冻结，统一串行验证。首轮因额度解析拆分留下未使用的encoding/json导入而编译失败，未执行断言；已删除该导入。第二轮repository（含实际PG测试）通过3.800s，handler通过7.065s，routes通过0.030s，middleware通过0.026s；service因新增测试替身未实现既有batch-image hold接口编译失败，已补齐替身后继续复验，不能将第二轮称为整链通过。数据库测试仅允许独立/tmp/supplier-pg-*本机socket，不操作线上RDS。
+- 第三轮service通过5.695s、handler通过7.090s、routes/middleware/config通过；server精确allowlist因漏列新增start路径失败，已补齐。随后补强独立恢复worker注册与供应无个人预留阈值测试，冻结后再次统一复验。
+- 最新冻结验证命令（日志`/tmp/supplier-p0-pg-final.log`及`/tmp/supplier-p0-backend-final.log`）：在backend目录设置`GOMAXPROCS=1 GOMEMLIMIT=600MiB GOGC=30 GOPROXY=off SUPPLIER_TEST_PG_SOCKET=/tmp/supplier-pg-20261105-eADiDK`，依次执行`go test -p=1 -tags=unit ./internal/repository -run 'TestSupplier' -count=1 -v`与`go test -p=1 -tags=unit ./internal/service ./internal/handler ./internal/server ./internal/server/routes ./internal/server/middleware ./internal/config -run 'Supplier|UsageBilling|OpenAI.*RecordUsage|OpenAI.*UsageRecordTask|OpenAI.*Responses|OpenAI.*Shadow|OpenAI.*Token|MaintenanceTaskPolicy|RuntimeLifecycle|OpenAI.*Schedul|ParentHealth|Advanced.*Schedul|BuildUsageBilling|ApplyUsageBilling|Quantiz|Normalize' -count=1`。最终通过：repository4.439s（9项PG测试实际执行，无skip）；service8.288s、handler7.144s、server0.025s、routes0.031s、middleware0.036s、config0.013s。PG覆盖准入、owner/CAS、probe、原子财务回滚、冻结policy/credential/auth归属、未知/冲突观测、并发Mark、并发撤回和并发恢复。
+- `GOMAXPROCS=1 GOMEMLIMIT=600MiB GOGC=30 GOPROXY=off go generate ./cmd/server`通过；Wire生成前后SHA256均为`0a4c0c71f1564021fb45b89fa39b3682a34526e2ebb8d328e0a88c7548289c83`，无go.mod/go.sum变更。
+- `cd frontend && NODE_OPTIONS=--max-old-space-size=512 ./node_modules/.bin/vite build --config vite.supplier.config.ts --outDir /tmp/supplier-p0-ui-build-VEysQ8`通过（9.12s）；supplier-boundary插件通过，产物只写独立临时目录，未覆盖现网bind mount。Browserslist旧数据警告未阻断；本轮未联网更新依赖。consumer整体生产构建未重跑，admin源由最终typecheck/ESLint/Vitest覆盖。
+- 最后入口文案复核将打开导入窗口按钮也统一为完整授权文案；同一前端命令复验10文件84测试通过（22.74s），变更组件/测试ESLint通过，供应UI重新构建到独立`/tmp/supplier-p0-ui-final-woh2it`通过（8.17s）。此小修只替换已存在i18n key并添加断言，最终typecheck完成于该文案修正之前。
+- 额外`GOMAXPROCS=1 GOMEMLIMIT=600MiB GOGC=30 GOPROXY=off go test -p=1 ./internal/service -run 'TestMaintenance|TestRuntimeMultiReplica' -count=1`通过（0.099s）。随后相同资源限制下`CGO_ENABLED=0 go build -p=1 -o /tmp/supplier-p0-binaries-ww9Khw/server ./cmd/server`及`CGO_ENABLED=0 go build -p=1 -o /tmp/supplier-p0-binaries-ww9Khw/migrate ./cmd/migrate`均通过exit0；server SHA256=`e204a6886023f4f1b67368b74568e45e994b25fe3be59ec36f309ff8cae684dc`，migrate SHA256=`dd6988686e193974dd2639a1a579a264638ddd234289a1ad4163f9df167cdc70`。仅独立临时产物，未替换运行二进制。
+- 最终`git diff --check`通过；已应用迁移256/257与go.mod/go.sum无修改。
+- 本轮新增迁移258/259尚未应用线上；无真实模型请求、部署或提交。未执行真实HTTP全进程供应生成验收；gateway/parser集成测试使用合成凭据与内存上游替身，PG测试使用独立临时schema，不能称为真实供应调用。
+
+### P0 执行范围与恢复边界
+
+- 放行原生HTTP文本Responses及compact（`/v1/responses`、`/responses`、`/v1/responses/compact`、`/responses/compact`），JSON/SSE均插桩；允许客户端function/custom/namespace工具。不支持托管工具、媒体、WS、插件、passthrough、Chat/Messages及其他未插桩入口；普通非供应渠道不改变。
+- 接单冻结供应者/资源/Account、客户/API Key/分组、映射后模型、凭据/授权/同意版本及供应计酬mode/比例/version。当前客户价格表和倍率仍在观测后按现有逻辑求值；命令一旦落盘则恢复绝不重新定价，不承诺完整价格表的预发送冻结。
+- 每次物理发送必须先提交一次性发送标记；关闭重定向、可重放请求体与幂等头触发的传输自动重试。提交不明、上游错误及本地记账失败均不得触发供应生成重放。
+- 完整终态用量即使后续解析/客户端传输失败仍可结算；未知、部分、冲突用量保留证据待核对。观测已落盘但未保存结算命令的崩溃窗口不会按新价格补算，超过48小时转review。没有上游证据不能承诺恢复精确token，也不能计成零。
+- 已保存命令经数据库租约及有界退避重放；客户财务effects、供应事实、dedup、committed状态和修复标记同事务。认证缓存使用既有事务outbox；余额/订阅/API Key限额缓存删除采用持久两阶段修复，第二阶段至少延迟30秒。
+- 恢复任务不得因为停止额度探测而停止清算。复核发现原注册条件跟随supplier_probe.enabled，已修正为独立、显式split/check-only worker生命周期；无需vault或上游客户端，普通all/gateway/control不因此启动新恢复任务。
+- 供应资源在既有调度器内不继承普通账号90%/95%等提前暂停阈值，调度判定不触发自动额度卡重置；保留100%耗尽暂停和数据库所有适用窗口校验。普通账号仍遵守原阈值，无散户个人额度预留。
+- 客户用户级平台限额增量尚未接入同一财务事务，因此配置此类限额的用户在供应发送前拒绝，不能以跳过持久额度更新换取可用性。此限制不改变普通非供应渠道。
+
+### P0 持久状态含义
+
+| 状态 | 已知事实 | 恢复动作 |
+| --- | --- | --- |
+| accepted | 接单快照已提交，尚无发送许可 | 不重发；长期悬挂转review |
+| dispatched | 一次性发送意图已提交；不等同上游已收到或已消费 | 等待观测，未知消费不能补成0或自动生成 |
+| observed | 完整可信用量已落盘，结算命令尚未保存 | 当前请求继续定价和Stage；崩溃后保留证据待核对，不按新价格补算 |
+| pending | 不可变结算命令已保存，财务尚未确认提交 | 仅重放保存的Apply，重复执行依赖既有dedup |
+| committed | 客户账务与供应事实已同事务提交 | 仅处理持久缓存修复，不再次加减钱 |
+| review | 用量未知/部分/冲突、命令冲突或长期未完成 | 保留快照与观测；本批未新增人工裁定/补单UI，不宣称已经自动结清 |
+
+供应商累计金额仅取已提交的supplier_usage；pending/review不凭估算加到总额。断开/撤回仅阻止后续发送与删除存储凭据，不删除既有快照、授权事件或历史收入。
+
+## 2026-11-05 P0 用户授权发布与真实验收
+
+- 用户明确要求真实上游生成验收、部署、commit、push。本次包含所需258/259前向迁移、现有EC2四角色及双静态更新，不新增AWS资源、不推ECR、不改DNS。
+- 操作前STS核对账号250088785444、us-west-2专用sub2api-integration-deployer角色；专用migrator应用且检查258/259成功，runtime新表权限通过，仍无schema CREATE/TRUNCATE。
+- 现网策略与此前记录相比已变化：version1、auto_admission=true、group43、customer_charge、100bps。本次保留既有策略，不代设或重置分成。
+- 发布前备份目录`/var/lib/sub2api-release-backups/supplier-p0-20261105`；双前端重新类型检查及consumer/supplier生产构建通过；首个P0镜像`sub2api-cloud@sha256:a5bb92e4528b6a5b658ee952519354dff83856448b7047305e04993117289ba4`本机预载，四角色healthy。
+- 真实HTTPS/SNI/证书检查：admin.aquawhale.net/admin/suppliers及supplier.aquawhale.net/与发布index逐字节相同，6/2个入口资源200。未认证401、跨域令牌401、supplier域admin404、owner stats200。
+- 既有测试资源显式更新all_available_continuous_v1授权，保持UUID/Account/历史；只读额度探测及接池通过。上游观测套餐为free，主窗口明确可用、secondary明确不适用，不把null当缺失。
+- 临时启用既有测试客户45和Key44（既有余额、无新增余额、不改quota/分组）；只发一次短文本Responses，用户模型gpt-5.1-codex-mini按既有normalize映射为gpt-5.3-codex，返回502。没有自动重试。finally已恢复客户disabled和Key inactive。
+- 请求attempt `43e9fd8c-f38a-4ecc-8d5c-a558bcd018d5`持久state=review/reason=usage_unresolved，dispatched marker存在；观测usage_present=false/complete=false，无结算命令，不生成0消费结算。不能宣称真实生成或计酬验收通过。
+- 只读上游models目录当前仅返回codex-auto-review（supported_in_api=true、visibility=hide）；这提示资源模型资格不匹配，但首轮未记录真实HTTP错误类别，不能仅据此断言唯一拒绝原因。未尝试未定价的隐藏模型、未更换其他凭据或规避上游权限。
+- 补充固定上游拒绝类别+HTTP status的脱敏诊断，不记录正文、token或任意provider错误字符串；仍不允许自动重试。`GOMAXPROCS=1 GOMEMLIMIT=600MiB GOGC=30 GOPROXY=off go test -p=1 ./internal/service -run 'TestSupplier' -count=1`通过0.344s；server重新构建通过，SHA256=`8794b41dabfaa6394e53bcd080ad6836a85b419f25b12bfbebfbb4c20b748639`，migrate不变。
+- 最终诊断补丁镜像本机预载`sub2api-cloud@sha256:eea8339dfd1e2364460e4bb99c6e2ababc36eb6e5fd50801fc854d56e43fbd70`；该补丁不追溯恢复首轮上游正文/状态，不执行第二次生成。最终四角色均运行该digest且healthy，部署脚本及第二轮鉴权隔离/owner统计smoke全部通过exit0。
+- 数据库最终只读复核：本次Key44对应dispatch=1、review=1、committed=0、staged=0；该attempt供应事实=0。0表示没有已确认应计记录，不是对未知消费做0结算。worker日志确认SupplierBillingRecoveryWorker已获PostgreSQL协调准入。

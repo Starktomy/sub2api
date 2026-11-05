@@ -22,6 +22,15 @@ describe('owner resource statistics', () => {
     expect(wrapper.text()).toContain('supplier.statsNotice')
   })
 
+  it('shows only aggregate fees, never policy ratios or historical monetary breakdowns', async () => {
+    resourceStats.mockResolvedValue({ ...stats, fee_mode: 'secret-policy-mode', fee_ratio_bps: 9876, history: [{ fee_amount: '123456789.00' }] })
+    const wrapper = mount(ResourceStats, { props: { resourceId: 'r-1' } })
+    await flushPromises()
+    expect(wrapper.findAll('dd')).toHaveLength(6)
+    expect(wrapper.text()).toContain('0.12345678 USD')
+    for (const hidden of ['secret-policy-mode', '9876', '123456789.00']) expect(wrapper.text()).not.toContain(hidden)
+  })
+
   it('shows failure instead of zeros and supports retry without leaking server messages', async () => {
     resourceStats.mockRejectedValueOnce(new Error('private-server-message'))
     const wrapper = mount(ResourceStats, { props: { resourceId: 'r-1' } })

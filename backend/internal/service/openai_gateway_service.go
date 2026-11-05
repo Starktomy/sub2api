@@ -234,8 +234,11 @@ type OpenAIUsage struct {
 
 // OpenAIForwardResult represents the result of forwarding
 type OpenAIForwardResult struct {
-	RequestID  string
-	ResponseID string
+	// Internal immutable acceptance and trusted metering, never public response fields.
+	SupplierDispatch *SupplierDispatchSnapshot `json:"-"`
+	SupplierUsage    SupplierUsageObservation  `json:"-"`
+	RequestID        string
+	ResponseID       string
 	// UpstreamHeaders 是直接上游的响应头，用于按账户配置解析上游请求标识。
 	UpstreamHeaders http.Header
 	Usage           OpenAIUsage
@@ -1222,6 +1225,9 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
 		credAccount, err := resolveCredentialAccount(ctx, s.accountRepo, account)
 		if err != nil {
 			return "", "", err
+		}
+		if supplierAccountMarked(credAccount) {
+			return "", "", ErrSupplierResource
 		}
 		account = credAccount
 	}

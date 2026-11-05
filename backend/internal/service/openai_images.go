@@ -609,6 +609,9 @@ func (s *OpenAIGatewayService) ForwardImages(
 	parsed *OpenAIImagesRequest,
 	channelMappedModel string,
 ) (*OpenAIForwardResult, error) {
+	if supplierAccountMarked(account) {
+		return nil, errSupplierUnsupported
+	}
 	if err := validateUpstreamProviderBinding(account); err != nil {
 		return nil, err
 	}

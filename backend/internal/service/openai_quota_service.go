@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -789,7 +788,6 @@ func (s *OpenAIQuotaService) QuerySupplierUsage(ctx context.Context, token, acco
 	client.SetRedirectPolicy(req.NoRedirectPolicy()).SetCommonRetryCount(0)
 	call, cancel := context.WithTimeout(ctx, openaiQuotaUpstreamTimeout)
 	defer cancel()
-	var payload OpenAIQuotaUsage
 	resp, err := client.R().SetContext(call).SetRetryCount(0).DisableAutoReadResponse().SetHeaders(buildCodexCommonHeaders(token, account, false)).Get(chatGPTUsageURL)
 	if err != nil || resp == nil || !resp.IsSuccessState() {
 		if resp != nil && resp.Body != nil {
@@ -819,13 +817,8 @@ func (s *OpenAIQuotaService) QuerySupplierUsage(ctx context.Context, token, acco
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
-	if err != nil || len(raw) > 1<<20 || json.Unmarshal(raw, &payload) != nil {
+	if err != nil || len(raw) > 1<<20 {
 		return nil, infraerrors.New(http.StatusBadGateway, "SUPPLIER_USAGE_UNAVAILABLE", "Usage query unavailable")
 	}
-	switch payload.PlanType {
-	case "free", "plus", "pro", "team", "business", "enterprise", "edu":
-	default:
-		payload.PlanType = ""
-	}
-	return &SupplierResourceUsage{PlanType: payload.PlanType, RateLimit: payload.RateLimit, FetchedAt: time.Now().Unix()}, nil
+	return parseSupplierQuota(raw, time.Now())
 }

@@ -41,6 +41,7 @@ func TestSupplierRouterNeverServesConsumerSPAOrAPI(t *testing.T) {
 		"POST /api/v1/supplier/resources/import",
 		"POST /api/v1/supplier/resources/:id/usage",
 		"POST /api/v1/supplier/resources/:id/resume-sync",
+		"POST /api/v1/supplier/resources/:id/start",
 		"POST /api/v1/supplier/resources/:id/pause",
 		"POST /api/v1/supplier/resources/:id/disconnect",
 	}, registered)

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"math/rand/v2"
 	"sync"
 	"time"
@@ -99,6 +100,9 @@ func (w *SupplierProbeWorker) tick(ctx context.Context) {
 	err := w.repo.Reconcile(call)
 	cancel()
 	if err != nil {
+		if ctx.Err() == nil {
+			slog.Warn("supplier probe maintenance failed", "operation", "reconcile")
+		}
 		return
 	}
 	for n := 0; n < 2 && ctx.Err() == nil; n++ {
@@ -106,6 +110,9 @@ func (w *SupplierProbeWorker) tick(ctx context.Context) {
 		claim, err := w.repo.Claim(call, uuid.NewString())
 		cancel()
 		if err != nil || claim == nil {
+			if err != nil && ctx.Err() == nil {
+				slog.Warn("supplier probe maintenance failed", "operation", "claim")
+			}
 			return
 		}
 		usage, err := w.resources.queryResource(ctx, claim.Resource)
@@ -131,8 +138,11 @@ func (w *SupplierProbeWorker) tick(ctx context.Context) {
 			return
 		}
 		call, cancel = context.WithTimeout(ctx, 5*time.Second)
-		_ = w.repo.Finish(call, claim, usage, code, delay, terminal)
+		finishErr := w.repo.Finish(call, claim, usage, code, delay, terminal)
 		cancel()
+		if finishErr != nil && ctx.Err() == nil {
+			slog.Warn("supplier probe maintenance failed", "operation", "finish")
+		}
 	}
 }
 func probeBackoff(attempt int) time.Duration {

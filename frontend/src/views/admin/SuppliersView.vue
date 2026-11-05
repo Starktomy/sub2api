@@ -6,7 +6,7 @@
           <h2 class="text-lg font-semibold text-gray-900 dark:text-white">{{ t('admin.suppliers.title') }}</h2>
           <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('admin.suppliers.description') }}</p>
         </div>
-        <button type="button" class="btn btn-secondary" :disabled="loading" @click="loadResources">
+        <button type="button" class="btn btn-secondary" :disabled="loading || !!controlling" @click="loadResources">
           {{ t('common.refresh') }}
         </button>
       </section>
@@ -50,6 +50,7 @@
         </form>
       </section>
 
+      <p v-if="controlMessage" role="status" class="text-sm">{{ controlMessage }}</p>
       <div :aria-busy="loading" aria-live="polite">
         <p v-if="loading" class="py-12 text-center text-gray-500">{{ t('common.loading') }}</p>
         <p v-else-if="failed" role="alert" class="py-12 text-center text-red-600 dark:text-red-400">
@@ -84,6 +85,13 @@
                     <template v-else>{{ t('admin.suppliers.noAccount') }}</template>
                   </div>
                 </td>
+                <td class="px-4 py-3" data-testid="supply-control">
+                  <p>{{ t(typeof item.resource.admin_disabled !== 'boolean' ? 'admin.suppliers.unknown' : item.resource.admin_disabled ? 'admin.suppliers.supplyProhibited' : 'admin.suppliers.supplyNotProhibited') }}</p>
+                  <p class="text-xs text-gray-500">{{ t(typeof item.resource.supply_enabled !== 'boolean' ? 'admin.suppliers.unknown' : item.resource.supply_enabled ? 'admin.suppliers.supplierSupplyEnabled' : 'admin.suppliers.supplierSupplyPaused') }}</p>
+                  <button type="button" class="btn btn-secondary mt-2" :disabled="loading || !!controlling || !hasSupplyControl(item.resource)" @click="toggleSupplyControl(item.resource)">
+                    {{ t(item.resource.admin_disabled ? 'admin.suppliers.removeProhibition' : 'admin.suppliers.prohibitSupply') }}
+                  </button>
+                </td>
                 <td class="px-4 py-3">{{ stateLabel(item.resource.probe_state) }}</td>
                 <td class="whitespace-nowrap px-4 py-3">{{ dateLabel(item.resource.token_expires_at) }}</td>
                 <td class="whitespace-nowrap px-4 py-3">{{ dateLabel(item.resource.last_probe_at) }}</td>
@@ -110,7 +118,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
-import { getSupplierSettings, saveSupplierSettings, listSupplierResources, type AdminSupplierResource, type SupplierSettings } from '@/api/admin/suppliers'
+import { getSupplierSettings, saveSupplierSettings, listSupplierResources, setSupplierSupplyControl, type AdminSupplierResource, type SupplierSettings } from '@/api/admin/suppliers'
 import { getAll } from '@/api/admin/groups'
 import type { AdminGroup } from '@/types'
 import { formatDateTime } from '@/utils/format'
@@ -119,7 +127,28 @@ const { t, te, locale } = useI18n()
 const items = ref<AdminSupplierResource[]>([])
 const loading = ref(false)
 const failed = ref(false)
-const columns = ['supplier', 'resource', 'maskedEmail', 'plan', 'status', 'admission', 'probeState', 'tokenExpiresAt', 'lastProbeAt', 'usage']
+const controlling = ref<string | null>(null)
+const controlMessage = ref('')
+function hasSupplyControl(resource: AdminSupplierResource['resource']) {
+  return Number.isInteger(resource.version) && resource.version > 0 && typeof resource.admin_disabled === 'boolean'
+}
+async function toggleSupplyControl(resource: AdminSupplierResource['resource']) {
+  if (loading.value || controlling.value || !hasSupplyControl(resource)) return
+  controlling.value = resource.id
+  controlMessage.value = ''
+  try {
+    const updated = await setSupplierSupplyControl(resource.id, resource.version, !resource.admin_disabled)
+    items.value = items.value.map(item => item.resource.id === updated.id ? { ...item, resource: updated } : item)
+    await loadResources()
+    controlMessage.value = t(failed.value ? 'admin.suppliers.controlReloadFailed' : 'admin.suppliers.controlSaved')
+  } catch (error) {
+    const status = (error as { response?: { status?: number } })?.response?.status
+    controlMessage.value = t(status === 409 ? 'admin.suppliers.controlConflict' : 'admin.suppliers.controlError')
+  } finally {
+    controlling.value = null
+  }
+}
+const columns = ['supplier', 'resource', 'maskedEmail', 'plan', 'status', 'admission', 'supplyControl', 'probeState', 'tokenExpiresAt', 'lastProbeAt', 'usage']
 const usageWindows = ['primary_window', 'secondary_window'] as const
 
 function usageLabel(value: number | null | undefined): string {

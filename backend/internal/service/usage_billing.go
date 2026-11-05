@@ -22,6 +22,11 @@ type UsageBillingCommand struct {
 	RequestFingerprint string
 	RequestPayloadHash string
 
+	// Supplier journal identity is server-generated and frozen before dispatch.
+	// Empty values retain the legacy fingerprint format exactly.
+	SupplierAttemptID      string
+	SupplierSnapshotDigest string
+
 	UserID              int64
 	AccountID           int64
 	SubscriptionID      *int64
@@ -149,6 +154,9 @@ func buildUsageBillingFingerprint(c *UsageBillingCommand) string {
 	// cost snapshots were explicitly supplied.
 	if c.SupplierCostProvided || c.StandardCost != 0 || c.CustomerCharge != 0 {
 		raw += fmt.Sprintf("|supplier-cost-v1|%t|%0.10f|%0.10f", c.SupplierCostProvided, c.StandardCost, c.CustomerCharge)
+	}
+	if c.SupplierAttemptID != "" || c.SupplierSnapshotDigest != "" {
+		raw += fmt.Sprintf("|supplier-dispatch-v1|%s|%s", c.SupplierAttemptID, c.SupplierSnapshotDigest)
 	}
 	sum := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(sum[:])

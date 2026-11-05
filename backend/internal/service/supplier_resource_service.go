@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/codexsession"
@@ -22,39 +23,52 @@ var (
 )
 
 type SupplierResource struct {
-	AutoSyncEnabled     bool                   `json:"auto_sync_enabled"`
-	CredentialVersion   int64                  `json:"-"`
-	ProbeState          string                 `json:"probe_state"`
-	LastProbeAt         *time.Time             `json:"last_probe_at"`
-	NextProbeAt         *time.Time             `json:"next_probe_at"`
-	ProbeErrorCode      *string                `json:"probe_error_code"`
-	ID                  string                 `json:"id"`
-	SupplierID          int64                  `json:"-"`
-	DisplayName         string                 `json:"display_name"`
-	Status              string                 `json:"status"`
-	Version             int64                  `json:"version"`
-	Provider            string                 `json:"provider"`
-	Product             string                 `json:"product"`
-	Schedulable         bool                   `json:"schedulable"`
-	AccountID           int64                  `json:"account_id,omitempty"`
-	MaskedEmail         string                 `json:"masked_email"`
-	PlanType            string                 `json:"plan_type"`
-	TokenExpiresAt      time.Time              `json:"token_expires_at"`
-	LastUsageAt         *time.Time             `json:"last_usage_at"`
-	CreatedAt           time.Time              `json:"created_at"`
-	UpdatedAt           time.Time              `json:"updated_at"`
-	Usage               *SupplierResourceUsage `json:"usage"`
-	UsageState          string                 `json:"usage_state"`
-	Envelope            []byte                 `json:"-"`
-	KeyID               string                 `json:"-"`
-	AccountHint         string                 `json:"-"`
-	IdentityFingerprint string                 `json:"-"`
-	TokenFingerprint    string                 `json:"-"`
+	SupplyEnabled             bool                   `json:"supply_enabled"`
+	SupplyEnablePending       bool                   `json:"-"`
+	AdminDisabled             bool                   `json:"admin_disabled"`
+	ConsentVersion            string                 `json:"consent_version"`
+	AuthorizationVersion      int64                  `json:"authorization_version"`
+	AuthorizationExpiresAt    *time.Time             `json:"authorization_expires_at"`
+	AuthorizationRevokedAt    *time.Time             `json:"authorization_revoked_at"`
+	LastVerifiedAt            *time.Time             `json:"last_verified_at"`
+	VerifiedCredentialVersion *int64                 `json:"-"`
+	AvailabilityReason        string                 `json:"availability_reason,omitempty"`
+	AutoSyncEnabled           bool                   `json:"auto_sync_enabled"`
+	CredentialVersion         int64                  `json:"-"`
+	ProbeState                string                 `json:"probe_state"`
+	LastProbeAt               *time.Time             `json:"last_probe_at"`
+	NextProbeAt               *time.Time             `json:"next_probe_at"`
+	ProbeErrorCode            *string                `json:"probe_error_code"`
+	ID                        string                 `json:"id"`
+	SupplierID                int64                  `json:"-"`
+	DisplayName               string                 `json:"display_name"`
+	Status                    string                 `json:"status"`
+	Version                   int64                  `json:"version"`
+	Provider                  string                 `json:"provider"`
+	Product                   string                 `json:"product"`
+	Schedulable               bool                   `json:"schedulable"`
+	AccountID                 int64                  `json:"account_id,omitempty"`
+	MaskedEmail               string                 `json:"masked_email"`
+	PlanType                  string                 `json:"plan_type"`
+	TokenExpiresAt            time.Time              `json:"token_expires_at"`
+	LastUsageAt               *time.Time             `json:"last_usage_at"`
+	CreatedAt                 time.Time              `json:"created_at"`
+	UpdatedAt                 time.Time              `json:"updated_at"`
+	Usage                     *SupplierResourceUsage `json:"usage"`
+	UsageState                string                 `json:"usage_state"`
+	Envelope                  []byte                 `json:"-"`
+	KeyID                     string                 `json:"-"`
+	AccountHint               string                 `json:"-"`
+	IdentityFingerprint       string                 `json:"-"`
+	TokenFingerprint          string                 `json:"-"`
 }
 type SupplierResourceUsage struct {
-	PlanType  string           `json:"plan_type"`
-	RateLimit *OpenAIRateLimit `json:"rate_limit"`
-	FetchedAt int64            `json:"fetched_at"`
+	// Known flags preserve explicitly-null unused windows, never omitted/malformed ones.
+	PrimaryWindowKnown   bool             `json:"primary_window_known"`
+	SecondaryWindowKnown bool             `json:"secondary_window_known"`
+	PlanType             string           `json:"plan_type"`
+	RateLimit            *OpenAIRateLimit `json:"rate_limit"`
+	FetchedAt            int64            `json:"fetched_at"`
 }
 type SupplierResourceRepository interface {
 	List(context.Context, int64) ([]*SupplierResource, error)
@@ -104,6 +118,7 @@ func resourceProjection(r *SupplierResource) *SupplierResource {
 			r.UsageState = "stale"
 		}
 	}
+	r.AvailabilityReason = supplierAvailabilityReason(r, time.Now())
 	return r
 }
 func (s *SupplierResourceService) List(ctx context.Context, user int64) ([]*SupplierResource, error) {
@@ -142,9 +157,16 @@ type SupplierImportResourceReader interface {
 	FindImportResource(context.Context, int64, string) (*SupplierResource, error)
 }
 
-func (s *SupplierResourceService) Import(ctx context.Context, user int64, name, content string) (*SupplierResource, error) {
+func (s *SupplierResourceService) Import(ctx context.Context, user int64, name, content string, options ...SupplierImportOptions) (*SupplierResource, error) {
 	if !s.Configured() {
 		return nil, ErrSupplierVault
+	}
+	if len(options) != 1 || options[0].ConsentVersion != SupplierConsentVersion {
+		return nil, ErrSupplierConsent
+	}
+	opt := options[0]
+	if (opt.ResourceID == "") != (opt.ResourceVersion == 0) || opt.ResourceVersion < 0 {
+		return nil, ErrSupplierResourceVersion
 	}
 	p, err := s.profiles.GetProfile(ctx, user)
 	if err != nil {
@@ -158,6 +180,13 @@ func (s *SupplierResourceService) Import(ctx context.Context, user int64, name, 
 	if err != nil {
 		return nil, ErrSupplierReimport
 	}
+	expires := session.ExpiresAt
+	if opt.AuthorizationExpiresAt != nil {
+		expires = *opt.AuthorizationExpiresAt
+	}
+	if !expires.After(time.Now()) || expires.After(session.ExpiresAt) {
+		return nil, ErrSupplierAuthorizationExpiry
+	}
 	id, err := generateRedeemRequestID()
 	if err != nil {
 		return nil, ErrServiceUnavailable
@@ -168,7 +197,24 @@ func (s *SupplierResourceService) Import(ctx context.Context, user int64, name, 
 		session.Plan = ""
 	}
 	r := &SupplierResource{ID: id, SupplierID: p.ID, DisplayName: name, Status: "paused", Version: 1, AutoSyncEnabled: true, CredentialVersion: 1, ProbeState: "pending", KeyID: s.active, AccountHint: session.AccountID, IdentityFingerprint: digest(session.AccountID), TokenFingerprint: digest(session.AccessToken), MaskedEmail: MaskEmail(session.Email), PlanType: session.Plan, TokenExpiresAt: session.ExpiresAt}
-	if reader, ok := s.repo.(SupplierImportResourceReader); ok {
+	r.ConsentVersion = SupplierConsentVersion
+	r.AuthorizationVersion = 1
+	r.AuthorizationExpiresAt = &expires
+	r.SupplyEnablePending = true
+	if opt.ResourceID != "" {
+		existing, lookupErr := s.repo.Get(ctx, p.ID, opt.ResourceID)
+		if lookupErr != nil {
+			return nil, lookupErr
+		}
+		if existing.Version != opt.ResourceVersion {
+			return nil, ErrSupplierResourceVersion
+		}
+		if existing.SupplierID != p.ID || existing.IdentityFingerprint != r.IdentityFingerprint || existing.AccountHint != r.AccountHint {
+			return nil, ErrSupplierResourceConflict
+		}
+		r.ID, r.Version, r.CredentialVersion = existing.ID, existing.Version, existing.CredentialVersion
+		r.AuthorizationVersion = existing.AuthorizationVersion + 1
+	} else if reader, ok := s.repo.(SupplierImportResourceReader); ok {
 		existing, lookupErr := reader.FindImportResource(ctx, p.ID, r.IdentityFingerprint)
 		if lookupErr != nil {
 			return nil, lookupErr
@@ -178,6 +224,7 @@ func (s *SupplierResourceService) Import(ctx context.Context, user int64, name, 
 				return nil, ErrSupplierResourceConflict
 			}
 			r.ID, r.Version, r.CredentialVersion = existing.ID, existing.Version, existing.CredentialVersion
+			r.AuthorizationVersion = existing.AuthorizationVersion + 1
 		}
 	}
 	codec, err := credentialcrypto.New(s.wrapper, s.active)
@@ -223,6 +270,18 @@ func (s *SupplierResourceService) Usage(ctx context.Context, user int64, id stri
 	}
 	usage, e := s.queryResource(ctx, r)
 	if e != nil {
+		code := "upstream_unavailable"
+		var failure *SupplierProbeFailure
+		if errors.As(e, &failure) {
+			code = failure.Code
+		}
+		if recorder, ok := s.repo.(interface {
+			RecordProbeFailure(context.Context, int64, string, int64, string, bool) error
+		}); ok {
+			if saveErr := recorder.RecordProbeFailure(ctx, r.SupplierID, r.ID, r.CredentialVersion, code, code == "unauthorized" || code == "forbidden"); saveErr != nil {
+				return nil, saveErr
+			}
+		}
 		return nil, e
 	}
 	r, e = s.repo.SaveUsage(ctx, r.SupplierID, id, version, usage)

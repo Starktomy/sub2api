@@ -30,7 +30,7 @@ func TestSupplierAdmissionPostgres(t *testing.T) {
 	defer db.Exec(`DROP SCHEMA ` + schema + ` CASCADE`)
 	// Core tables and supplier tables use actual migration definitions. Only the
 	// later independently-added Account/group columns are supplied explicitly.
-	for _, file := range []string{"001_init.sql", "253_supplier_profiles.sql", "254_supplier_resources.sql", "255_supplier_probe_jobs.sql", "036_scheduler_outbox.sql", "152_scheduler_outbox_dedup_key.sql", "153_scheduler_outbox_pending_dedup_key_index_notx.sql", "256_supplier_admission.sql", "256_supplier_admission.sql"} {
+	for _, file := range []string{"001_init.sql", "253_supplier_profiles.sql", "254_supplier_resources.sql", "255_supplier_probe_jobs.sql", "036_scheduler_outbox.sql", "152_scheduler_outbox_dedup_key.sql", "153_scheduler_outbox_pending_dedup_key_index_notx.sql", "256_supplier_admission.sql", "258_supplier_supply_controls.sql", "258_supplier_supply_controls.sql"} {
 		b, e := os.ReadFile("../../migrations/" + file)
 		require.NoError(t, e)
 		_, e = db.Exec(string(b))
@@ -66,9 +66,15 @@ func TestSupplierAdmissionPostgres(t *testing.T) {
 	require.Zero(t, count)
 	verify := func() {
 		t.Helper()
-		_, e := db.Exec(`UPDATE supplier_resources SET probe_state='fresh',probe_error_code=NULL,usage='{}',last_probe_at=CURRENT_TIMESTAMP,last_usage_at=CURRENT_TIMESTAMP`)
+		_, e := db.Exec(`UPDATE supplier_resources SET probe_state='fresh',probe_error_code=NULL,usage=jsonb_build_object('rate_limit',jsonb_build_object('allowed',true,'limit_reached',false,'primary_window',jsonb_build_object('used_percent',10,'limit_window_seconds',18000,'reset_at',extract(epoch FROM CURRENT_TIMESTAMP+INTERVAL '1 hour')::bigint),'secondary_window',jsonb_build_object('used_percent',20,'limit_window_seconds',604800,'reset_at',extract(epoch FROM CURRENT_TIMESTAMP+INTERVAL '1 day')::bigint))),last_probe_at=CURRENT_TIMESTAMP,last_usage_at=CURRENT_TIMESTAMP`)
 		require.NoError(t, e)
 	}
+	verify()
+	reconcile()
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM accounts`).Scan(&count))
+	require.Zero(t, count, "verified legacy resources must explicitly reauthorize")
+	_, err = db.Exec(`UPDATE supplier_resources SET consent_version='all_available_continuous_v1',authorization_version=1,authorization_expires_at=token_expires_at,supply_enable_pending=TRUE`)
+	require.NoError(t, err)
 	verify()
 	reconcile()
 	check(true, 1)
@@ -96,12 +102,21 @@ func TestSupplierAdmissionPostgres(t *testing.T) {
 	require.ErrorIs(t, groupErr, service.ErrSupplierResource)
 	_, groupErr = resourceRepo.GetExecutionResource(context.WithValue(ctx, ctxkey.Group, &service.Group{ID: 1}), account, resourceID)
 	require.NoError(t, groupErr)
+	var goodQuota string
+	require.NoError(t, db.QueryRow(`SELECT usage::text FROM supplier_resources`).Scan(&goodQuota))
 	for _, tc := range []struct{ name, invalidate, restore string }{
+		{"authorization expiry", `UPDATE supplier_resources SET authorization_version=authorization_version+1,authorization_expires_at=CURRENT_TIMESTAMP+INTERVAL '1 microsecond'`, `UPDATE supplier_resources SET authorization_version=authorization_version+1,authorization_expires_at=token_expires_at`},
+		{"supplier pause", `UPDATE supplier_resources SET supply_enabled=FALSE`, `UPDATE supplier_resources SET supply_enabled=TRUE`},
+		{"admin prohibition", `UPDATE supplier_resources SET admin_disabled=TRUE`, `UPDATE supplier_resources SET admin_disabled=FALSE`},
+		{"limit reached", `UPDATE supplier_resources SET usage=jsonb_set(usage,'{rate_limit,limit_reached}','true')`, `UPDATE supplier_resources SET usage=jsonb_set(usage,'{rate_limit,limit_reached}','false')`},
+		{"used one hundred", `UPDATE supplier_resources SET usage=jsonb_set(usage,'{rate_limit,primary_window,used_percent}','100')`, `UPDATE supplier_resources SET usage=jsonb_set(usage,'{rate_limit,primary_window,used_percent}','10')`},
+		{"negative quota", `UPDATE supplier_resources SET usage=jsonb_set(usage,'{rate_limit,primary_window,used_percent}','-1')`, `UPDATE supplier_resources SET usage=jsonb_set(usage,'{rate_limit,primary_window,used_percent}','10')`},
+		{"unknown quota", `UPDATE supplier_resources SET usage='{}'`, `UPDATE supplier_resources SET usage='` + goodQuota + `'::jsonb`},
 		{"policy version zero", `UPDATE settings SET value=jsonb_set(value::jsonb,'{version}','0')::text`, `UPDATE settings SET value=jsonb_set(value::jsonb,'{version}','1')::text`},
-		{"future probe", `UPDATE supplier_resources SET last_probe_at=CURRENT_TIMESTAMP+INTERVAL '1 hour'`, `UPDATE supplier_resources SET last_probe_at=last_usage_at`},
+		{"future probe", `UPDATE supplier_resources SET last_verified_at=CURRENT_TIMESTAMP+INTERVAL '1 hour'`, `UPDATE supplier_resources SET last_verified_at=last_usage_at`},
 		{"future usage", `UPDATE supplier_resources SET last_usage_at=CURRENT_TIMESTAMP+INTERVAL '1 hour'`, `UPDATE supplier_resources SET last_usage_at=last_probe_at`},
 		{"wrong account metadata", `UPDATE accounts SET credentials=jsonb_set(credentials,'{chatgpt_account_id}','"wrong-account"')`, `UPDATE accounts SET credentials=jsonb_set(credentials,'{chatgpt_account_id}','"account-metadata"')`},
-		{"stale probe", `UPDATE supplier_resources SET last_probe_at=CURRENT_TIMESTAMP-INTERVAL '16 minutes'`, `UPDATE supplier_resources SET last_probe_at=last_usage_at`},
+		{"stale probe", `UPDATE supplier_resources SET last_verified_at=CURRENT_TIMESTAMP-INTERVAL '16 minutes'`, `UPDATE supplier_resources SET last_verified_at=last_usage_at`},
 	} {
 		t.Run("execution rejects "+tc.name, func(t *testing.T) {
 			_, e := db.Exec(tc.invalidate)
@@ -118,6 +133,75 @@ func TestSupplierAdmissionPostgres(t *testing.T) {
 	reconcile()
 	require.NoError(t, db.QueryRow(`SELECT count(*) FROM accounts`).Scan(&count))
 	require.Equal(t, 1, count)
+	// Ordinary running probe preserves last successful eligibility; its eventual
+	// terminal failure still blocks immediately, without waiting for reconciliation.
+	probes := &supplierProbeRepository{db}
+	claim, e := probes.Claim(ctx, "00000000-0000-4000-8000-000000000021")
+	require.NoError(t, e)
+	require.NotNil(t, claim)
+	assertExecution(true)
+	paused, e := resourceRepo.Transition(ctx, 1, resourceID, claim.Resource.Version, false)
+	require.NoError(t, e)
+	require.True(t, paused.AutoSyncEnabled)
+	require.False(t, paused.SupplyEnabled)
+	check(false, 1)
+	assertExecution(false)
+	require.NoError(t, probes.Finish(ctx, claim, claim.Resource.Usage, "", time.Minute, false))
+	current, e := resourceRepo.Get(ctx, 1, resourceID)
+	require.NoError(t, e)
+	require.False(t, current.SupplyEnabled, "late verification cannot undo pause")
+	_, e = resourceRepo.StartSupply(ctx, 2, resourceID, current.Version)
+	require.ErrorIs(t, e, service.ErrSupplierResource)
+	_, e = resourceRepo.StartSupply(ctx, 1, resourceID, current.Version-1)
+	require.ErrorIs(t, e, service.ErrSupplierResourceVersion)
+	started, e := resourceRepo.StartSupply(ctx, 1, resourceID, current.Version)
+	require.NoError(t, e)
+	require.True(t, started.SupplyEnabled)
+	reconcile()
+	check(true, 1)
+	assertExecution(true)
+	disabled, e := resourceRepo.AdminSupplyControl(ctx, resourceID, started.Version, true)
+	require.NoError(t, e)
+	require.Empty(t, disabled.Envelope)
+	require.Empty(t, disabled.AccountHint)
+	require.True(t, disabled.AdminDisabled)
+	require.True(t, disabled.SupplyEnabled)
+	check(false, 1)
+	assertExecution(false)
+	// Rotating under an admin prohibition cannot remove it or enable before verify.
+	rotation, e := resourceRepo.Get(ctx, 1, resourceID)
+	require.NoError(t, e)
+	require.NoError(t, resourceRepo.Create(ctx, 1, rotation))
+	require.True(t, rotation.AdminDisabled)
+	require.False(t, rotation.SupplyEnabled)
+	verify()
+	reconcile()
+	check(false, 1)
+	current, e = resourceRepo.Get(ctx, 1, resourceID)
+	require.NoError(t, e)
+	require.True(t, current.SupplyEnabled)
+	_, e = resourceRepo.AdminSupplyControl(ctx, resourceID, current.Version, false)
+	require.NoError(t, e)
+	reconcile()
+	check(true, 1)
+	assertExecution(true)
+	// Read-only resume never grants a paused supplier choice or another authorization.
+	current, e = resourceRepo.Get(ctx, 1, resourceID)
+	require.NoError(t, e)
+	paused, e = resourceRepo.Transition(ctx, 1, resourceID, current.Version, false)
+	require.NoError(t, e)
+	resumed, e := probes.Resume(ctx, 1, resourceID, paused.Version)
+	require.NoError(t, e)
+	require.False(t, resumed.SupplyEnabled)
+	require.Equal(t, paused.AuthorizationVersion, resumed.AuthorizationVersion)
+	verify()
+	current, e = resourceRepo.Get(ctx, 1, resourceID)
+	require.NoError(t, e)
+	require.False(t, current.SupplyEnabled)
+	_, e = resourceRepo.StartSupply(ctx, 1, resourceID, current.Version)
+	require.NoError(t, e)
+	reconcile()
+	check(true, 1)
 	_, err = db.Exec(`UPDATE settings SET value=jsonb_set(value::jsonb,'{group_ids}','[2]')::text`)
 	require.NoError(t, err)
 	reconcile()
@@ -129,7 +213,7 @@ func TestSupplierAdmissionPostgres(t *testing.T) {
 		{"disabled owner", `UPDATE users SET status='disabled'`, `UPDATE users SET status='active'`},
 		{"disabled policy", `UPDATE settings SET value=jsonb_set(value::jsonb,'{auto_admission}','false')::text`, `UPDATE settings SET value=jsonb_set(value::jsonb,'{auto_admission}','true')::text`},
 		{"invalid group", `UPDATE groups SET platform='gemini' WHERE id=2`, `UPDATE groups SET platform='composite' WHERE id=2`},
-		{"rotated unverified", `UPDATE supplier_resources SET credential_version=credential_version+1`, `UPDATE supplier_resources SET probe_state='fresh',usage='{}',last_probe_at=CURRENT_TIMESTAMP,last_usage_at=CURRENT_TIMESTAMP`},
+		{"rotated unverified", `UPDATE supplier_resources SET credential_version=credential_version+1`, `UPDATE supplier_resources SET probe_state='fresh',usage=jsonb_build_object('rate_limit',jsonb_build_object('allowed',true,'limit_reached',false,'primary_window',jsonb_build_object('used_percent',10,'limit_window_seconds',18000,'reset_at',extract(epoch FROM CURRENT_TIMESTAMP+INTERVAL '1 hour')::bigint),'secondary_window',jsonb_build_object('used_percent',20,'limit_window_seconds',604800,'reset_at',extract(epoch FROM CURRENT_TIMESTAMP+INTERVAL '1 day')::bigint))),last_probe_at=CURRENT_TIMESTAMP,last_usage_at=CURRENT_TIMESTAMP`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, e := db.Exec(tc.disable)
@@ -142,11 +226,38 @@ func TestSupplierAdmissionPostgres(t *testing.T) {
 			check(true, 2)
 		})
 	}
+	current, e = resourceRepo.Get(ctx, 1, resourceID)
+	require.NoError(t, e)
+	require.NoError(t, resourceRepo.RecordProbeFailure(ctx, 1, resourceID, current.CredentialVersion, "unauthorized", true))
+	assertExecution(false)
+	check(false, 2)
+	require.NoError(t, resourceRepo.RecordProbeFailure(ctx, 1, resourceID, current.CredentialVersion, "upstream_unavailable", false))
+	current, e = resourceRepo.Get(ctx, 1, resourceID)
+	require.NoError(t, e)
+	require.Equal(t, "reauthorization_required", current.ProbeState, "late transient failure cannot erase terminal unauthorized")
+	require.NoError(t, e)
+	_, e = resourceRepo.StartSupply(ctx, 1, resourceID, current.Version)
+	require.ErrorIs(t, e, service.ErrSupplierSupplyUnavailable)
+	require.NoError(t, resourceRepo.Create(ctx, 1, current))
+	verify()
+	reconcile()
+	check(true, 2)
 	_, err = db.Exec(`UPDATE supplier_account_bindings SET supplier_id=2`)
 	require.Error(t, err)
-	_, err = db.Exec(`UPDATE supplier_resources SET status='disconnected',envelope=NULL`)
-	require.NoError(t, err)
-	check(true, 2) // Deliberately stale scheduler/account eligibility.
+	current, e = resourceRepo.Get(ctx, 1, resourceID)
+	require.NoError(t, e)
+	disconnected, e := resourceRepo.Transition(ctx, 1, resourceID, current.Version, true)
+	require.NoError(t, e)
+	require.NotNil(t, disconnected.AuthorizationRevokedAt)
+	require.Empty(t, disconnected.Envelope)
+	check(false, 2)
+	var eventCount int
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM supplier_authorization_events WHERE event='revoked'`).Scan(&eventCount))
+	require.Equal(t, 1, eventCount)
+	_, e = db.Exec(`UPDATE supplier_authorization_events SET consent_version=consent_version`)
+	require.Error(t, e)
+	_, e = db.Exec(`DELETE FROM supplier_authorization_events`)
+	require.Error(t, e)
 	assertExecution(false)
 	reconcile()
 	check(false, 2)

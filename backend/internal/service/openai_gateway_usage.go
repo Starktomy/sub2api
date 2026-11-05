@@ -168,14 +168,29 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	user := input.User
 	account := input.Account
 	subscription := input.Subscription
-	billingAccount, err := resolveCredentialAccount(ctx, s.accountRepo, account)
-	if err != nil {
-		return err
+	var err error
+	billingAccount := account
+	if result.SupplierDispatch != nil || supplierAccountMarked(account) {
+		if err := s.validateSupplierUsageInput(ctx, input); err != nil {
+			return err
+		}
+		// Credential binding and policy were accepted before send. Never resolve
+		// the current credential account again at settlement time.
+	} else {
+		billingAccount, err = resolveCredentialAccount(ctx, s.accountRepo, account)
+		if err != nil {
+			return err
+		}
 	}
 	if !isGrokVideoUsageResult(result, nil) {
 		ApplyOpenAIImageBillingResolution(result)
 	}
-	logServiceTierBillingDowngrade("service.openai_gateway", account, result.RequestID, ApplyOpenAIServiceTierBillingResolution(billingAccount, result))
+	if result.SupplierDispatch != nil {
+		result.ServiceTier = optionalTrimmedStringPtr(result.SupplierUsage.ServiceTier)
+		result.ReasoningEffort = optionalTrimmedStringPtr(result.SupplierUsage.ReasoningEffort)
+	} else {
+		logServiceTierBillingDowngrade("service.openai_gateway", account, result.RequestID, ApplyOpenAIServiceTierBillingResolution(billingAccount, result))
+	}
 
 	// OpenAI input_tokens 是总输入，包含缓存读取和缓存写入明细。
 	// 将三类 token 拆成互斥桶，避免缓存写入同时按普通输入和 cache_write 重复计费。
@@ -232,6 +247,9 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		result.Model,
 	)
 	billingModels = s.filterCNProviderBillingModelCandidates(ctx, account, apiKey, billingModels)
+	if result.SupplierDispatch != nil {
+		billingModels = []string{result.SupplierDispatch.Model}
+	}
 	serviceTier := ""
 	if result.ServiceTier != nil {
 		serviceTier = strings.TrimSpace(*result.ServiceTier)
@@ -254,6 +272,9 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		pricingAt,
 	)
 	if err != nil {
+		if result.SupplierDispatch != nil {
+			return s.supplierUsageReview(ctx, result, "pricing_unavailable")
+		}
 		if !isUsagePricingUnavailableError(err) {
 			return err
 		}
@@ -279,7 +300,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		result.UpstreamResponseModelConflict,
 		result.ImageCount > 0 || result.VideoCount > 0 || result.WebSearchCalls > 0 ||
 			result.AudioUsage != nil || result.SearchCount > 0,
-	); responseModel != "" && !strings.EqualFold(responseModel, baselineBillingModel) {
+	); result.SupplierDispatch == nil && responseModel != "" && !strings.EqualFold(responseModel, baselineBillingModel) {
 		if identified, responseChannelPriced := s.hasIdentifiedOpenAIResponsePricing(ctx, responseModel, apiKey); identified {
 			responseModels := s.filterCNProviderBillingModelCandidates(ctx, account, apiKey, usageBillingModelCandidates(responseModel))
 			responseCost, responseErr := s.calculateOpenAIRecordUsageCost(
@@ -318,6 +339,9 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 			modelLongContextExempt,
 			pricingAt,
 		)
+		if standardErr != nil && result.SupplierDispatch != nil {
+			return s.supplierUsageReview(ctx, result, "pricing_unavailable")
+		}
 		if standardErr != nil && !isUsagePricingUnavailableError(standardErr) {
 			return standardErr
 		}
@@ -339,6 +363,9 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	durationMs := int(result.Duration.Milliseconds())
 	accountRateMultiplier := account.BillingRateMultiplier()
 	requestID := resolveUsageBillingRequestID(ctx, result.RequestID)
+	if result.SupplierDispatch != nil {
+		requestID = "supplier:" + result.SupplierDispatch.AttemptID
+	}
 	if result.OpenAIWSMode {
 		if upstreamRequestID := strings.TrimSpace(result.RequestID); upstreamRequestID != "" {
 			requestID = upstreamRequestID
@@ -410,6 +437,11 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		ImageSizeSource:          optionalTrimmedStringPtr(result.ImageSizeSource),
 		ImageSizeBreakdown:       imageSizeBreakdown,
 		NativeCompactionV2:       input.NativeCompactionV2,
+	}
+	if result.SupplierDispatch != nil {
+		usageLog.Model = result.SupplierDispatch.Model
+		usageLog.ServiceTier = optionalTrimmedStringPtr(supplierSafeTier(optionalStringValue(result.ServiceTier)))
+		usageLog.ReasoningEffort = optionalTrimmedStringPtr(supplierSafeEffort(optionalStringValue(result.ReasoningEffort)))
 	}
 	isVideoUsage := isGrokVideoUsageResult(result, billingModels)
 	if isVideoUsage {
@@ -508,6 +540,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	}
 
 	_, billingErr := applyUsageBilling(ctx, requestID, usageLog, &postUsageBillingParams{
+		SupplierDispatch:           result.SupplierDispatch,
 		Cost:                       cost,
 		User:                       user,
 		APIKey:                     apiKey,

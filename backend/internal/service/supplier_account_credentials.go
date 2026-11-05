@@ -34,14 +34,13 @@ func (s *SupplierResourceService) ResolveAccountCredentials(ctx context.Context,
 	if strings.TrimSpace(ref) == "" || strings.TrimSpace(hint) == "" {
 		return nil, ErrSupplierResource
 	}
-	repo, ok := s.repo.(SupplierAccountResourceReader)
-	if !ok {
-		return nil, ErrSupplierResource
+	// Only a durable accepted dispatch may select execution credentials. Never
+	// reread the current binding after acceptance (rotation may race this call).
+	dispatch := supplierDispatchFromContext(ctx)
+	if dispatch == nil || dispatch.accepted.Snapshot.AccountID != account.ID || dispatch.accepted.Snapshot.ResourceID != ref {
+		return nil, ErrSupplierDispatchUnavailable
 	}
-	resource, err := repo.GetExecutionResource(ctx, account.ID, ref)
-	if err != nil {
-		return nil, err
-	}
+	resource := dispatch.accepted.Resource
 	// Headers are assembled from the scheduler's Account. Reject stale/forged
 	// metadata rather than mutating a shared scheduler snapshot or sending a token
 	// under a different upstream account identity.

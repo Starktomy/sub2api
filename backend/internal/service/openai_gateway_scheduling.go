@@ -387,6 +387,9 @@ func isOpenAICompatibleAccountEligibleForRequestBeforeProfit(ctx context.Context
 }
 
 func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Context, account *Account, platform string, requestedModel string, requireCompact bool, requiredCapability OpenAIEndpointCapability) string {
+	if supplierAccountMarked(account) && !supplierResponsesEligible(ctx) {
+		return "supplier_request_unsupported"
+	}
 	platform = NormalizeOpenAICompatiblePlatform(platform)
 	if account == nil {
 		return "account_nil"
@@ -532,6 +535,18 @@ func grokQuotaSnapshotStaleForPause(snapshot *xai.QuotaSnapshot, now time.Time) 
 
 func shouldAutoPauseOpenAIAccountByQuota(ctx context.Context, account *Account) (bool, openAIQuotaAutoPauseDecision) {
 	if account == nil || !account.IsOpenAI() {
+		return false, openAIQuotaAutoPauseDecision{}
+	}
+	// Supplier authorization covers all remaining allowance. Legacy global
+	// reserve thresholds and automatic credit-reset consumption do not apply;
+	// PostgreSQL still checks every applicable window before physical dispatch.
+	if supplierAccountMarked(account) {
+		now := time.Now()
+		for _, window := range []string{"5h", "7d"} {
+			if utilization, ok := resolveOpenAIQuotaUtilization(account.Extra, window, now); ok && utilization >= 1 {
+				return true, openAIQuotaAutoPauseDecision{window: window, threshold: 1, utilization: utilization}
+			}
+		}
 		return false, openAIQuotaAutoPauseDecision{}
 	}
 	// 自动用卡有独立阈值：达到消费阈值时必须先退出调度；仅达到普通暂停阈值时，

@@ -1246,10 +1246,16 @@ func ProvideAntigravityOAuthService(lifecycle *RuntimeLifecycle, proxies ProxyRe
 	return svc
 }
 
-func ProvideSupplierProbeWorker(repo SupplierProbeRepository, resources *SupplierResourceService, cfg *config.Config, lifecycle *RuntimeLifecycle) *SupplierProbeWorker {
+func ProvideSupplierProbeWorker(repo SupplierProbeRepository, resources *SupplierResourceService, cfg *config.Config, lifecycle *RuntimeLifecycle, billingRepo UsageBillingRepository, billingCache *BillingCacheService, deferred *DeferredService) *SupplierProbeWorker {
 	w := NewSupplierProbeWorker(repo, resources, cfg)
 	if cfg.SupplierProbe.Enabled {
 		lifecycle.Register(RuntimeTask{Name: "SupplierProbeWorker", Scope: RuntimeScopeWorker, StopPhase: RuntimeStopConsumers, Start: w.Start, Stop: w.Stop})
+	}
+	// Settling accepted consumption must survive disabling upstream probes. This
+	// local-only worker needs no vault and runs only in opted-in split workers.
+	if cfg.Runtime.Role == config.RuntimeRoleWorker && cfg.Runtime.EnableSplitRoles && cfg.Database.EffectiveMigrationMode() == config.DatabaseMigrationModeCheck {
+		recovery := NewSupplierBillingRecoveryWorker(billingRepo, billingCache, deferred)
+		lifecycle.Register(RuntimeTask{Name: "SupplierBillingRecoveryWorker", Scope: RuntimeScopeWorker, StopPhase: RuntimeStopConsumers, Start: recovery.Start, Stop: recovery.Stop})
 	}
 	return w
 }

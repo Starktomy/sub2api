@@ -1775,6 +1775,9 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatible(ctx context.C
 // openAISelectionFilterStats so that "no available accounts" errors state why
 // each candidate was dropped instead of failing silently (#4599).
 func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx context.Context, account *Account, req OpenAIAccountScheduleRequest) (bool, string) {
+	if supplierAccountMarked(account) && !supplierResponsesEligible(ctx) {
+		return false, "supplier_request_unsupported"
+	}
 	if account == nil {
 		return false, "account_nil"
 	}

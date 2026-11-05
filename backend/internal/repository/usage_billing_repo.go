@@ -42,11 +42,38 @@ func (r *usageBillingRepository) Apply(ctx context.Context, cmd *service.UsageBi
 		}
 	}()
 
+	// Lock the immutable staged command before taking the existing financial
+	// dedup claim. Non-journal historical duplicates retain their early return.
+	var dispatch *supplierDispatchRow
+	if supplierCommandJournaled(cmd) {
+		dispatch, err = lockStagedSupplierCommand(ctx, tx, cmd)
+		if err != nil {
+			return nil, err
+		}
+		if dispatch.state == "committed" {
+			return &service.UsageBillingApplyResult{Applied: false}, nil
+		}
+	}
 	applied, err := r.claimUsageBillingKey(ctx, tx, cmd)
 	if err != nil {
 		return nil, err
 	}
 	if !applied {
+		if dispatch != nil {
+			// This is not produced by normal atomic commits, but safely reconcile
+			// an existing matching fact instead of leaving a pending journal loop.
+			var fact int
+			if err = tx.QueryRowContext(ctx, `SELECT 1 FROM supplier_usage WHERE supplier_attempt_id=$1 AND supplier_snapshot_digest=$2 AND request_id=$3 AND api_key_id=$4 AND request_fingerprint=$5`, cmd.SupplierAttemptID, cmd.SupplierSnapshotDigest, cmd.RequestID, cmd.APIKeyID, cmd.RequestFingerprint).Scan(&fact); err != nil {
+				return nil, service.ErrSupplierDispatchConflict
+			}
+			if err = commitSupplierDispatch(ctx, tx, cmd); err != nil {
+				return nil, err
+			}
+			if err = tx.Commit(); err != nil {
+				return nil, err
+			}
+			tx = nil
+		}
 		return &service.UsageBillingApplyResult{Applied: false}, nil
 	}
 
@@ -54,8 +81,13 @@ func (r *usageBillingRepository) Apply(ctx context.Context, cmd *service.UsageBi
 	if err := r.applyUsageBillingEffects(ctx, tx, cmd, result); err != nil {
 		return nil, err
 	}
-	if err := recordSupplierUsageBilling(ctx, tx, cmd); err != nil {
+	if err := recordSupplierUsageBilling(ctx, tx, cmd, dispatch); err != nil {
 		return nil, err
+	}
+	if dispatch != nil {
+		if err := commitSupplierDispatch(ctx, tx, cmd); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := tx.Commit(); err != nil {

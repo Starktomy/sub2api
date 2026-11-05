@@ -27,6 +27,9 @@ const (
 // *OpenAIForwardResult（WebSearchCalls=1，供按次计费）；上游错误被原样透传
 // 给客户端时返回 (nil, nil)，不产生计费。
 func (s *OpenAIGatewayService) ForwardAlphaSearch(ctx context.Context, c *gin.Context, account *Account, body []byte) (*OpenAIForwardResult, error) {
+	if supplierAccountMarked(account) {
+		return nil, errSupplierUnsupported
+	}
 	if err := validateUpstreamProviderBinding(account); err != nil {
 		return nil, err
 	}

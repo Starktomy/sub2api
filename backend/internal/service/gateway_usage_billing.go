@@ -73,6 +73,7 @@ type usageLogBestEffortWriter interface {
 
 // postUsageBillingParams 统一扣费所需的参数
 type postUsageBillingParams struct {
+	SupplierDispatch      *SupplierDispatchSnapshot
 	Cost                  *CostBreakdown
 	User                  *User
 	APIKey                *APIKey
@@ -194,7 +195,7 @@ func postUsageBilling(ctx context.Context, p *postUsageBillingParams, deps *bill
 	//   - flusher_enabled=false（降级）:保留原有同步直写 DB
 	//   - flusher_enabled=true:跳过直写 DB，由 flusher 异步批量刷（markDirty 在 IncrementUserPlatformQuotaUsage 内部完成）
 	//   - 失败仅记 ALERT log + counter，不阻断主扣费流程
-	if !p.IsSubscriptionBill && p.Platform != "" && cost.ActualCost > 0 && p.User != nil && deps.userPlatformQuotaRepo != nil {
+	if p.SupplierDispatch == nil && !p.IsSubscriptionBill && p.Platform != "" && cost.ActualCost > 0 && p.User != nil && deps.userPlatformQuotaRepo != nil {
 		if deps.billingCacheService.HasUserPlatformQuotaLimit(billingCtx, p.User.ID, p.Platform) {
 			deps.billingCacheService.IncrementUserPlatformQuotaUsage(p.User.ID, p.Platform, cost.ActualCost)
 			if deps.cfg == nil || !deps.cfg.Database.UserPlatformQuotaFlusherEnabled {
@@ -299,7 +300,13 @@ func buildUsageBillingCommand(requestID string, usageLog *UsageLog, p *postUsage
 		AccountType:        p.Account.Type,
 		RequestPayloadHash: strings.TrimSpace(p.RequestPayloadHash),
 	}
-	if supplierAccountMarked(p.Account) {
+	if p.SupplierDispatch != nil {
+		cmd.SupplierAttemptID = p.SupplierDispatch.AttemptID
+		cmd.SupplierSnapshotDigest = p.SupplierDispatch.Digest
+		cmd.RequestID = "supplier:" + p.SupplierDispatch.AttemptID
+		cmd.RequestPayloadHash = ""
+	}
+	if p.SupplierDispatch != nil || supplierAccountMarked(p.Account) {
 		cmd.SupplierCostProvided = true
 		cmd.StandardCost = p.Cost.TotalCost
 		cmd.CustomerCharge = p.Cost.ActualCost
@@ -377,8 +384,20 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
 	billingCtx, cancel := detachedBillingContext(ctx)
 	defer cancel()
 
+	if p.SupplierDispatch != nil || supplierAccountMarked(p.Account) {
+		dispatchRepo, ok := repo.(SupplierDispatchRepository)
+		if !ok || p.SupplierDispatch == nil {
+			return false, ErrSupplierDispatchUnavailable
+		}
+		if err := dispatchRepo.StageSupplierBilling(billingCtx, cmd); err != nil {
+			return false, &SupplierAccountingError{}
+		}
+	}
 	result, err := repo.Apply(billingCtx, cmd)
 	if err != nil {
+		if p.SupplierDispatch != nil {
+			return false, &SupplierAccountingError{}
+		}
 		return false, err
 	}
 
@@ -437,7 +456,7 @@ func finalizePostUsageBilling(ctx context.Context, p *postUsageBillingParams, de
 	//     限制在并发 in-flight 请求数量内（旧实现的异步入队会让超支无限累积直到 worker 处理）
 	//   - DB 异步(flusher_enabled=false):在独立 goroutine 中走 detached context,失败用 ALERT log 触发 oncall 对账
 	//   - flusher_enabled=true:不直写 DB,由 flusher 异步批量刷（markDirty 已在 IncrementUserPlatformQuotaUsage 内部完成）
-	if !p.IsSubscriptionBill && p.Platform != "" && p.Cost.ActualCost > 0 && p.User != nil && deps.userPlatformQuotaRepo != nil && deps.billingCacheService != nil {
+	if p.SupplierDispatch == nil && !p.IsSubscriptionBill && p.Platform != "" && p.Cost.ActualCost > 0 && p.User != nil && deps.userPlatformQuotaRepo != nil && deps.billingCacheService != nil {
 		if deps.billingCacheService.HasUserPlatformQuotaLimit(ctx, p.User.ID, p.Platform) {
 			deps.billingCacheService.IncrementUserPlatformQuotaUsage(p.User.ID, p.Platform, p.Cost.ActualCost)
 			if deps.cfg == nil || !deps.cfg.Database.UserPlatformQuotaFlusherEnabled {

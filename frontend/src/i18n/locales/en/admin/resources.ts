@@ -1,5 +1,17 @@
 export default {
     suppliers: {
+      supplyControl: 'Supply prohibition',
+      supplyProhibited: 'Supply prohibited',
+      supplyNotProhibited: 'No administrator prohibition',
+      supplierSupplyEnabled: 'Supplier supply enabled',
+      supplierSupplyPaused: 'Supplier supply not enabled',
+      prohibitSupply: 'Prohibit supply',
+      removeProhibition: 'Remove prohibition',
+      controlSaved: 'Supply prohibition updated. Removing the prohibition does not create supplier consent or change the supplier’s supply choice.',
+      controlReloadFailed: 'Control saved, but inventory reload failed. Refresh before making further changes.',
+      controlConflict: 'Resource changed. Refresh inventory before retrying; the change was not saved.',
+      controlError: 'Unable to update supply prohibition. Refresh inventory and try again.',
+
       admission: 'Admission / account',
       schedulable: 'Schedulable (not proof of traffic)',
       notSchedulable: 'Not schedulable',
@@ -30,8 +42,8 @@ export default {
       saveError: 'Unable to save supplier policy. Please try again.',
 
       title: 'Supplier Management',
-      description: 'Read-only inventory of supplier resources and their latest probe state.',
-      inventoryNotice: 'Read-only inventory. Probe success does not prove scheduler admission or live traffic. Admission is governed by policy, resource eligibility, and background processing.',
+      description: 'Manage supplier policy, inspect resource status, and independently prohibit supply.',
+      inventoryNotice: 'Removing an administrator prohibition never creates supplier consent or changes the supplier’s supply choice. Admission still requires valid authorization, resource eligibility and background processing; probe success does not prove live traffic.',
       loadError: 'Unable to load supplier resources. Use Refresh to try again.',
       empty: 'No supplier resources found.',
       unknown: 'Not available',

@@ -73,6 +73,9 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 	defaultMappedModel string,
 	compatPromptCacheTenantIsolated bool,
 ) (*OpenAIForwardResult, error) {
+	if supplierAccountMarked(account) {
+		return nil, errSupplierUnsupported
+	}
 	if err := validateUpstreamProviderBinding(account); err != nil {
 		return nil, err
 	}

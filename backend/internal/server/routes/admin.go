@@ -49,6 +49,7 @@ func RegisterAdminRoutes(
 		admin.GET("/upstream-providers", h.Admin.Account.GetUpstreamProviders)
 		if h.SupplierResource != nil {
 			admin.GET("/supplier/resources", h.SupplierResource.AdminList)
+			admin.PUT("/supplier/resources/:id/supply-control", h.SupplierResource.AdminSupplyControl)
 			admin.GET("/supplier/settings", h.Admin.Setting.GetSupplierOperatingPolicy)
 			admin.PUT("/supplier/settings", h.Admin.Setting.SetSupplierOperatingPolicy)
 		}

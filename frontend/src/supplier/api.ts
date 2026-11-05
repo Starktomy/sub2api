@@ -16,6 +16,13 @@ export interface SupplierSettings {
   login_agreement_enabled?: boolean
 }
 export interface SecondFactor { requires_2fa: true; temp_token: string }
+export interface SupplierResourceImport {
+  display_name: string
+  content: string
+  consent_version: 'all_available_continuous_v1'
+  resource_id?: string
+  resource_version?: number
+}
 
 async function unwrap<T>(request: Promise<{ data: { code: number; data: T; message?: string } }>): Promise<T> {
   const { data } = await request
@@ -69,11 +76,11 @@ export const isolatedSupplierAPI = {
   },
   resources: () => unwrap<SupplierResourceList>(client.get('/supplier/resources')),
   resourceStats: (id: string) => unwrap<SupplierResourceStats>(client.get(`/supplier/resources/${encodeURIComponent(id)}/stats`)),
-  importResource: (displayName: string, content: string) => unwrap<SupplierResource>(client.post('/supplier/resources/import', { display_name: displayName, content })),
-  resourceUsage: (id: string, version: number) => unwrap<SupplierResource>(client.post(`/supplier/resources/${id}/usage`, { version })),
-  resumeResourceSync: (id: string, version: number) => unwrap<SupplierResource>(client.post(`/supplier/resources/${id}/resume-sync`, { version })),
-  pauseResource: (id: string, version: number) => unwrap<SupplierResource>(client.post(`/supplier/resources/${id}/pause`, { version })),
-  disconnectResource: (id: string, version: number) => unwrap<SupplierResource>(client.post(`/supplier/resources/${id}/disconnect`, { version })),
+  importResource: (request: SupplierResourceImport) => unwrap<SupplierResource>(client.post('/supplier/resources/import', request)),
+  resourceUsage: (id: string, version: number) => unwrap<SupplierResource>(client.post(`/supplier/resources/${encodeURIComponent(id)}/usage`, { version })),
+  startResource: (id: string, version: number) => unwrap<SupplierResource>(client.post(`/supplier/resources/${encodeURIComponent(id)}/start`, { version })),
+  pauseResource: (id: string, version: number) => unwrap<SupplierResource>(client.post(`/supplier/resources/${encodeURIComponent(id)}/pause`, { version })),
+  disconnectResource: (id: string, version: number) => unwrap<SupplierResource>(client.post(`/supplier/resources/${encodeURIComponent(id)}/disconnect`, { version })),
   profile: () => unwrap<SupplierProfile>(client.get('/supplier/profile')),
   sendCode: () => unwrap<unknown>(client.post('/supplier/send-verify-code', {})),
   enroll: (displayName: string, code: string) => unwrap<SupplierProfile>(client.post('/supplier/enroll', { display_name: displayName, verify_code: code }))

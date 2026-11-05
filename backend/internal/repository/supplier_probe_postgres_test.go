@@ -32,7 +32,7 @@ func TestSupplierProbeDurablePostgres(t *testing.T) {
  CREATE TABLE groups(id BIGINT PRIMARY KEY,status TEXT,deleted_at TIMESTAMPTZ,platform TEXT)`)
 	require.NoError(t, e)
 	defer db.Exec(`DROP SCHEMA supplier_probe_fixture CASCADE`)
-	for _, file := range []string{"254_supplier_resources.sql", "255_supplier_probe_jobs.sql", "255_supplier_probe_jobs.sql", "256_supplier_admission.sql"} {
+	for _, file := range []string{"254_supplier_resources.sql", "255_supplier_probe_jobs.sql", "255_supplier_probe_jobs.sql", "256_supplier_admission.sql", "258_supplier_supply_controls.sql"} {
 		m, e := os.ReadFile("../../migrations/" + file)
 		require.NoError(t, e)
 		_, e = db.Exec(string(m))
@@ -79,11 +79,18 @@ func TestSupplierProbeDurablePostgres(t *testing.T) {
 	repo := &supplierResourceRepository{db}
 	paused, e := repo.Transition(ctx, 1, id, claim.Resource.Version, false)
 	require.NoError(t, e)
-	require.False(t, paused.AutoSyncEnabled)
+	require.True(t, paused.AutoSyncEnabled)
+	require.False(t, paused.SupplyEnabled)
 	require.NoError(t, r.Finish(ctx, claim, &service.SupplierResourceUsage{PlanType: "stale"}, "", time.Minute, false))
 	require.NoError(t, db.QueryRow(`SELECT usage::text FROM supplier_resources`).Scan(&usage))
-	require.False(t, usage.Valid)
-	resumed, e := r.Resume(ctx, 1, id, paused.Version)
+	require.True(t, usage.Valid) // Pausing supply does not cancel the read-only probe.
+	require.NoError(t, db.QueryRow(`SELECT supply_enabled FROM supplier_resources`).Scan(&enabled))
+	require.False(t, enabled)
+	_, e = db.Exec(`UPDATE supplier_probe_jobs SET next_run_at=CURRENT_TIMESTAMP`)
+	require.NoError(t, e)
+	current, e := repo.Get(ctx, 1, id)
+	require.NoError(t, e)
+	resumed, e := r.Resume(ctx, 1, id, current.Version)
 	require.NoError(t, e)
 	require.True(t, resumed.AutoSyncEnabled)
 	claim2, e := r.Claim(ctx, "00000000-0000-4000-8000-000000000014")

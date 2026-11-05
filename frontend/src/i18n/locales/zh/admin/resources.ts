@@ -1,5 +1,17 @@
 export default {
     suppliers: {
+      supplyControl: '供给禁用控制',
+      supplyProhibited: '已禁止供给',
+      supplyNotProhibited: '无管理员供给禁令',
+      supplierSupplyEnabled: '供应商已开启供给',
+      supplierSupplyPaused: '供应商未开启供给',
+      prohibitSupply: '禁止供给',
+      removeProhibition: '解除禁令',
+      controlSaved: '供给禁令已更新。解除禁令不会创建供应商授权，也不会更改供应商的供给开关。',
+      controlReloadFailed: '控制已保存，但资源列表重新加载失败。请刷新后再操作。',
+      controlConflict: '资源已变更，本次修改未保存，请刷新列表后重试。',
+      controlError: '无法修改供给禁令，请刷新列表后重试。',
+
       admission: '准入 / 账号',
       schedulable: '可调度（不代表已有流量）',
       notSchedulable: '不可调度',
@@ -30,8 +42,8 @@ export default {
       saveError: '供应商策略保存失败，请重试。',
 
       title: '供应商管理',
-      description: '只读查看供应商资源及其最新探测状态。',
-      inventoryNotice: '这里只读展示资源。探测成功不代表已准入调度或正在服务流量；准入取决于策略、资源资格及后台处理。',
+      description: '管理供应商策略，查看资源状态，并独立控制供给禁令。',
+      inventoryNotice: '解除管理员禁令不会创建供应商授权，也不会更改供应商的供给开关。准入仍需有效授权、资源资格及后台处理；探测成功不代表正在服务流量。',
       loadError: '供应商资源加载失败，请点击刷新重试。',
       empty: '暂无供应商资源。',
       unknown: '暂无数据',

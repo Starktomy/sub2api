@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/lib/pq"
@@ -15,13 +16,52 @@ import (
 // Freshness is deliberately independent of the next scheduled probe. A stalled
 // worker must not leave supply eligible indefinitely. Execution rechecks this
 // predicate against PostgreSQL, not a scheduler snapshot.
-const supplierAdmissionEligibleSQL = `r.status='paused' AND r.auto_sync_enabled
- AND r.envelope IS NOT NULL AND r.token_expires_at>CURRENT_TIMESTAMP
- AND r.probe_state='fresh' AND r.probe_error_code IS NULL
+const supplierAuthorizationValidSQL = `r.status='paused'
+ AND r.consent_version='all_available_continuous_v1' AND r.authorization_version>0
+ AND r.authorization_revoked_at IS NULL AND r.authorization_expires_at>CURRENT_TIMESTAMP
+ AND r.authorization_expires_at<=r.token_expires_at`
+const supplierCredentialVerifiedSQL = `r.envelope IS NOT NULL AND r.token_expires_at>CURRENT_TIMESTAMP
+ AND r.probe_state IN ('fresh','running') AND r.probe_error_code IS NULL
  AND r.verified_credential_version=r.credential_version AND btrim(r.account_hint)<>''
- AND r.last_probe_at BETWEEN CURRENT_TIMESTAMP-INTERVAL '15 minutes' AND CURRENT_TIMESTAMP
+ AND r.last_verified_at BETWEEN CURRENT_TIMESTAMP-INTERVAL '15 minutes' AND CURRENT_TIMESTAMP
  AND r.last_usage_at BETWEEN CURRENT_TIMESTAMP-INTERVAL '15 minutes' AND CURRENT_TIMESTAMP
  AND p.status='active' AND u.status='active' AND u.deleted_at IS NULL`
+const supplierAdmissionEligibleSQL = supplierAuthorizationValidSQL + ` AND r.supply_enabled AND NOT r.admin_disabled
+ AND ` + supplierCredentialVerifiedSQL + ` AND supplier_quota_available(r.usage,CURRENT_TIMESTAMP)`
+
+// Disable only the existing bound Account; never repurpose or delete its history.
+func disableSupplierBinding(ctx context.Context, tx *sql.Tx, id string) error {
+	var accountID int64
+	err := tx.QueryRowContext(ctx, `SELECT b.account_id FROM supplier_account_bindings b JOIN supplier_resources r ON r.id=b.resource_id AND r.supplier_id=b.supplier_id WHERE b.resource_id=$1 FOR UPDATE OF b`, id).Scan(&accountID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE accounts SET schedulable=FALSE,status='disabled',updated_at=CURRENT_TIMESTAMP WHERE id=$1`, accountID); err != nil {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, `DELETE FROM account_groups WHERE account_id=$1 RETURNING group_id`, accountID)
+	if err != nil {
+		return err
+	}
+	var groups []int64
+	for rows.Next() {
+		var group int64
+		if err = rows.Scan(&group); err != nil {
+			rows.Close()
+			return err
+		}
+		groups = append(groups, group)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	return enqueueSchedulerOutbox(ctx, tx, service.SchedulerOutboxEventAccountChanged, &accountID, nil, buildSchedulerGroupPayload(groups))
+}
 
 // reconcileSupplierAdmission processes at most 200 resources: 100 existing
 // bindings in oldest-checked order and 100 new candidates. Resource row locks
@@ -33,6 +73,9 @@ func reconcileSupplierAdmission(ctx context.Context, db *sql.DB) error {
 		return err
 	}
 	defer tx.Rollback()
+	if err = supplierControlTimeout(ctx, tx); err != nil {
+		return err
+	}
 	var raw string
 	err = tx.QueryRowContext(ctx, `SELECT value FROM settings WHERE key='supplier_operating_policy_v1' FOR SHARE`).Scan(&raw)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -95,7 +138,8 @@ func syncSupplierAdmission(ctx context.Context, tx *sql.Tx, id string, enabled b
 	var hint string
 	var expires sql.NullTime
 	var eligible bool
-	err := tx.QueryRowContext(ctx, `SELECT r.supplier_id,r.credential_version,r.account_hint,r.token_expires_at,COALESCE((`+supplierAdmissionEligibleSQL+`),FALSE) FROM supplier_resources r JOIN supplier_profiles p ON p.id=r.supplier_id JOIN users u ON u.id=p.user_id WHERE r.id=$1 FOR UPDATE OF r FOR SHARE OF p,u`, id).Scan(&supplierID, &version, &hint, &expires, &eligible)
+	var usageJSON []byte
+	err := tx.QueryRowContext(ctx, `SELECT r.supplier_id,r.credential_version,r.account_hint,r.token_expires_at,r.usage,COALESCE((`+supplierAdmissionEligibleSQL+`),FALSE) FROM supplier_resources r JOIN supplier_profiles p ON p.id=r.supplier_id JOIN users u ON u.id=p.user_id WHERE r.id=$1 FOR UPDATE OF r FOR SHARE OF p,u`, id).Scan(&supplierID, &version, &hint, &expires, &usageJSON, &eligible)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -117,7 +161,17 @@ func syncSupplierAdmission(ctx context.Context, tx *sql.Tx, id string, enabled b
 		return nil
 	}
 	credentials, _ := json.Marshal(map[string]any{"supplier_resource_id": id, "chatgpt_account_id": hint})
-	extra, _ := json.Marshal(map[string]any{"supplier_resource_id": id, "supplier_id": supplierID})
+	extraFields := map[string]any{"supplier_resource_id": id, "supplier_id": supplierID}
+	if eligible {
+		var usage service.SupplierResourceUsage
+		if err = json.Unmarshal(usageJSON, &usage); err != nil {
+			return err
+		}
+		for key, value := range service.SupplierQuotaSchedulerExtra(&usage, time.Now()) {
+			extraFields[key] = value
+		}
+	}
+	extra, _ := json.Marshal(extraFields)
 	if created {
 		err = tx.QueryRowContext(ctx, `INSERT INTO accounts(name,platform,type,credentials,extra,status,schedulable,expires_at,auto_pause_on_expired) VALUES($1,'openai','oauth',$2::jsonb,$3::jsonb,'active',TRUE,$4,TRUE) RETURNING id`, "Supplier "+id, string(credentials), string(extra), expires).Scan(&accountID)
 		if err != nil {

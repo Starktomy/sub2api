@@ -28,18 +28,28 @@ func TestSupplierAccountCredentialIdentity(t *testing.T) {
 	s.repo = reader
 	a := &Account{ID: 17, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"supplier_resource_id": r.ID, "chatgpt_account_id": r.AccountHint}}
 	got, err := s.ResolveAccountCredentials(context.Background(), a)
+	require.ErrorIs(t, err, ErrSupplierDispatchUnavailable)
+	require.Nil(t, got)
+	dispatch := &supplierGatewayDispatch{accepted: SupplierAcceptedDispatch{
+		Resource: r, Snapshot: SupplierDispatchSnapshot{AccountID: a.ID, ResourceID: r.ID},
+	}}
+	ctx := context.WithValue(context.Background(), supplierDispatchKey{}, dispatch)
+	got, err = s.ResolveAccountCredentials(ctx, a)
 	require.NoError(t, err)
 	require.Equal(t, "synthetic-execution-token", got.AccessToken)
 	a.Credentials["chatgpt_account_id"] = "forged-header"
-	got, err = s.ResolveAccountCredentials(context.Background(), a)
+	got, err = s.ResolveAccountCredentials(ctx, a)
 	require.ErrorIs(t, err, ErrSupplierResource)
 	require.Nil(t, got)
 	a.Credentials["chatgpt_account_id"] = r.AccountHint
+	// Current binding rotates/revokes after acceptance: this attempt must still
+	// decrypt the exact envelope returned by acceptance, never reread current.
+	reader.resource = &SupplierResource{ID: "rotated-current"}
 	reader.err = ErrSupplierResource
-	got, err = s.ResolveAccountCredentials(context.Background(), a)
-	require.ErrorIs(t, err, ErrSupplierResource)
-	require.Nil(t, got)
-	require.Equal(t, 3, reader.calls, "successful plaintext must never be cached")
+	got, err = s.ResolveAccountCredentials(ctx, a)
+	require.NoError(t, err)
+	require.Equal(t, "synthetic-execution-token", got.AccessToken)
+	require.Zero(t, reader.calls)
 }
 
 func TestSupplierAccountGuardsRejectLegacyFallback(t *testing.T) {

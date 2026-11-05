@@ -36,6 +36,7 @@ func RegisterSupplierRoutes(r *gin.Engine, h *handler.Handlers, jwt middleware.J
 		supplier.POST("/resources/import", h.Supplier.RateLimit(), h.SupplierResource.Import)
 		supplier.POST("/resources/:id/usage", h.Supplier.RateLimit(), h.SupplierResource.Usage)
 		supplier.POST("/resources/:id/resume-sync", h.SupplierResource.Resume)
+		supplier.POST("/resources/:id/start", h.SupplierResource.Start)
 		supplier.POST("/resources/:id/pause", h.SupplierResource.Pause)
 		supplier.POST("/resources/:id/disconnect", h.SupplierResource.Disconnect)
 	}

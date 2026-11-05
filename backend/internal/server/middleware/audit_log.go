@@ -124,6 +124,11 @@ var auditSensitiveReads = map[string]string{
 
 // auditActionOverrides 变更类请求的动作名精确映射（未命中时自动推导）。
 var auditActionOverrides = map[string]string{
+	"POST /api/v1/supplier/resources/import":                  "supplier.authorization.accept",
+	"POST /api/v1/supplier/resources/:id/start":               "supplier.supply.start",
+	"POST /api/v1/supplier/resources/:id/pause":               "supplier.supply.pause",
+	"POST /api/v1/supplier/resources/:id/disconnect":          "supplier.authorization.revoke",
+	"PUT /api/v1/admin/supplier/resources/:id/supply-control": "admin.supplier.supply_control",
 	"POST /api/v1/auth/login":                                 service.AuditActionLogin,
 	"POST /api/v1/auth/login/2fa":                             service.AuditActionLogin2FA,
 	"POST /api/v1/auth/passkey/login/finish":                  service.AuditActionLogin,

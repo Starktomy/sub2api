@@ -2,10 +2,10 @@ import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import SuppliersView from '../SuppliersView.vue'
 
-const { list, getSettings, saveSettings, getGroups } = vi.hoisted(() => ({
-  list: vi.fn(), getSettings: vi.fn(), saveSettings: vi.fn(), getGroups: vi.fn()
+const { list, getSettings, saveSettings, getGroups, setSupplyControl } = vi.hoisted(() => ({
+  list: vi.fn(), getSettings: vi.fn(), saveSettings: vi.fn(), getGroups: vi.fn(), setSupplyControl: vi.fn()
 }))
-vi.mock('@/api/admin/suppliers', () => ({ listSupplierResources: list, getSupplierSettings: getSettings, saveSupplierSettings: saveSettings }))
+vi.mock('@/api/admin/suppliers', () => ({ listSupplierResources: list, getSupplierSettings: getSettings, saveSupplierSettings: saveSettings, setSupplierSupplyControl: setSupplyControl }))
 vi.mock('@/api/admin/groups', () => ({ getAll: getGroups, default: { getAll: getGroups } }))
 vi.mock('@/components/layout/AppLayout.vue', () => ({ default: { template: '<main><slot /></main>' } }))
 vi.mock('vue-i18n', async (importOriginal) => ({
@@ -95,6 +95,55 @@ describe('supplier management', () => {
     expect(cells[0].text()).toContain('admin.suppliers.accountId: 42')
     expect(cells[1].text()).toContain('admin.suppliers.notSchedulable')
     expect(cells[1].text()).toContain('admin.suppliers.accountId: 43')
+  })
+
+  it.each([false, true])('toggles independent administrator prohibition from %s and reloads inventory', async disabled => {
+    const resource = { id: 'r-1', display_name: 'Resource', version: 8, status: 'paused', admin_disabled: disabled, supply_enabled: false, probe_state: 'fresh', token_expires_at: null, last_probe_at: null }
+    list.mockResolvedValue([{ supplier_name: 'Supplier', supplier_user_id: 3, resource }])
+    setSupplyControl.mockResolvedValue({ ...resource, version: 9, admin_disabled: !disabled })
+    const wrapper = render()
+    await flushPromises()
+    const control = wrapper.get('[data-testid="supply-control"]')
+    expect(control.text()).toContain(disabled ? 'admin.suppliers.removeProhibition' : 'admin.suppliers.prohibitSupply')
+    await control.get('button').trigger('click')
+    await flushPromises()
+    expect(setSupplyControl).toHaveBeenCalledWith('r-1', 8, !disabled)
+    expect(list).toHaveBeenCalledTimes(2)
+    expect(wrapper.text()).toContain('admin.suppliers.controlSaved')
+    expect(saveSettings).not.toHaveBeenCalled()
+  })
+
+  it('reports successful control separately from failed inventory reload', async () => {
+    const resource = { id: 'r-1', version: 8, admin_disabled: false, status: 'paused' }
+    list.mockResolvedValueOnce([{ supplier_user_id: 3, resource }]).mockRejectedValueOnce(new Error('unavailable'))
+    setSupplyControl.mockResolvedValue({ ...resource, version: 9, admin_disabled: true })
+    const wrapper = render()
+    await flushPromises()
+    await wrapper.get('[data-testid="supply-control"] button').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('admin.suppliers.controlReloadFailed')
+    expect(wrapper.text()).toContain('admin.suppliers.loadError')
+    expect(setSupplyControl).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not send a prohibition change when rollout fields are absent', async () => {
+    list.mockResolvedValue([{ supplier_user_id: 3, resource: { id: 'r-1', display_name: 'Resource', status: 'paused' } }])
+    const wrapper = render()
+    await flushPromises()
+    expect(wrapper.get('[data-testid="supply-control"] button').attributes('disabled')).toBeDefined()
+    await wrapper.get('[data-testid="supply-control"] button').trigger('click')
+    expect(setSupplyControl).not.toHaveBeenCalled()
+  })
+
+  it('reports supply-control conflicts without silently retrying', async () => {
+    list.mockResolvedValue([{ supplier_user_id: 3, resource: { id: 'r-1', version: 8, admin_disabled: false, status: 'paused' } }])
+    setSupplyControl.mockRejectedValue({ response: { status: 409 } })
+    const wrapper = render()
+    await flushPromises()
+    await wrapper.get('[data-testid="supply-control"] button').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('admin.suppliers.controlConflict')
+    expect(setSupplyControl).toHaveBeenCalledTimes(1)
   })
 
   it('distinguishes API failure from empty inventory and permits retry', async () => {

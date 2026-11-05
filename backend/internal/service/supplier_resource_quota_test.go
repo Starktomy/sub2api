@@ -21,7 +21,7 @@ func TestSupplierQuotaSingleGETNoResetRefreshOrPrivateMutation(t *testing.T) {
 		require.Equal(t, "/backend-api/wham/usage", r.URL.Path)
 		require.Equal(t, "Bearer synthetic", r.Header.Get("Authorization"))
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"email":"must-not-expose@example.test","account_id":"hidden","plan_type":"plus","rate_limit":{"allowed":true,"primary_window":{"used_percent":10,"limit_window_seconds":18000,"reset_at":9999999999}},"credits":{"balance":"999"}}`))
+		w.Write([]byte(`{"email":"must-not-expose@example.test","account_id":"hidden","plan_type":"plus","rate_limit":{"allowed":true,"limit_reached":false,"primary_window":{"used_percent":10,"limit_window_seconds":18000,"reset_at":9999999999}},"credits":{"balance":"999"}}`))
 	}))
 	defer server.Close()
 	target, _ := url.Parse(server.URL)

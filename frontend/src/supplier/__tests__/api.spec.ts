@@ -57,18 +57,28 @@ describe('isolated supplier transport', () => {
     expect(localStorage.getItem(SUPPLIER_STORAGE.access)).toBeNull()
     expect(localStorage.getItem('auth_token')).toBe('consumer-test')
   })
-  it('imports resource session only to the isolated supplier endpoint without scheduling controls', async () => {
-    await api.importResource('My Codex', '{"accessToken":"synthetic-test-only"}')
+  it('imports explicitly consented supply only to the isolated supplier endpoint', async () => {
+    await api.importResource({ display_name: 'My Codex', content: '{"accessToken":"synthetic-test-only"}', consent_version: 'all_available_continuous_v1' })
     expect(requests[0].url).toBe('/supplier/resources/import')
-    expect(JSON.parse(requests[0].data)).toEqual({ display_name: 'My Codex', content: '{"accessToken":"synthetic-test-only"}' })
+    expect(JSON.parse(requests[0].data)).toEqual({ display_name: 'My Codex', content: '{"accessToken":"synthetic-test-only"}', consent_version: 'all_available_continuous_v1' })
+  })
+  it('updates the original resource with explicit consent and its optimistic version', async () => {
+    const payload = { display_name: 'My Codex', content: '{"accessToken":"synthetic-test-only"}', consent_version: 'all_available_continuous_v1' as const, resource_id: 'resource-test-id', resource_version: 4 }
+    await api.importResource(payload)
+    expect(requests).toHaveLength(1)
+    expect(requests[0].url).toBe('/supplier/resources/import')
+    expect(JSON.parse(requests[0].data)).toEqual(payload)
+    expect(JSON.parse(requests[0].data)).not.toHaveProperty('authorization_expires_at')
   })
   it('uses resource ID and optimistic version without selecting an owner', async () => {
     await api.resourceUsage('resource-test-id', 3)
     await api.disconnectResource('resource-test-id', 3)
-    await api.resumeResourceSync('resource-test-id', 3)
+    await api.startResource('resource-test-id', 3)
+    await api.pauseResource('resource-test-id', 3)
     expect(requests[0].url).toBe('/supplier/resources/resource-test-id/usage')
     expect(requests[1].url).toBe('/supplier/resources/resource-test-id/disconnect')
-    expect(requests[2].url).toBe('/supplier/resources/resource-test-id/resume-sync')
+    expect(requests[2].url).toBe('/supplier/resources/resource-test-id/start')
+    expect(requests[3].url).toBe('/supplier/resources/resource-test-id/pause')
     for (const request of requests) expect(JSON.parse(request.data)).toEqual({ version: 3 })
   })
   it('reads owner statistics through supplier credentials without owner parameters', async () => {

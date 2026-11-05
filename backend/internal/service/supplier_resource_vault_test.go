@@ -27,6 +27,12 @@ func (r *supplierVaultRepo) FindImportResource(_ context.Context, owner int64, i
 	}
 	return nil, nil
 }
+func (r *supplierVaultRepo) Get(_ context.Context, owner int64, id string) (*SupplierResource, error) {
+	if r.saved == nil || r.saved.SupplierID != owner || r.saved.ID != id {
+		return nil, ErrSupplierResource
+	}
+	return r.saved, nil
+}
 func (r *supplierVaultRepo) Create(_ context.Context, _ int64, v *SupplierResource) error {
 	r.saved = v
 	return nil
@@ -48,7 +54,12 @@ func TestSupplierResourceEncryptedOnlyBindingAndMissingKey(t *testing.T) {
 	payload := fmt.Sprintf(`{"exp":%d,"email":"u@example.test","https://api.openai.com/auth":{"chatgpt_account_id":"account","chatgpt_plan_type":"plus"}}`, time.Now().Add(time.Hour).Unix())
 	token := "e30." + base64.RawURLEncoding.EncodeToString([]byte(payload)) + ".synthetic"
 	input, _ := json.Marshal(map[string]any{"access_token": token, "refresh_token": "discard-refresh-canary", "id_token": "discard-id-canary"})
-	r, e := s.Import(ctx, 7, "name", string(input))
+	_, e = s.Import(ctx, 7, "name", string(input))
+	require.ErrorIs(t, e, ErrSupplierConsent)
+	tooLate := time.Now().Add(2 * time.Hour)
+	_, e = s.Import(ctx, 7, "name", string(input), SupplierImportOptions{ConsentVersion: SupplierConsentVersion, AuthorizationExpiresAt: &tooLate})
+	require.ErrorIs(t, e, ErrSupplierAuthorizationExpiry)
+	r, e := s.Import(ctx, 7, "name", string(input), SupplierImportOptions{ConsentVersion: SupplierConsentVersion})
 	require.NoError(t, e)
 	require.Equal(t, "paused", r.Status)
 	require.False(t, r.Schedulable)
@@ -68,12 +79,19 @@ func TestSupplierResourceEncryptedOnlyBindingAndMissingKey(t *testing.T) {
 	require.NoError(t, e)
 	require.NotContains(t, string(b), token)
 	require.NotContains(t, string(b), "account_hint")
+	_, e = s.Import(ctx, 7, "name", string(input), SupplierImportOptions{ConsentVersion: SupplierConsentVersion, ResourceID: r.ID, ResourceVersion: r.Version + 1})
+	require.ErrorIs(t, e, ErrSupplierResourceVersion)
+	wrongInput := strings.ReplaceAll(string(input), token, "e30."+base64.RawURLEncoding.EncodeToString([]byte(strings.ReplaceAll(payload, `:"account"`, `:"other"`)))+".synthetic")
+	_, e = s.Import(ctx, 7, "name", wrongInput, SupplierImportOptions{ConsentVersion: SupplierConsentVersion, ResourceID: r.ID, ResourceVersion: r.Version})
+	require.ErrorIs(t, e, ErrSupplierResourceConflict)
+	_, e = s.Import(ctx, 7, "name", string(input), SupplierImportOptions{ConsentVersion: SupplierConsentVersion, ResourceID: r.ID})
+	require.ErrorIs(t, e, ErrSupplierResourceVersion)
 	// Reimport must encrypt under the original UUID, never a freshly generated
 	// ID that repository persistence would subsequently replace.
 	r.Version = 7
 	r.CredentialVersion = 4
 	r.Status = "disconnected"
-	again, e := s.Import(ctx, 7, "reconnected", string(input))
+	again, e := s.Import(ctx, 7, "reconnected", string(input), SupplierImportOptions{ConsentVersion: SupplierConsentVersion})
 	require.NoError(t, e)
 	require.Equal(t, r.ID, again.ID)
 	require.Equal(t, int64(7), again.Version, "carry observed CAS into repository")

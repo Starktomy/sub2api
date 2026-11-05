@@ -145,6 +145,9 @@ func (p *OpenAITokenProvider) GetAccessToken(ctx context.Context, account *Accou
 		if p.supplierResources == nil {
 			return "", ErrSupplierVault
 		}
+		if supplierDispatchFromContext(ctx) == nil {
+			return "", ErrSupplierDispatchUnavailable
+		}
 		credentials, err := p.supplierResources.ResolveAccountCredentials(ctx, account)
 		if err != nil {
 			return "", err

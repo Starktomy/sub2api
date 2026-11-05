@@ -22,6 +22,12 @@ export interface SupplierResource {
   display_name: string
   status: 'paused' | 'disconnected'
   version: number
+  supply_enabled: boolean
+  admin_disabled: boolean
+  authorization_version: number
+  authorization_expires_at: string | null
+  availability_reason?: string | null
+  authorized_at?: string | null
   provider: 'openai'
   product: 'codex'
   schedulable: boolean

@@ -487,6 +487,10 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 		if data, ok := extractOpenAISSEDataLine(line); ok {
 			dataBytes := []byte(data)
 			eventType := effectiveOpenAISSEEventType(dataBytes, pendingSSEEventType)
+			if err := observeSupplierResponse(ctx, dataBytes, eventType, "native_sse", clientDisconnected); err != nil {
+				streamEarlyErr = err
+				return
+			}
 			if codexFailureTerminal && sawBareError && !sawResponseFailed &&
 				(eventType == "response.completed" || eventType == "response.done") {
 				// A later successful terminal is authoritative over a pending bare
@@ -1605,7 +1609,13 @@ func openAICacheCreationTokensFromUsage(value gjson.Result) int {
 }
 
 func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, originalModel, mappedModel string) (*openaiNonStreamingResult, error) {
-	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
+	var body []byte
+	var err error
+	if supplierDispatchFromContext(ctx) != nil {
+		body, err = s.readSupplierResponseBody(ctx, resp)
+	} else {
+		body, err = ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
+	}
 	if err != nil {
 		return nil, err
 	}

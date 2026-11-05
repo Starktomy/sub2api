@@ -24,6 +24,9 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 	body []byte,
 	defaultMappedModel string,
 ) (*OpenAIForwardResult, error) {
+	if supplierAccountMarked(account) {
+		return nil, errSupplierUnsupported
+	}
 	if err := validateUpstreamProviderBinding(account); err != nil {
 		return nil, err
 	}

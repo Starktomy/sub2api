@@ -1,6 +1,6 @@
 import { apiClient } from '../client'
 
-/** Read-only, credential-free inventory projection. */
+/** Credential-free inventory projection with versioned supply control. */
 export interface AdminSupplierResource {
   supplier_name: string
   supplier_user_id: number
@@ -8,6 +8,13 @@ export interface AdminSupplierResource {
     id: string
     display_name: string
     status: string
+    version: number
+    supply_enabled: boolean
+    admin_disabled: boolean
+    authorization_version: number
+    authorization_expires_at: string | null
+    availability_reason?: string | null
+    authorized_at?: string | null
     account_id?: number | null
     schedulable: boolean
     probe_state: string
@@ -40,6 +47,11 @@ export async function getSupplierSettings(): Promise<SupplierSettings> {
 
 export async function saveSupplierSettings(settings: SupplierSettings): Promise<void> {
   await apiClient.put('/admin/supplier/settings', settings)
+}
+
+export async function setSupplierSupplyControl(id: string, version: number, disabled: boolean): Promise<AdminSupplierResource['resource']> {
+  const { data } = await apiClient.put<AdminSupplierResource['resource']>(`/admin/supplier/resources/${encodeURIComponent(id)}/supply-control`, { version, disabled })
+  return data
 }
 
 export async function listSupplierResources(): Promise<AdminSupplierResource[]> {

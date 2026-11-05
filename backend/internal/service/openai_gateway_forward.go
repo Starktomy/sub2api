@@ -18,7 +18,10 @@ import (
 )
 
 // Forward forwards request to OpenAI API
-func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte) (*OpenAIForwardResult, error) {
+func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte) (result *OpenAIForwardResult, forwardErr error) {
+	if err := s.validateSupplierResponses(c, account, body); err != nil {
+		return nil, err
+	}
 	if err := validateUpstreamProviderBinding(account); err != nil {
 		return nil, err
 	}
@@ -118,6 +121,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	wsDecision := s.getOpenAIWSProtocolResolver().Resolve(account)
 	// 仅允许 WS 入站请求走 WS 上游，避免出现 HTTP -> WS 协议混用。
 	wsDecision = resolveOpenAIWSDecisionByClientTransport(wsDecision, GetOpenAIClientTransport(c))
+	if supplierAccountMarked(account) && (wsDecision.Transport == OpenAIUpstreamTransportResponsesWebsocket || wsDecision.Transport == OpenAIUpstreamTransportResponsesWebsocketV2) {
+		return nil, errSupplierUnsupported
+	}
 	passthroughEnabled := account.IsOpenAIPassthroughEnabled()
 	compactPath := isOpenAIResponsesCompactPath(c)
 	if shouldFlattenOpenAIResponsesNamespaces(account, wsDecision.Transport, passthroughEnabled, compactPath) {
@@ -190,7 +196,11 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	if account.IsOpenCodeGo() && IsOpenCodeUnsupportedModel(routingModel) {
 		return nil, writeOpenCodeUnsupportedModelError(c, false, routingModel)
 	}
-	switch s.resolveUpstreamProtocolFor(ctx, account, APIProtocolResponses, routingModel) {
+	upstreamProtocol := s.resolveUpstreamProtocolFor(ctx, account, APIProtocolResponses, routingModel)
+	if supplierAccountMarked(account) && upstreamProtocol != APIProtocolResponses {
+		return nil, errSupplierUnsupported
+	}
+	switch upstreamProtocol {
 	case APIProtocolAnthropic:
 		// Responses 客户端 × Anthropic 上游：转成 Anthropic 请求走原生端点。不能落到
 		// raw-CC 分支——其 URL 构造会把 anthropic base 当 CC base 用。
@@ -351,7 +361,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	if apiKey != nil {
 		imageGenerationAllowed = GroupAllowsImageGeneration(apiKey.Group)
 	}
-	codexImageGenerationBridgeEnabled := isCodexCLI &&
+	codexImageGenerationBridgeEnabled := !supplierAccountMarked(account) && isCodexCLI &&
 		!isOpenAIResponsesLiteHeader(c.GetHeader(responsesLiteHeader)) &&
 		imageGenerationAllowed &&
 		codexImageGenerationExplicitToolPolicy != codexImageGenerationExplicitToolPolicyStrip &&
@@ -782,6 +792,21 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		imageSizeTier = imageCfg.SizeTier
 		imageInputSize = imageCfg.InputSize
 	}
+	// Recheck the final transformed payload as model mapping can enable media
+	// even when the original request was text-only.
+	if supplierAccountMarked(account) && (imageIntent || !SupplierResponsesRequestEligible(c, body)) {
+		return nil, errSupplierUnsupported
+	}
+	// Freeze durable identity and fee policy before touching plaintext credentials.
+	ctx, supplierDispatch, err := s.acceptSupplierDispatch(ctx, account, upstreamModel)
+	if err != nil {
+		return nil, err
+	}
+	if supplierDispatch != nil {
+		defer supplierDispatch.finish(ctx, &result, &forwardErr)
+		supplierDispatch.serviceTier = supplierSafeTier(optionalStringValue(extractOpenAIServiceTierFromBody(body)))
+		supplierDispatch.reasoningEffort = supplierSafeEffort(optionalStringValue(extractOpenAIReasoningEffortFromBody(body, upstreamModel)))
+	}
 	// Get access token
 	token, _, err := s.GetAccessToken(ctx, account)
 	if err != nil {
@@ -1071,6 +1096,15 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		upstreamStart := time.Now()
 		resp, err := s.doOpenAIUpstream(upstreamReq, proxyURL, account)
 		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
+		if supplierDispatch != nil && err != nil {
+			if resp != nil && resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+			if headerGuard != nil {
+				headerGuard.close()
+			}
+			return nil, &SupplierAccountingError{}
+		}
 		if headerGuard != nil && headerGuard.stopHeaderWait() {
 			if resp != nil && resp.Body != nil {
 				_ = resp.Body.Close()
@@ -1103,6 +1137,14 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			respBody := s.readUpstreamErrorBody(resp)
 			_ = resp.Body.Close()
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
+			if supplierDispatch != nil {
+				logger.LegacyPrintf("service.openai_gateway", "supplier upstream rejected: status=%d category=%s", resp.StatusCode, supplierUpstreamRejectionCategory(respBody))
+				// No retry (including 400 signature/field recovery) is safe merely
+				// because an upstream returned an error status.
+				_ = observeSupplierResponse(ctx, respBody, "response.failed", "native_json", false)
+				_ = resp.Body.Close()
+				return nil, &SupplierAccountingError{}
+			}
 
 			upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 			upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
@@ -1232,6 +1274,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		if reqStream {
 			streamResult, err := s.handleStreamingResponseWithReasoning(ctx, resp, c, account, startTime, originalModel, upstreamModel, reasoningEffortValue)
 			if err != nil {
+				if supplierDispatch != nil {
+					return nil, &SupplierAccountingError{}
+				}
 				if signal, ok := asOpenAICompactFallbackSignal(err); ok {
 					if retryBody, fallbackModel, retry := s.prepareOpenAICompactFallbackRetry(
 						c, account, requestedModel, body, http.StatusBadRequest, signal.message, signal.payload, compactModelFallbackRetried,
@@ -1279,6 +1324,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		} else {
 			nonStreamResult, err := s.handleNonStreamingResponse(ctx, resp, c, account, originalModel, upstreamModel)
 			if err != nil {
+				if supplierDispatch != nil {
+					return nil, &SupplierAccountingError{}
+				}
 				if signal, ok := asOpenAICompactFallbackSignal(err); ok {
 					if retryBody, fallbackModel, retry := s.prepareOpenAICompactFallbackRetry(
 						c, account, requestedModel, body, http.StatusBadRequest, signal.message, signal.payload, compactModelFallbackRetried,

@@ -638,6 +638,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		c.Request.Context(), c, sessionHashBody, reqModel,
 	))
 	requireCompact := legacyCompact
+	c.Request = c.Request.WithContext(service.WithSupplierResponsesEligibility(
+		c.Request.Context(), service.SupplierResponsesRequestEligible(c, forwardBody),
+	))
 
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
@@ -808,7 +811,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					accountReleaseFunc()
 				}
 			}()
-			return h.gatewayService.Forward(c.Request.Context(), c, account, attemptBody)
+			// This marker is issued only while the scheduler's selected account
+			// slot is held. Service-only supplier callers must fail closed.
+			forwardCtx := service.WithSupplierDispatchSlot(c.Request.Context(), account.ID, apiKey)
+			return h.gatewayService.Forward(forwardCtx, c, account, attemptBody)
 		}()
 		var cyberBlockBodyHTTP []byte
 		if service.GetOpsCyberPolicy(c) != nil {
@@ -3482,6 +3488,21 @@ func (h *OpenAIGatewayHandler) submitUsageRecordTask(parent context.Context, tas
 }
 
 func (h *OpenAIGatewayHandler) submitOpenAIUsageRecordTask(parent context.Context, result *service.OpenAIForwardResult, task service.UsageRecordTask) {
+	// Supplier billing must stage durably before this handler returns. Even a
+	// non-dropping async queue has a process-crash window, so do not enqueue.
+	if result != nil && result.SupplierDispatch != nil {
+		if task == nil {
+			return
+		}
+		task, _ = wrapUsageRecordTaskContext(parent, task)
+		if parent == nil {
+			parent = context.Background()
+		}
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), 30*time.Second)
+		defer cancel()
+		task(ctx)
+		return
+	}
 	// Money-critical bills never drop on pool overflow: media, search surcharge, voice.
 	if result != nil && (result.ImageCount > 0 || result.VideoCount > 0 ||
 		result.SearchCount > 0 || result.WebSearchCalls > 0 || result.AudioUsage != nil) {
