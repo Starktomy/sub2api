@@ -88,6 +88,11 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	routingModel string,
 	routingServiceTier string,
 ) (http.Header, openAIWSSessionHeaderResolution, error) {
+	// Supplier revocation is checked per HTTP request; pooled WebSocket turns do
+	// not yet revalidate it. Never authenticate a supplier connection here.
+	if supplierAccountMarked(account) {
+		return nil, openAIWSSessionHeaderResolution{}, ErrSupplierResource
+	}
 	headers := make(http.Header)
 	if account == nil || !account.IsOpenAIAgentIdentity() {
 		headers.Set("authorization", "Bearer "+token)

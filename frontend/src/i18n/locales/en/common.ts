@@ -163,6 +163,7 @@ export default {
 
   // Navigation
   nav: {
+    suppliers: 'Supplier Management',
     dashboard: 'Dashboard',
     announcements: 'Announcements',
     apiKeys: 'API Keys',

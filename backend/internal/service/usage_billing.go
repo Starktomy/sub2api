@@ -37,6 +37,12 @@ type UsageBillingCommand struct {
 	ImageCount          int
 	MediaType           string
 
+	// SupplierCostProvided distinguishes an explicitly priced zero-cost request
+	// from a legacy command without the supplier accounting cost snapshot.
+	SupplierCostProvided bool
+	StandardCost         float64
+	CustomerCharge       float64
+
 	BalanceCost         float64
 	SubscriptionCost    float64
 	APIKeyQuotaCost     float64
@@ -86,6 +92,8 @@ const UsageBillingMonetaryScale = 8
 // 在参数进入 SQL 之前量化一次，两条语句就都拿到已经落在 8 位刻度上的同一个金额，
 // 存储阶段不再发生任何舍入，delta 精确相等。
 func (c *UsageBillingCommand) quantizeMonetaryFields() {
+	c.StandardCost = QuantizeUsageBillingAmount(c.StandardCost)
+	c.CustomerCharge = QuantizeUsageBillingAmount(c.CustomerCharge)
 	c.BalanceCost = QuantizeUsageBillingAmount(c.BalanceCost)
 	c.SubscriptionCost = QuantizeUsageBillingAmount(c.SubscriptionCost)
 	c.APIKeyQuotaCost = QuantizeUsageBillingAmount(c.APIKeyQuotaCost)
@@ -136,6 +144,11 @@ func buildUsageBillingFingerprint(c *UsageBillingCommand) string {
 	)
 	if payloadHash := strings.TrimSpace(c.RequestPayloadHash); payloadHash != "" {
 		raw += "|" + payloadHash
+	}
+	// Leave the legacy fingerprint byte-for-byte unchanged unless supplier
+	// cost snapshots were explicitly supplied.
+	if c.SupplierCostProvided || c.StandardCost != 0 || c.CustomerCharge != 0 {
+		raw += fmt.Sprintf("|supplier-cost-v1|%t|%0.10f|%0.10f", c.SupplierCostProvided, c.StandardCost, c.CustomerCharge)
 	}
 	sum := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(sum[:])

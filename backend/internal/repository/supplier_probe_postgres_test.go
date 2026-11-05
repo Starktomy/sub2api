@@ -20,13 +20,19 @@ func TestSupplierProbeDurablePostgres(t *testing.T) {
 	db, e := sql.Open("postgres", "host="+socket+" port=55439 user=postgres dbname=postgres sslmode=disable")
 	require.NoError(t, e)
 	defer db.Close()
-	db.SetMaxOpenConns(3)
+	db.SetMaxOpenConns(1)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_, e = db.Exec(`CREATE TABLE supplier_profiles(id BIGINT PRIMARY KEY); INSERT INTO supplier_profiles VALUES(1)`)
+	_, e = db.Exec(`CREATE SCHEMA supplier_probe_fixture; SET search_path TO supplier_probe_fixture;
+ CREATE TABLE users(id BIGINT PRIMARY KEY,status TEXT NOT NULL DEFAULT 'active',deleted_at TIMESTAMPTZ);
+ INSERT INTO users(id) VALUES(1);
+ CREATE TABLE supplier_profiles(id BIGINT PRIMARY KEY,user_id BIGINT REFERENCES users(id),status TEXT NOT NULL DEFAULT 'active'); INSERT INTO supplier_profiles(id,user_id) VALUES(1,1);
+ CREATE TABLE accounts(id BIGINT PRIMARY KEY);
+ CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+ CREATE TABLE groups(id BIGINT PRIMARY KEY,status TEXT,deleted_at TIMESTAMPTZ,platform TEXT)`)
 	require.NoError(t, e)
-	defer db.Exec(`DROP TABLE supplier_probe_jobs; DROP TABLE supplier_resources; DROP TABLE supplier_profiles`)
-	for _, file := range []string{"254_supplier_resources.sql", "255_supplier_probe_jobs.sql", "255_supplier_probe_jobs.sql"} {
+	defer db.Exec(`DROP SCHEMA supplier_probe_fixture CASCADE`)
+	for _, file := range []string{"254_supplier_resources.sql", "255_supplier_probe_jobs.sql", "255_supplier_probe_jobs.sql", "256_supplier_admission.sql"} {
 		m, e := os.ReadFile("../../migrations/" + file)
 		require.NoError(t, e)
 		_, e = db.Exec(string(m))

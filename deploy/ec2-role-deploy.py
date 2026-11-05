@@ -126,6 +126,16 @@ def preflight():
     if ids:
         for item in json.loads(command('docker', 'inspect', *ids)):
             env = item['Config'].get('Env', [])
+            labels = item['Config'].get('Labels', {})
+            # Independent, explicitly isolated supplier ingress is not a second
+            # general Control or worker and is never managed by this supervisor.
+            if (item.get('Name') == '/sub2api-supplier-control'
+                    and labels.get('com.docker.compose.project') == 'deploy'
+                    and labels.get('com.docker.compose.service') == 'supplier-control'
+                    and 'RUNTIME_ROLE=control' in env
+                    and 'SUPPLIER_PORTAL_ENABLED=true' in env
+                    and not any(e in env for e in ('RUNTIME_ROLE=all', 'RUNTIME_ROLE=worker', 'RUNTIME_ROLE=gateway'))):
+                continue
             if any(e in ('RUNTIME_ROLE=all', 'RUNTIME_ROLE=worker',
                          'RUNTIME_ROLE=gateway', 'RUNTIME_ROLE=control') for e in env):
                 raise RuntimeError('running role containers must be drained/stopped before adoption')
@@ -155,8 +165,20 @@ def wait_healthy(config, timeout=180):
     raise RuntimeError('role health deadline exceeded')
 
 
+def supplier_key_id():
+    env = Path('/etc/sub2api-supplier/runtime.env')
+    if not env.exists():
+        return None  # Supplier support remains explicitly optional on other hosts.
+    for line in env.read_text().splitlines():
+        key, sep, value = line.partition('=')
+        if sep and key == 'SUPPLIER_PORTAL_VAULT_KEY_ID' and re.fullmatch(r'[a-zA-Z0-9._-]{1,128}', value):
+            return value
+    raise ValueError('supplier active vault key ID is missing')
+
+
 def start(config):
     preflight()
+    vault_key_id = supplier_key_id()
     for role in ROLES:
         if STOPPING:
             raise RuntimeError('shutdown requested')
@@ -186,6 +208,12 @@ def start(config):
             args += ['-e', f'{key}={value}']
         if role != 'worker':
             args += ['-p', f'{config["bind_ip"]}:{config[role + "_port"]}:8080']
+        if vault_key_id and role in ('worker', 'gateway'):
+            args += ['--mount', 'type=bind,src=/etc/sub2api-supplier/keyring.json,dst=/run/vault/supplier-keyring.json,readonly',
+                     '-e', 'SUPPLIER_PORTAL_VAULT_KEY_FILE=/run/vault/supplier-keyring.json',
+                     '-e', 'SUPPLIER_PORTAL_VAULT_KEY_ID=' + vault_key_id]
+            if role == 'worker':
+                args += ['-e', 'SUPPLIER_PROBE_ENABLED=true', '-e', 'SUPPLIER_PROBE_INTERVAL_SECONDS=600']
         args += ['--entrypoint', '/bin/sh', config['image'], '-ec', SAFE_START]
         command(*args)
     wait_healthy(config)

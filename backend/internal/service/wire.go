@@ -201,8 +201,14 @@ func ProvideOpenAITokenProvider(
 	tokenCache GeminiTokenCache,
 	openaiOAuthService *OpenAIOAuthService,
 	refreshAPI *OAuthRefreshAPI,
+	supplierRepo SupplierResourceRepository,
+	supplierProfiles SupplierRepository,
+	cfg *config.Config,
 ) *OpenAITokenProvider {
 	p := NewOpenAITokenProvider(accountRepo, tokenCache, openaiOAuthService)
+	// Credential resolution does not need quota querying; avoid the quota/token
+	// provider dependency cycle while reusing the same vault configuration.
+	p.supplierResources = NewSupplierResourceService(supplierRepo, supplierProfiles, nil, cfg)
 	executor := NewOpenAITokenRefresher(openaiOAuthService, accountRepo)
 	p.SetRefreshAPI(refreshAPI, executor)
 	p.SetRefreshPolicy(OpenAIProviderRefreshPolicy())

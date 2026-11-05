@@ -16,9 +16,13 @@ func NewSupplierProbeRepository(db *sql.DB) service.SupplierProbeRepository {
 	return &supplierProbeRepository{db}
 }
 func (r *supplierProbeRepository) Reconcile(ctx context.Context) error {
-	_, e := r.db.ExecContext(ctx, `UPDATE supplier_resources SET auto_sync_enabled=FALSE,probe_state='reauthorization_required',probe_error_code='expired',next_probe_at=NULL,version=version+1 WHERE auto_sync_enabled AND token_expires_at<=CURRENT_TIMESTAMP;
- INSERT INTO supplier_probe_jobs(resource_id,credential_version) SELECT id,credential_version FROM supplier_resources WHERE auto_sync_enabled AND status='paused' AND token_expires_at>CURRENT_TIMESTAMP ON CONFLICT(resource_id) DO UPDATE SET credential_version=EXCLUDED.credential_version,state='pending',next_run_at=CURRENT_TIMESTAMP,lease_owner=NULL,lease_until=NULL,lease_generation=supplier_probe_jobs.lease_generation+1 WHERE supplier_probe_jobs.credential_version<>EXCLUDED.credential_version`)
-	return e
+	_, e := r.db.ExecContext(ctx, `WITH expired AS (SELECT id FROM supplier_resources WHERE auto_sync_enabled AND token_expires_at<=CURRENT_TIMESTAMP ORDER BY token_expires_at,id LIMIT 200 FOR UPDATE SKIP LOCKED)
+ UPDATE supplier_resources r SET auto_sync_enabled=FALSE,probe_state='reauthorization_required',probe_error_code='expired',next_probe_at=NULL,version=version+1 FROM expired WHERE r.id=expired.id;
+ INSERT INTO supplier_probe_jobs(resource_id,credential_version) SELECT r.id,r.credential_version FROM supplier_resources r LEFT JOIN supplier_probe_jobs j ON j.resource_id=r.id WHERE r.auto_sync_enabled AND r.status='paused' AND r.token_expires_at>CURRENT_TIMESTAMP AND (j.resource_id IS NULL OR j.credential_version<>r.credential_version) ORDER BY r.id LIMIT 200 ON CONFLICT(resource_id) DO UPDATE SET credential_version=EXCLUDED.credential_version,state='pending',next_run_at=CURRENT_TIMESTAMP,lease_owner=NULL,lease_until=NULL,lease_generation=supplier_probe_jobs.lease_generation+1 WHERE supplier_probe_jobs.credential_version<>EXCLUDED.credential_version`)
+	if e != nil {
+		return e
+	}
+	return reconcileSupplierAdmission(ctx, r.db)
 }
 func (r *supplierProbeRepository) Claim(ctx context.Context, owner string) (*service.SupplierProbeClaim, error) {
 	tx, e := r.db.BeginTx(ctx, nil)

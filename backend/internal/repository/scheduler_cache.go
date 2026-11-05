@@ -1352,6 +1352,14 @@ func filterSchedulerCredentials(credentials map[string]any) map[string]any {
 		// 不支持的账号要逐个选中后才被剔除。
 		"base_url", "auth_mode", service.GeminiExplicitCacheUpstreamCredentialKey, service.GeminiExplicitCacheUpstreamMaxTTLCredentialKey}
 	filtered := make(map[string]any)
+	// Nonsecret supplier identity must survive slim candidates. Preserve key
+	// presence even for malformed/null references so fail-closed guards remain
+	// active instead of selecting the legacy plaintext credential path.
+	for _, key := range []string{"supplier_resource_id", "chatgpt_account_id"} {
+		if value, ok := credentials[key]; ok {
+			filtered[key] = value
+		}
+	}
 	for _, key := range keys {
 		if value, ok := credentials[key]; ok && value != nil {
 			filtered[key] = value
@@ -1446,6 +1454,11 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		"grok_billing_snapshot",
 	}
 	filtered := make(map[string]any)
+	for _, key := range []string{"supplier_resource_id", "supplier_id"} {
+		if value, ok := extra[key]; ok {
+			filtered[key] = value
+		}
+	}
 	for _, key := range keys {
 		if value, ok := extra[key]; ok && value != nil {
 			if key == service.UpstreamBillingProbeExtraKey {

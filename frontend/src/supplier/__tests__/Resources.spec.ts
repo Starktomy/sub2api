@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import Resources from '../Resources.vue'
-import { validSessionJSON } from '../resourceTypes'
+import { validSessionJSON, extractSessionJSON } from '../resourceTypes'
 const mocks = vi.hoisted(() => ({ resources: vi.fn(), importResource: vi.fn(), resourceUsage: vi.fn(), pauseResource: vi.fn(), resumeResourceSync: vi.fn(), disconnectResource: vi.fn() }))
+vi.mock('../ResourceStats.vue', () => ({ default: { props: ['resourceId'], template: '<section data-testid="resource-stats">{{ resourceId }}</section>' } }))
 vi.mock('../api', () => ({ isolatedSupplierAPI: mocks, supplierErrorReason: (err: { reason?: string }) => err.reason }))
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
 enableAutoUnmount(afterEach)
@@ -25,6 +26,12 @@ async function importer() {
   return wrapper
 }
 describe('supplier Codex resources', () => {
+  it('extracts a full ChatGPT session without transmitting browser or device data', () => {
+    const full = JSON.stringify({ accessToken: 'synthetic', account: { id: 'acct' }, user: { email: 'test@example.test', mfa: true }, sessionToken: 'browser-secret', statsigContext: { ip: 'private-ip' }, marketingEligibility: {} })
+    expect(extractSessionJSON(full)).toBe(JSON.stringify({ accessToken: 'synthetic', account_id: 'acct', email: 'test@example.test' }))
+    expect(validSessionJSON(full)).toBe(true)
+    expect(extractSessionJSON(full)).not.toContain('browser-secret')
+  })
   it('rejects credential material other than session JSON without echoing it', () => {
     expect(validSessionJSON(session)).toBe(true)
     for (const text of ['[]', 'invalid', '{"password":"test"}', '{"nested":{"cookie":"test"}}', '{"totp_code":"123456"}', '{"session_token":"test"}']) expect(validSessionJSON(text)).toBe(false)
@@ -67,6 +74,7 @@ describe('supplier Codex resources', () => {
     mocks.resources.mockResolvedValue({ items: [resource], vault_configured: true })
     const wrapper = mount(Resources)
     await flushPromises()
+    expect(wrapper.get('[data-testid="resource-stats"]').text()).toBe(resource.id)
     expect(wrapper.text()).toContain('s***@example.test')
     expect(wrapper.text()).toContain('supplier.declaredPlan')
     expect(wrapper.text()).toContain('supplier.unknown')

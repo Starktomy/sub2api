@@ -299,6 +299,11 @@ func buildUsageBillingCommand(requestID string, usageLog *UsageLog, p *postUsage
 		AccountType:        p.Account.Type,
 		RequestPayloadHash: strings.TrimSpace(p.RequestPayloadHash),
 	}
+	if supplierAccountMarked(p.Account) {
+		cmd.SupplierCostProvided = true
+		cmd.StandardCost = p.Cost.TotalCost
+		cmd.CustomerCharge = p.Cost.ActualCost
+	}
 	if usageLog != nil {
 		cmd.Model = usageLog.Model
 		cmd.BillingType = usageLog.BillingType
@@ -360,7 +365,7 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
 
 	cmd := buildUsageBillingCommand(requestID, usageLog, p)
 	if cmd == nil || cmd.RequestID == "" || repo == nil {
-		if p.SimpleModeKeyRateLimitOnly {
+		if p.SimpleModeKeyRateLimitOnly || supplierAccountMarked(p.Account) {
 			return false, ErrSimpleModeKeyRateLimitBillingUnavailable
 		}
 		// The legacy path is only a fallback for standard billing. Simple mode

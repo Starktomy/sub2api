@@ -1,7 +1,7 @@
 import axios from 'axios'
 import { clearSupplierSession, saveSupplierSession, supplierSession, SUPPLIER_STORAGE, type SupplierIdentity, type SupplierSession } from './session'
 import type { SupplierProfile } from '@/api/supplier'
-import type { SupplierResource, SupplierResourceList } from './resourceTypes'
+import type { SupplierResource, SupplierResourceList, SupplierResourceStats } from './resourceTypes'
 
 // Fixed same-origin base. Never inherit consumer VITE_API_BASE_URL or client interceptors.
 const client = axios.create({ baseURL: '/api/v1', timeout: 30000, withCredentials: false })
@@ -68,6 +68,7 @@ export const isolatedSupplierAPI = {
     finally { clearSupplierSession() }
   },
   resources: () => unwrap<SupplierResourceList>(client.get('/supplier/resources')),
+  resourceStats: (id: string) => unwrap<SupplierResourceStats>(client.get(`/supplier/resources/${encodeURIComponent(id)}/stats`)),
   importResource: (displayName: string, content: string) => unwrap<SupplierResource>(client.post('/supplier/resources/import', { display_name: displayName, content })),
   resourceUsage: (id: string, version: number) => unwrap<SupplierResource>(client.post(`/supplier/resources/${id}/usage`, { version })),
   resumeResourceSync: (id: string, version: number) => unwrap<SupplierResource>(client.post(`/supplier/resources/${id}/resume-sync`, { version })),

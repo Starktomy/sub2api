@@ -1256,6 +1256,11 @@ func (s *GatewayService) hashContent(content string) string {
 
 // GetAccessToken 获取账号凭证
 func (s *GatewayService) GetAccessToken(ctx context.Context, account *Account) (string, string, error) {
+	// Supplier vault references are supported only by the OpenAI gateway, which
+	// revalidates their binding and policy before every credential resolution.
+	if supplierAccountMarked(account) {
+		return "", "", ErrSupplierResource
+	}
 	credentialType, err := moduleCredentialType(account)
 	if err != nil {
 		return "", "", err

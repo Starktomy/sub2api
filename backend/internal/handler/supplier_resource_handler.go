@@ -31,6 +31,30 @@ func (h *SupplierResourceHandler) List(c *gin.Context) {
 	}
 	response.Success(c, gin.H{"items": items, "vault_configured": h.svc.Configured()})
 }
+
+// AdminList is registered only behind the ordinary admin authentication chain.
+func (h *SupplierResourceHandler) AdminList(c *gin.Context) {
+	items, err := h.svc.ListAdminResources(c.Request.Context())
+	if response.ErrorFrom(c, err) {
+		return
+	}
+	response.Success(c, gin.H{"items": items})
+}
+func (h *SupplierResourceHandler) Stats(c *gin.Context) {
+	u, ok := supplierSubject(c)
+	if !ok {
+		return
+	}
+	id, ok := resourceID(c)
+	if !ok {
+		return
+	}
+	stats, err := h.svc.Stats(c.Request.Context(), u, id)
+	if response.ErrorFrom(c, err) {
+		return
+	}
+	response.Success(c, stats)
+}
 func resourceID(c *gin.Context) (string, bool) {
 	id, e := uuid.Parse(c.Param("id"))
 	if e != nil {

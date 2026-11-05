@@ -25,6 +25,17 @@ func ParseSupplier(content string) (Session, error) {
 	if json.Unmarshal([]byte(content), &raw) != nil || raw == nil {
 		return out, ErrSession
 	}
+	// ChatGPT's full session response contains a browser sessionToken and a
+	// boolean MFA flag. Discard those known metadata fields before validation;
+	// neither is needed or persisted by supplier import.
+	if _, ok := raw["accessToken"].(string); ok {
+		if _, accountOK := raw["account"].(map[string]any); accountOK {
+			if user, userOK := raw["user"].(map[string]any); userOK {
+				delete(raw, "sessionToken")
+				if _, isBool := user["mfa"].(bool); isBool { delete(user, "mfa") }
+			}
+		}
+	}
 	var forbidden func(any) bool
 	forbidden = func(v any) bool {
 		switch m := v.(type) {

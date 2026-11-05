@@ -31,7 +31,7 @@
       <li v-for="resource in resources" :key="resource.id" class="min-w-0 break-words space-y-3 rounded-lg border border-gray-200 p-4 dark:border-dark-700">
         <h3 class="font-semibold">{{ resource.display_name }}</h3>
         <p>{{ resource.masked_email || t('supplier.unknown') }} · {{ t(resource.usage ? 'supplier.observedPlan' : 'supplier.declaredPlan') }}: {{ resource.usage?.plan_type || resource.plan_type || t('supplier.unknown') }}</p>
-        <p>{{ t(resource.status === 'disconnected' ? 'supplier.disconnected' : 'supplier.paused') }} · {{ t('supplier.notSchedulable') }}</p>
+        <p>{{ t(resource.status === 'disconnected' ? 'supplier.disconnected' : 'supplier.paused') }} · {{ t(resource.schedulable ? 'supplier.schedulable' : 'supplier.notSchedulable') }}</p>
         <div class="space-y-2 rounded-lg bg-gray-50 p-3 dark:bg-dark-900">
           <p>{{ t('supplier.autoSync') }}: {{ t(resource.auto_sync_enabled ? 'supplier.syncRequested' : 'supplier.syncDisabled') }}</p>
           <p>{{ t('supplier.syncState') }}: {{ syncState(resource.probe_state) }}</p>
@@ -61,6 +61,7 @@
           <button class="btn btn-danger" :disabled="busy" @click="action(resource, 'disconnect')">{{ t('supplier.confirmDisconnect') }}</button>
           <button class="btn btn-secondary" :disabled="busy" @click="disconnecting = null">{{ t('supplier.cancel') }}</button>
         </div>
+        <ResourceStats :resource-id="resource.id" />
       </li>
     </ul>
   </section>
@@ -68,8 +69,9 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import ResourceStats from './ResourceStats.vue'
 import { isolatedSupplierAPI, supplierErrorReason } from './api'
-import { validSessionJSON, type SupplierResource } from './resourceTypes'
+import { extractSessionJSON, type SupplierResource } from './resourceTypes'
 const { t } = useI18n()
 const resources = ref<SupplierResource[]>([])
 const vaultConfigured = ref(false)
@@ -135,10 +137,12 @@ async function importSession() {
   if (busy.value || !vaultConfigured.value) return
   error.value = ''
   success.value = ''
-  if (!name.value.trim() || !validSessionJSON(content.value)) { error.value = t('supplier.invalidSession'); return }
+  const extracted = extractSessionJSON(content.value)
+  if (!name.value.trim() || !extracted) { error.value = t('supplier.invalidSession'); return }
+  content.value = ''
   busy.value = true
   try {
-    await isolatedSupplierAPI.importResource(name.value.trim(), content.value.trim())
+    await isolatedSupplierAPI.importResource(name.value.trim(), extracted)
     closeImport()
     success.value = t('supplier.imported')
     await load()

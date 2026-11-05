@@ -43,6 +43,7 @@ class Contracts(unittest.TestCase):
     def test_start_security_and_budgets(self):
         calls = []
         with patch.object(m, 'preflight'), patch.object(m, 'wait_healthy'), \
+                patch.object(m, 'supplier_key_id', return_value='test-key'), \
                 patch.object(m, 'command', side_effect=lambda *a, **k: calls.append(a)):
             m.start(self.config())
         self.assertEqual(len(calls), 3)
@@ -61,6 +62,8 @@ class Contracts(unittest.TestCase):
             self.assertIn('CONFIG_FILE=/app/data/config.yaml', args)
             self.assertEqual(args[args.index('--entrypoint') + 1], '/bin/sh')
             self.assertEqual('-p' in args, role != 'worker')
+            self.assertEqual('SUPPLIER_PROBE_ENABLED=true' in args, role == 'worker')
+            self.assertEqual('SUPPLIER_PORTAL_VAULT_KEY_ID=test-key' in args, role in ('gateway', 'worker'))
         self.assertEqual(sum(b[0] for b in m.BUDGET.values()), 2304)
         self.assertLessEqual(sum(float(b[2]) for b in m.BUDGET.values()), 1.75)
 
@@ -155,6 +158,26 @@ class Contracts(unittest.TestCase):
         with patch.object(m, 'command', side_effect=command):
             with self.assertRaises(RuntimeError):
                 m.preflight()
+
+    def test_only_isolated_supplier_control_is_exempt(self):
+        item = {'Name': '/sub2api-supplier-control', 'Config': {
+            'Env': ['RUNTIME_ROLE=control', 'SUPPLIER_PORTAL_ENABLED=true'],
+            'Labels': {'com.docker.compose.project': 'deploy',
+                       'com.docker.compose.service': 'supplier-control'}}}
+        def run(candidate):
+            def command(*args, **kwargs):
+                if args[:3] == ('docker', 'ps', '-q'): return 'supplier'
+                if args[:2] == ('docker', 'inspect'): return json.dumps([candidate])
+                return ''
+            with patch.object(m, 'command', side_effect=command): m.preflight()
+        run(item)
+        for mutate in ('name', 'enabled', 'worker', 'project'):
+            candidate = json.loads(json.dumps(item))
+            if mutate == 'name': candidate['Name'] = '/foreign'
+            if mutate == 'enabled': candidate['Config']['Env'].remove('SUPPLIER_PORTAL_ENABLED=true')
+            if mutate == 'worker': candidate['Config']['Env'].append('RUNTIME_ROLE=worker')
+            if mutate == 'project': candidate['Config']['Labels']['com.docker.compose.project'] = 'other'
+            with self.subTest(mutate=mutate), self.assertRaises(RuntimeError): run(candidate)
 
     def test_health_is_all_three_not_worker_leadership(self):
         good = {'Config': {'Image': self.config()['image']},

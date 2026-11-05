@@ -7,6 +7,7 @@
 - Do not modify the sibling source repositories (`../sub2api`, `../CLIProxyAPI`, `../new-api`).
 - Work on feature branches. Do not commit, push, or publish unless the user asks.
 - Read `docs/CLOUD_ARCHITECTURE.zh-CN.md` and `docs/IMPLEMENTATION_STATUS.md` for decisions and current implementation boundaries.
+- For upstream updates, follow `docs/UPSTREAM_SYNC_RUNBOOK.zh-CN.md`: review and adapt in groups, then use a normal merge to retain upstream ancestry. Exclude reviewed sponsor-only content, preserve local architecture and upstream attribution, and never use an ours-strategy merge merely to clear behind counts. Commit/push/deployment still require their respective authorization.
 
 ## Architecture
 

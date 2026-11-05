@@ -142,3 +142,23 @@ func TestFinalizeSimpleModePreservesLastUsedWithoutFinancialCacheWrites(t *testi
 		})
 	}
 }
+
+func TestSupplierUsageBillingRejectsLegacyFallback(t *testing.T) {
+	for _, missing := range []string{"repository", "request_id", "api_key"} {
+		t.Run(missing, func(t *testing.T) {
+			p := &postUsageBillingParams{Cost: &CostBreakdown{ActualCost: 1, TotalCost: 2}, User: &User{ID: 7}, APIKey: &APIKey{ID: 13}, Account: &Account{ID: 9, Credentials: map[string]any{"supplier_resource_id": "resource"}}}
+			var repo UsageBillingRepository = &simpleModeUsageBillingRepoStub{}
+			requestID := "supplier-req"
+			switch missing {
+			case "repository":
+				repo = nil
+			case "request_id":
+				requestID = ""
+			case "api_key":
+				p.APIKey = nil
+			}
+			_, err := applyUsageBilling(context.Background(), requestID, nil, p, &billingDeps{}, repo)
+			require.Error(t, err)
+		})
+	}
+}

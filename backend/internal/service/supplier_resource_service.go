@@ -36,6 +36,7 @@ type SupplierResource struct {
 	Provider            string                 `json:"provider"`
 	Product             string                 `json:"product"`
 	Schedulable         bool                   `json:"schedulable"`
+	AccountID           int64                  `json:"account_id,omitempty"`
 	MaskedEmail         string                 `json:"masked_email"`
 	PlanType            string                 `json:"plan_type"`
 	TokenExpiresAt      time.Time              `json:"token_expires_at"`
@@ -86,7 +87,6 @@ func resourceBinding(r *SupplierResource) string {
 func resourceProjection(r *SupplierResource) *SupplierResource {
 	r.Provider = "openai"
 	r.Product = "codex"
-	r.Schedulable = false
 	r.UsageState = "unknown"
 	if !time.Now().Before(r.TokenExpiresAt) && r.Status != "disconnected" {
 		r.ProbeState = "reauthorization_required"
@@ -113,6 +113,9 @@ func (s *SupplierResourceService) List(ctx context.Context, user int64) ([]*Supp
 	}
 	items, e := s.repo.List(ctx, p.ID)
 	for _, r := range items {
+		if err := s.projectAdmission(ctx, r); err != nil {
+			return nil, err
+		}
 		resourceProjection(r)
 	}
 	return items, e
@@ -126,9 +129,19 @@ func (s *SupplierResourceService) Get(ctx context.Context, user int64, id string
 	if e != nil {
 		return nil, e
 	}
+	if err := s.projectAdmission(ctx, r); err != nil {
+		return nil, err
+	}
 	return resourceProjection(r), nil
 }
 func digest(v string) string { b := sha256.Sum256([]byte(v)); return hex.EncodeToString(b[:]) }
+
+// SupplierImportResourceReader finds an owner's existing identity before envelope
+// encryption, so reimports retain the original authenticated resource binding.
+type SupplierImportResourceReader interface {
+	FindImportResource(context.Context, int64, string) (*SupplierResource, error)
+}
+
 func (s *SupplierResourceService) Import(ctx context.Context, user int64, name, content string) (*SupplierResource, error) {
 	if !s.Configured() {
 		return nil, ErrSupplierVault
@@ -155,6 +168,18 @@ func (s *SupplierResourceService) Import(ctx context.Context, user int64, name, 
 		session.Plan = ""
 	}
 	r := &SupplierResource{ID: id, SupplierID: p.ID, DisplayName: name, Status: "paused", Version: 1, AutoSyncEnabled: true, CredentialVersion: 1, ProbeState: "pending", KeyID: s.active, AccountHint: session.AccountID, IdentityFingerprint: digest(session.AccountID), TokenFingerprint: digest(session.AccessToken), MaskedEmail: MaskEmail(session.Email), PlanType: session.Plan, TokenExpiresAt: session.ExpiresAt}
+	if reader, ok := s.repo.(SupplierImportResourceReader); ok {
+		existing, lookupErr := reader.FindImportResource(ctx, p.ID, r.IdentityFingerprint)
+		if lookupErr != nil {
+			return nil, lookupErr
+		}
+		if existing != nil {
+			if existing.SupplierID != p.ID || existing.IdentityFingerprint != r.IdentityFingerprint || existing.AccountHint != r.AccountHint {
+				return nil, ErrSupplierResourceConflict
+			}
+			r.ID, r.Version, r.CredentialVersion = existing.ID, existing.Version, existing.CredentialVersion
+		}
+	}
 	codec, err := credentialcrypto.New(s.wrapper, s.active)
 	if err != nil {
 		return nil, ErrSupplierVault
@@ -164,6 +189,9 @@ func (s *SupplierResourceService) Import(ctx context.Context, user int64, name, 
 		return nil, ErrSupplierVault
 	}
 	if err = s.repo.Create(ctx, p.ID, r); err != nil {
+		return nil, err
+	}
+	if err := s.projectAdmission(ctx, r); err != nil {
 		return nil, err
 	}
 	return resourceProjection(r), nil
@@ -176,6 +204,9 @@ func (s *SupplierResourceService) Transition(ctx context.Context, user int64, id
 	r, e = s.repo.Transition(ctx, r.SupplierID, id, version, disconnect)
 	if e != nil {
 		return nil, e
+	}
+	if err := s.projectAdmission(ctx, r); err != nil {
+		return nil, err
 	}
 	return resourceProjection(r), nil
 }
@@ -197,6 +228,9 @@ func (s *SupplierResourceService) Usage(ctx context.Context, user int64, id stri
 	r, e = s.repo.SaveUsage(ctx, r.SupplierID, id, version, usage)
 	if e != nil {
 		return nil, e
+	}
+	if err := s.projectAdmission(ctx, r); err != nil {
+		return nil, err
 	}
 	return resourceProjection(r), nil
 }
@@ -220,4 +254,21 @@ func (s *SupplierResourceService) queryResource(ctx context.Context, r *Supplier
 		return nil, ErrSupplierVault
 	}
 	return s.quota.QuerySupplierUsage(ctx, token, account)
+}
+
+// This projection is informational; execution always rechecks vault eligibility.
+func (s *SupplierResourceService) projectAdmission(ctx context.Context, r *SupplierResource) error {
+	r.Schedulable = false
+	reader, ok := s.repo.(interface {
+		AdmissionState(context.Context, int64, string) (int64, bool, error)
+	})
+	if !ok {
+		return nil
+	}
+	id, enabled, err := reader.AdmissionState(ctx, r.SupplierID, r.ID)
+	if err != nil {
+		return err
+	}
+	r.AccountID, r.Schedulable = id, enabled
+	return nil
 }

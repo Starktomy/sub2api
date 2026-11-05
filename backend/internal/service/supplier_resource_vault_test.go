@@ -21,6 +21,12 @@ type supplierVaultRepo struct {
 	saved *SupplierResource
 }
 
+func (r *supplierVaultRepo) FindImportResource(_ context.Context, owner int64, identity string) (*SupplierResource, error) {
+	if r.saved != nil && r.saved.SupplierID == owner && r.saved.IdentityFingerprint == identity {
+		return r.saved, nil
+	}
+	return nil, nil
+}
 func (r *supplierVaultRepo) Create(_ context.Context, _ int64, v *SupplierResource) error {
 	r.saved = v
 	return nil
@@ -62,4 +68,17 @@ func TestSupplierResourceEncryptedOnlyBindingAndMissingKey(t *testing.T) {
 	require.NoError(t, e)
 	require.NotContains(t, string(b), token)
 	require.NotContains(t, string(b), "account_hint")
+	// Reimport must encrypt under the original UUID, never a freshly generated
+	// ID that repository persistence would subsequently replace.
+	r.Version = 7
+	r.CredentialVersion = 4
+	r.Status = "disconnected"
+	again, e := s.Import(ctx, 7, "reconnected", string(input))
+	require.NoError(t, e)
+	require.Equal(t, r.ID, again.ID)
+	require.Equal(t, int64(7), again.Version, "carry observed CAS into repository")
+	require.Equal(t, int64(4), again.CredentialVersion)
+	plain, e = codec.Decrypt(ctx, resourceBinding(r), again.Envelope)
+	require.NoError(t, e)
+	require.Equal(t, token, plain["access_token"])
 }

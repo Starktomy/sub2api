@@ -54,6 +54,14 @@ func (r *supplierResourceRepository) List(ctx context.Context, owner int64) ([]*
 func (r *supplierResourceRepository) Get(ctx context.Context, owner int64, id string) (*service.SupplierResource, error) {
 	return scanResource(r.db.QueryRowContext(ctx, `SELECT `+resourceCols+` FROM supplier_resources WHERE supplier_id=$1 AND id=$2`, owner, id))
 }
+func (r *supplierResourceRepository) FindImportResource(ctx context.Context, owner int64, identity string) (*service.SupplierResource, error) {
+	v, err := scanResource(r.db.QueryRowContext(ctx, `SELECT `+resourceCols+` FROM supplier_resources WHERE supplier_id=$1 AND identity_fingerprint=$2 ORDER BY (EXISTS(SELECT 1 FROM supplier_account_bindings b WHERE b.resource_id=supplier_resources.id)) DESC,(status='paused') DESC,created_at,id LIMIT 1`, owner, identity))
+	if errors.Is(err, service.ErrSupplierResource) {
+		return nil, nil
+	}
+	return v, err
+}
+
 func (r *supplierResourceRepository) Create(ctx context.Context, owner int64, v *service.SupplierResource) error {
 	tx, e := r.db.BeginTx(ctx, nil)
 	if e != nil {
@@ -72,20 +80,53 @@ func (r *supplierResourceRepository) Create(ctx context.Context, owner int64, v 
 		return service.ErrServiceUnavailable
 	}
 	var duplicate bool
-	e = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM supplier_resources WHERE identity_fingerprint=$1 AND (supplier_id<>$2 OR status='paused'))`, v.IdentityFingerprint, owner).Scan(&duplicate)
+	e = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM supplier_resources WHERE identity_fingerprint=$1 AND (supplier_id<>$2 OR id<>$3))`, v.IdentityFingerprint, owner, v.ID).Scan(&duplicate)
 	if e != nil {
 		return e
 	}
 	if duplicate {
 		return service.ErrSupplierResourceConflict
 	}
+	current, readErr := scanResource(tx.QueryRowContext(ctx, `SELECT `+resourceCols+` FROM supplier_resources WHERE id=$1 FOR UPDATE`, v.ID))
+	if readErr != nil && !errors.Is(readErr, service.ErrSupplierResource) {
+		return readErr
+	}
+	rotating := readErr == nil
+	if rotating {
+		if current.SupplierID != owner || current.IdentityFingerprint != v.IdentityFingerprint || current.AccountHint != v.AccountHint {
+			return service.ErrSupplierResourceConflict
+		}
+		if current.Version != v.Version || current.CredentialVersion != v.CredentialVersion {
+			return service.ErrSupplierResourceVersion
+		}
+	}
 	var exists bool
-	e = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM accounts WHERE platform='openai' AND deleted_at IS NULL AND (credentials->>'chatgpt_account_id'=$1 OR credentials->>'account_id'=$1 OR credentials->>'organization_id'=$1 OR encode(sha256(convert_to(COALESCE(credentials->>'access_token',''),'UTF8')),'hex')=$2))`, v.AccountHint, v.TokenFingerprint).Scan(&exists)
+	e = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM accounts a WHERE platform='openai' AND deleted_at IS NULL AND (credentials->>'chatgpt_account_id'=$1 OR credentials->>'account_id'=$1 OR credentials->>'organization_id'=$1 OR encode(sha256(convert_to(COALESCE(credentials->>'access_token',''),'UTF8')),'hex')=$2) AND NOT EXISTS(SELECT 1 FROM supplier_account_bindings b JOIN supplier_resources r ON r.id=b.resource_id WHERE b.account_id=a.id AND b.resource_id=$3 AND b.supplier_id=$4 AND r.supplier_id=$4 AND r.account_hint=$1 AND a.credentials->>'supplier_resource_id'=r.id::text))`, v.AccountHint, v.TokenFingerprint, v.ID, owner).Scan(&exists)
 	if e != nil {
 		return e
 	}
 	if exists {
 		return service.ErrSupplierResourceConflict
+	}
+	if rotating {
+		updated, err := scanResource(tx.QueryRowContext(ctx, `UPDATE supplier_resources SET display_name=$4,masked_email=$5,plan_type=$6,token_expires_at=$7,envelope=$8,key_id=$9,token_fingerprint=$10,status='paused',auto_sync_enabled=TRUE,version=version+1,credential_version=credential_version+1,verified_credential_version=NULL,usage=NULL,last_usage_at=NULL,last_probe_at=NULL,probe_error_code=NULL,probe_state='pending',next_probe_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND supplier_id=$2 AND version=$3 AND credential_version=$11 RETURNING `+resourceCols, v.ID, owner, v.Version, v.DisplayName, v.MaskedEmail, v.PlanType, v.TokenExpiresAt, v.Envelope, v.KeyID, v.TokenFingerprint, v.CredentialVersion))
+		if errors.Is(err, service.ErrSupplierResource) {
+			return service.ErrSupplierResourceVersion
+		}
+		if err != nil {
+			return err
+		}
+		// Reset even if auto-sync was already enabled: migration255's trigger
+		// intentionally only enqueues the disabled-to-enabled transition.
+		_, err = tx.ExecContext(ctx, `INSERT INTO supplier_probe_jobs(resource_id,credential_version) VALUES($1,$2) ON CONFLICT(resource_id) DO UPDATE SET credential_version=EXCLUDED.credential_version,state='pending',next_run_at=CURRENT_TIMESTAMP,lease_owner=NULL,lease_until=NULL,resource_version=NULL,lease_generation=supplier_probe_jobs.lease_generation+1,attempts=0`, updated.ID, updated.CredentialVersion)
+		if err != nil {
+			return err
+		}
+		if err = tx.Commit(); err != nil {
+			return err
+		}
+		*v = *updated
+		return nil
 	}
 	e = tx.QueryRowContext(ctx, `INSERT INTO supplier_resources(id,supplier_id,display_name,status,masked_email,plan_type,token_expires_at,envelope,key_id,account_hint,identity_fingerprint,token_fingerprint,auto_sync_enabled,probe_state,next_probe_at) VALUES($1,$2,$3,'paused',$4,$5,$6,$7,$8,$9,$10,$11,TRUE,'pending',CURRENT_TIMESTAMP) RETURNING created_at,updated_at,next_probe_at`, v.ID, owner, v.DisplayName, v.MaskedEmail, v.PlanType, v.TokenExpiresAt, v.Envelope, v.KeyID, v.AccountHint, v.IdentityFingerprint, v.TokenFingerprint).Scan(&v.CreatedAt, &v.UpdatedAt, &v.NextProbeAt)
 	if e != nil {

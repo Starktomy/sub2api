@@ -71,6 +71,15 @@ describe('isolated supplier transport', () => {
     expect(requests[2].url).toBe('/supplier/resources/resource-test-id/resume-sync')
     for (const request of requests) expect(JSON.parse(request.data)).toEqual({ version: 3 })
   })
+  it('reads owner statistics through supplier credentials without owner parameters', async () => {
+    localStorage.setItem('auth_token', 'consumer-test')
+    localStorage.setItem(SUPPLIER_STORAGE.access, 'supplier-test')
+    await api.resourceStats('resource/id')
+    expect(requests[0].url).toBe('/supplier/resources/resource%2Fid/stats')
+    expect(requests[0].method).toBe('get')
+    expect(requests[0].headers.Authorization).toBe('Bearer supplier-test')
+    expect(requests[0].params).toBeUndefined()
+  })
   it('only sends email proof and name in enrollment', async () => {
     await api.enroll('Supplier', '123456')
     expect(JSON.parse(requests[0].data)).toEqual({ display_name: 'Supplier', verify_code: '123456' })

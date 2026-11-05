@@ -18,6 +18,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestSchedulerSupplierIdentityProjection(t *testing.T) {
+	for _, marker := range []any{"resource-id", "", nil, float64(17)} {
+		account := service.Account{
+			ID: 51, Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth,
+			Credentials: map[string]any{"supplier_resource_id": marker, "chatgpt_account_id": "upstream-account", "access_token": "must-not-project", "refresh_token": "must-not-project"},
+			Extra:       map[string]any{"supplier_resource_id": marker, "supplier_id": nil},
+		}
+		_, meta, err := marshalSchedulerCacheAccount(account)
+		require.NoError(t, err)
+		var projected service.Account
+		require.NoError(t, json.Unmarshal(meta, &projected))
+		require.Contains(t, projected.Credentials, "supplier_resource_id", "null/malformed markers must retain fail-closed presence")
+		require.Equal(t, marker, projected.Credentials["supplier_resource_id"])
+		require.Equal(t, "upstream-account", projected.Credentials["chatgpt_account_id"])
+		require.Contains(t, projected.Extra, "supplier_resource_id")
+		require.Equal(t, marker, projected.Extra["supplier_resource_id"])
+		require.Contains(t, projected.Extra, "supplier_id")
+		require.Nil(t, projected.Extra["supplier_id"])
+		require.NotContains(t, projected.Credentials, "access_token")
+		require.NotContains(t, projected.Credentials, "refresh_token")
+	}
+}
+
 func newSchedulerCacheUnit(t *testing.T) *schedulerCache {
 	cache, _ := newSchedulerCacheUnitWithRedis(t)
 	return cache

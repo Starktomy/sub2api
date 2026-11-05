@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
@@ -1211,12 +1212,38 @@ func hashSensitiveValueForLog(raw string) string {
 
 // GetAccessToken gets the access token for an OpenAI account
 func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Account) (string, string, error) {
+	if account == nil {
+		return "", "", ErrSupplierResource
+	}
+	if supplierAccountMarked(account) && account.IsShadow() {
+		return "", "", ErrSupplierResource
+	}
 	if account.IsShadow() {
 		credAccount, err := resolveCredentialAccount(ctx, s.accountRepo, account)
 		if err != nil {
 			return "", "", err
 		}
 		account = credAccount
+	}
+	if supplierAccountMarked(account) {
+		group, ok := ctx.Value(ctxkey.Group).(*Group)
+		if !ok || group == nil || group.ID <= 0 {
+			return "", "", ErrSupplierResource
+		}
+		if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
+			return "", "", ErrSupplierResource
+		}
+		if account.Platform != PlatformOpenAI || account.Type != AccountTypeOAuth || account.IsOpenAIAgentIdentity() {
+			return "", "", ErrSupplierResource
+		}
+		if s.openAITokenProvider == nil {
+			return "", "", ErrSupplierVault
+		}
+		token, err := s.openAITokenProvider.GetAccessToken(ctx, account)
+		if err != nil {
+			return "", "", err
+		}
+		return token, "oauth", nil
 	}
 	credentialType, credentialErr := moduleCredentialType(account)
 	if credentialErr != nil {

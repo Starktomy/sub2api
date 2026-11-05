@@ -39,6 +39,9 @@ func (r *defaultOpenAIWSProtocolResolver) Resolve(account *Account) OpenAIWSProt
 	if account == nil {
 		return openAIWSHTTPDecision("account_missing")
 	}
+	if supplierAccountMarked(account) {
+		return openAIWSHTTPDecision("supplier_requires_per_request_http")
+	}
 	if !account.IsOpenAI() {
 		return openAIWSHTTPDecision("platform_not_openai")
 	}
