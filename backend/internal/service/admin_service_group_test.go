@@ -2350,3 +2350,13 @@ func TestAdminService_CreateGroup_CodexModelsManifestConfigDisabledAccepted(t *t
 	require.Equal(t, []int64{1, 2}, group.CodexModelsManifestConfig.AccountIDs)
 	require.False(t, repo.created.CodexModelsManifestConfig.Enabled)
 }
+
+func TestAdminService_ListCompositeRoutes_RejectsNonCompositeGroupAsBadRequest(t *testing.T) {
+	svc := &adminServiceImpl{groupRepo: &groupRepoStubForAdmin{getByID: &Group{ID: 1, Platform: PlatformAnthropic}}, compositeRouteRepo: &compositeRouteRepoStubForAdmin{}}
+	routes, err := svc.ListCompositeRoutes(context.Background(), 1)
+	require.Error(t, err)
+	require.Nil(t, routes)
+	status, _ := infraerrors.ToHTTP(err)
+	require.Equal(t, http.StatusBadRequest, status)
+	require.ErrorContains(t, err, "not a composite group")
+}

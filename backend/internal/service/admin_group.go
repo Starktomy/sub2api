@@ -236,7 +236,7 @@ func (s *adminServiceImpl) requireCompositeGroup(ctx context.Context, groupID in
 		return err
 	}
 	if group.Platform != PlatformComposite {
-		return fmt.Errorf("group %d is not a composite group", groupID)
+		return infraerrors.BadRequest("GROUP_NOT_COMPOSITE", fmt.Sprintf("group %d is not a composite group", groupID))
 	}
 	return nil
 }
