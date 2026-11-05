@@ -32,7 +32,9 @@ func ParseSupplier(content string) (Session, error) {
 		if _, accountOK := raw["account"].(map[string]any); accountOK {
 			if user, userOK := raw["user"].(map[string]any); userOK {
 				delete(raw, "sessionToken")
-				if _, isBool := user["mfa"].(bool); isBool { delete(user, "mfa") }
+				if _, isBool := user["mfa"].(bool); isBool {
+					delete(user, "mfa")
+				}
 			}
 		}
 	}
@@ -81,7 +83,26 @@ func ParseSupplier(content string) (Session, error) {
 		return Session{}, ErrSession
 	}
 	out.ExpiresAt = time.Unix(claims.Exp, 0).UTC()
-	out.Email = claims.Email
+	var emailOK bool
+	out.Email, emailOK = claims.IdentityEmail()
+	if !emailOK {
+		return Session{}, ErrSession
+	}
+	// Compare every supplied email, not only the first fallback. Never silently
+	// accept a pasted session for a different identity.
+	declared := []string{get(raw, "email")}
+	if user, ok := raw["user"].(map[string]any); ok {
+		declared = append(declared, get(user, "email"))
+	}
+	for _, email := range declared {
+		if email == "" {
+			continue
+		}
+		if out.Email != "" && !strings.EqualFold(out.Email, email) {
+			return Session{}, ErrSession
+		}
+		out.Email = email
+	}
 	out.UserID = claims.Sub
 	if claims.OpenAIAuth != nil {
 		out.AccountID = claims.OpenAIAuth.ChatGPTAccountID

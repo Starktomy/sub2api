@@ -63,6 +63,9 @@ type SupplierResource struct {
 	TokenFingerprint          string                 `json:"-"`
 }
 type SupplierResourceUsage struct {
+	// Only boolean conclusions persist; upstream phone/email are never retained.
+	PhoneVerified bool `json:"phone_verified"`
+	EmailMatched  bool `json:"email_matched"`
 	// Known flags preserve explicitly-null unused windows, never omitted/malformed ones.
 	PrimaryWindowKnown   bool             `json:"primary_window_known"`
 	SecondaryWindowKnown bool             `json:"secondary_window_known"`
@@ -312,7 +315,23 @@ func (s *SupplierResourceService) queryResource(ctx context.Context, r *Supplier
 	if token == "" || strings.TrimSpace(account) == "" {
 		return nil, ErrSupplierVault
 	}
-	return s.quota.QuerySupplierUsage(ctx, token, account)
+	// Identity proof is reusable only for the exact credential version that
+	// completed verification. Rotation clears usage and the verification stamp;
+	// quota refreshes and pause/resume do not require another /me request.
+	identityVerified := r.CredentialVersion > 0 && r.VerifiedCredentialVersion != nil &&
+		*r.VerifiedCredentialVersion == r.CredentialVersion && r.Usage != nil &&
+		r.Usage.PhoneVerified && r.Usage.EmailMatched
+	if !identityVerified {
+		if err := s.quota.VerifySupplierIdentity(ctx, token, account); err != nil {
+			return nil, err
+		}
+	}
+	usage, err := s.quota.QuerySupplierUsage(ctx, token, account)
+	if err != nil {
+		return nil, err
+	}
+	usage.PhoneVerified, usage.EmailMatched = true, true
+	return usage, nil
 }
 
 // This projection is informational; execution always rechecks vault eligibility.

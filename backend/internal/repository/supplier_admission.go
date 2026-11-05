@@ -23,6 +23,7 @@ const supplierAuthorizationValidSQL = `r.status='paused'
 const supplierCredentialVerifiedSQL = `r.envelope IS NOT NULL AND r.token_expires_at>CURRENT_TIMESTAMP
  AND r.probe_state IN ('fresh','running') AND r.probe_error_code IS NULL
  AND r.verified_credential_version=r.credential_version AND btrim(r.account_hint)<>''
+ AND supplier_identity_verified(r.usage)
  AND r.last_verified_at BETWEEN CURRENT_TIMESTAMP-INTERVAL '15 minutes' AND CURRENT_TIMESTAMP
  AND r.last_usage_at BETWEEN CURRENT_TIMESTAMP-INTERVAL '15 minutes' AND CURRENT_TIMESTAMP
  AND p.status='active' AND u.status='active' AND u.deleted_at IS NULL`

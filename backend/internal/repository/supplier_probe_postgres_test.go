@@ -32,7 +32,7 @@ func TestSupplierProbeDurablePostgres(t *testing.T) {
  CREATE TABLE groups(id BIGINT PRIMARY KEY,status TEXT,deleted_at TIMESTAMPTZ,platform TEXT)`)
 	require.NoError(t, e)
 	defer db.Exec(`DROP SCHEMA supplier_probe_fixture CASCADE`)
-	for _, file := range []string{"254_supplier_resources.sql", "255_supplier_probe_jobs.sql", "255_supplier_probe_jobs.sql", "256_supplier_admission.sql", "258_supplier_supply_controls.sql"} {
+	for _, file := range []string{"254_supplier_resources.sql", "255_supplier_probe_jobs.sql", "255_supplier_probe_jobs.sql", "256_supplier_admission.sql", "258_supplier_supply_controls.sql", "260_supplier_identity_verification.sql"} {
 		m, e := os.ReadFile("../../migrations/" + file)
 		require.NoError(t, e)
 		_, e = db.Exec(string(m))
@@ -53,14 +53,14 @@ func TestSupplierProbeDurablePostgres(t *testing.T) {
 	second, e := r.Claim(ctx, "00000000-0000-4000-8000-000000000012")
 	require.NoError(t, e)
 	require.Greater(t, second.Generation, first.Generation)
-	require.NoError(t, r.Finish(ctx, first, &service.SupplierResourceUsage{PlanType: "old"}, "", time.Minute, false))
+	require.NoError(t, r.Finish(ctx, first, &service.SupplierResourceUsage{PhoneVerified: true, EmailMatched: true, PlanType: "old"}, "", time.Minute, false))
 	var usage sql.NullString
 	require.NoError(t, db.QueryRow(`SELECT usage::text FROM supplier_resources`).Scan(&usage))
 	require.False(t, usage.Valid)
 	// Credential rotation cannot accept an old claim.
 	_, e = db.Exec(`UPDATE supplier_resources SET credential_version=credential_version+1`)
 	require.NoError(t, e)
-	require.NoError(t, r.Finish(ctx, second, &service.SupplierResourceUsage{PlanType: "old"}, "", time.Minute, false))
+	require.NoError(t, r.Finish(ctx, second, &service.SupplierResourceUsage{PhoneVerified: true, EmailMatched: true, PlanType: "old"}, "", time.Minute, false))
 	require.NoError(t, db.QueryRow(`SELECT usage::text FROM supplier_resources`).Scan(&usage))
 	require.False(t, usage.Valid)
 	_, e = db.Exec(`UPDATE supplier_resources SET credential_version=1`)
@@ -81,7 +81,7 @@ func TestSupplierProbeDurablePostgres(t *testing.T) {
 	require.NoError(t, e)
 	require.True(t, paused.AutoSyncEnabled)
 	require.False(t, paused.SupplyEnabled)
-	require.NoError(t, r.Finish(ctx, claim, &service.SupplierResourceUsage{PlanType: "stale"}, "", time.Minute, false))
+	require.NoError(t, r.Finish(ctx, claim, &service.SupplierResourceUsage{PhoneVerified: true, EmailMatched: true, PlanType: "stale"}, "", time.Minute, false))
 	require.NoError(t, db.QueryRow(`SELECT usage::text FROM supplier_resources`).Scan(&usage))
 	require.True(t, usage.Valid) // Pausing supply does not cancel the read-only probe.
 	require.NoError(t, db.QueryRow(`SELECT supply_enabled FROM supplier_resources`).Scan(&enabled))
@@ -105,7 +105,7 @@ func TestSupplierProbeDurablePostgres(t *testing.T) {
 	claim3, e := r.Claim(ctx, "00000000-0000-4000-8000-000000000015")
 	require.NoError(t, e)
 	require.NotNil(t, claim3)
-	require.NoError(t, r.Finish(ctx, claim3, &service.SupplierResourceUsage{PlanType: "plus", FetchedAt: time.Now().Unix()}, "", 10*time.Minute, false))
+	require.NoError(t, r.Finish(ctx, claim3, &service.SupplierResourceUsage{PhoneVerified: true, EmailMatched: true, PlanType: "plus", FetchedAt: time.Now().Unix()}, "", 10*time.Minute, false))
 	require.NoError(t, db.QueryRow(`SELECT probe_state FROM supplier_resources`).Scan(&state))
 	require.Equal(t, "fresh", state)
 	_, e = db.Exec(`UPDATE supplier_resources SET token_expires_at=CURRENT_TIMESTAMP-INTERVAL '1 second'`)

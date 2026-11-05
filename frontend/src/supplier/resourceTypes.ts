@@ -78,6 +78,8 @@ export function extractSessionJSON(content: string): string | null {
     const user = raw.user as Record<string, unknown> | undefined
     const accountID = raw.chatgpt_account_id ?? raw.account_id ?? account?.id ?? account?.account_id
     if (typeof accountID === 'string') result.account_id = accountID
+    if (typeof raw.email === 'string' && typeof user?.email === 'string'
+      && raw.email.trim().toLowerCase() !== user.email.trim().toLowerCase()) return null
     const email = raw.email ?? user?.email
     if (typeof email === 'string') result.email = email
     return JSON.stringify(result)

@@ -31,6 +31,26 @@ async function importer() {
   return wrapper
 }
 describe('supplier Codex resources', () => {
+  it('rejects contradictory declared emails without interpreting tokens', () => {
+    expect(extractSessionJSON(JSON.stringify({ accessToken: 'synthetic', email: 'one@example.invalid', user: { email: 'two@example.invalid' } }))).toBeNull()
+    expect(extractSessionJSON(JSON.stringify({ accessToken: 'synthetic', email: ' Same@example.invalid ', user: { email: 'same@EXAMPLE.invalid' } }))).not.toBeNull()
+  })
+  it.each([
+    ['phone_verification_required', 'phoneVerificationRequired'],
+    ['identity_email_mismatch', 'identityEmailMismatch'],
+    ['identity_unknown', 'identityUnknown']
+  ] as const)('translates %s for probe and availability without displaying raw codes', async (code, key) => {
+    expect(en[key]).toBeTruthy()
+    expect(zh[key]).toBeTruthy()
+    for (const field of ['probe_error_code', 'availability_reason']) {
+      mocks.resources.mockResolvedValue({ items: [{ ...resource, [field]: code }], vault_configured: true })
+      const wrapper = mount(Resources)
+      await flushPromises()
+      expect(wrapper.text()).toContain(`supplier.${key}`)
+      expect(wrapper.text()).not.toContain(code)
+      wrapper.unmount()
+    }
+  })
   it('uses the required Chinese supply labels and discloses continuing consent in both locales', () => {
     expect(zh.authorizeAndStart).toBe('授权全部可用额度并开始供给')
     expect([zh.startSupply, zh.pauseSupply, zh.updateAuthorization, zh.disconnect]).toEqual(['开始供给', '暂停供给', '更新授权', '断开并删除凭据'])

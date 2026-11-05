@@ -76,10 +76,16 @@ func supplierAvailabilityReason(r *SupplierResource, now time.Time) string {
 		return "reauthorization_required"
 	case !now.Before(*r.AuthorizationExpiresAt):
 		return "authorization_expired"
-	case !now.Before(r.TokenExpiresAt) || r.ProbeState == "reauthorization_required":
+	case !now.Before(r.TokenExpiresAt):
 		return "reauthorization_required"
 	case r.AdminDisabled:
 		return "admin_disabled"
+	case r.ProbeErrorCode != nil && (*r.ProbeErrorCode == "phone_verification_required" || *r.ProbeErrorCode == "identity_email_mismatch" || *r.ProbeErrorCode == "identity_unknown"):
+		return *r.ProbeErrorCode
+	case r.ProbeState == "reauthorization_required":
+		return "reauthorization_required"
+	case r.Usage == nil || !r.Usage.PhoneVerified || !r.Usage.EmailMatched:
+		return "identity_unknown"
 	case r.SupplyEnablePending:
 		return "verification_required"
 	case !r.SupplyEnabled:

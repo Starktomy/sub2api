@@ -48,6 +48,10 @@ func TestSupplierResourcePostgresOwnershipCAS(t *testing.T) {
 	require.NoError(t, e)
 	_, e = db.Exec(string(controls))
 	require.NoError(t, e)
+	identity, e := os.ReadFile("../../migrations/260_supplier_identity_verification.sql")
+	require.NoError(t, e)
+	_, e = db.Exec(string(identity))
+	require.NoError(t, e)
 	r := &supplierResourceRepository{db}
 	v := &service.SupplierResource{ID: "00000000-0000-4000-8000-000000000001", SupplierID: 1, DisplayName: "name", MaskedEmail: "u***@example.test", PlanType: "plus", Envelope: []byte("ciphertext-only"), KeyID: "key-v1", AccountHint: "account-a", IdentityFingerprint: "identity-a", TokenFingerprint: "token-a", TokenExpiresAt: time.Now().Add(time.Hour)}
 	v.ConsentVersion = service.SupplierConsentVersion

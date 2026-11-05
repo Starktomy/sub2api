@@ -186,3 +186,24 @@ session完整结构精简前端13测试、codexsession包测试及typecheck通�
 - 补充固定上游拒绝类别+HTTP status的脱敏诊断，不记录正文、token或任意provider错误字符串；仍不允许自动重试。`GOMAXPROCS=1 GOMEMLIMIT=600MiB GOGC=30 GOPROXY=off go test -p=1 ./internal/service -run 'TestSupplier' -count=1`通过0.344s；server重新构建通过，SHA256=`8794b41dabfaa6394e53bcd080ad6836a85b419f25b12bfbebfbb4c20b748639`，migrate不变。
 - 最终诊断补丁镜像本机预载`sub2api-cloud@sha256:eea8339dfd1e2364460e4bb99c6e2ababc36eb6e5fd50801fc854d56e43fbd70`；该补丁不追溯恢复首轮上游正文/状态，不执行第二次生成。最终四角色均运行该digest且healthy，部署脚本及第二轮鉴权隔离/owner统计smoke全部通过exit0。
 - 数据库最终只读复核：本次Key44对应dispatch=1、review=1、committed=0、staged=0；该attempt供应事实=0。0表示没有已确认应计记录，不是对未知消费做0结算。worker日志确认SupplierBillingRecoveryWorker已获PostgreSQL协调准入。
+
+## 手机验证与邮箱一致性门槛（2026-11-05，本轮未部署）
+
+- 用户确认session.test未手机认证、account.test两账号已认证；随后明确要求以`/me.phone_number`非空判断手机验证，并一起校验邮箱。
+- 三个授权样本只读对照：`GET https://chatgpt.com/backend-api/me`均200；未认证样本phone_number为空，已认证两样本均非空；上游email、Token profile邮箱及文件声明邮箱三者一致，上游用户id也匹配Token。未输出真实手机号/邮箱/Token。
+- 两个已手机认证样本的models同样只返回codex-auto-review，纠正此前推测：该模型目录不能区分手机认证状态。amr的otp_phone/otp_email仅作认证方式线索，不作为唯一门槛。
+- 用户进一步要求phone_verified仅首次检查：按每个凭据版本首次成功校验一次手机及邮箱；存在当前credential_version对应的verified_credential_version且两个身份标记为真时，日常仅刷新额度，不重复请求/me。暂停/恢复不清空证明；更新授权/轮换凭据清除旧usage和版本验证，必须重新检查。首次失败不算已验证，后续仍可重试。新增测试断言首次/me→quota、后续仅quota、凭据版本变化重新/me→quota；调整后的service/repository串行回归日志`/tmp/supplier-identity-once-tests.log`已通过；首次检查、后续quota-only及版本变化重新检查断言通过。
+- 首次实现顺序：解密本资源Token→只读/me校验Account/User/邮箱及手机→只读额度查询→保存两个结论phone_verified/email_matched。phone字段null/空串/空白为phone_verification_required；缺失/类型错误/超时/非预期响应为identity_unknown；邮箱不匹配为identity_email_mismatch。401/403继续使用既有认证失败状态。
+- Token顶层与profile邮箱、导入JSON顶层与user.email全部核对，trim后忽略大小写；不强制与供应门户邮箱相等。无需存储完整手机号或/me身份正文；不发送OTP、不刷新Token、不触发生成。
+- 新前向260定义严格JSON布尔身份结论函数，共享凭据准入SQL覆盖Start、准入、接单及发送前复核。旧快照缺失标记失败关闭，必须重新探测，不补造历史验证。已接受请求的结算仍走冻结快照，不因新门槛否认既有消费。
+- 前端10文件88项Vitest通过（18.25s），涵盖三个身份错误码的probe/availability显示及JSON邮箱冲突拒绝；变更组件/types/locales/测试ESLint通过。前端vue-tsc --noEmit通过。测试日志`/tmp/supplier-identity-frontend-tests.log`。供应独立UI生产构建通过（7.63s），仅输出`/tmp/supplier-identity-ui-BjH8Zv`，未覆盖现网静态；旧Browserslist数据警告未阻断，未安装新依赖。
+- 后端统一串行命令：backend目录设置`GOMAXPROCS=1 GOMEMLIMIT=600MiB GOGC=30 GOPROXY=off SUPPLIER_TEST_PG_SOCKET=/tmp/supplier-pg-20261105-eADiDK`后执行`go test -p=1 -tags=unit ./internal/pkg/codexsession ./internal/repository ./internal/service ./internal/handler ./internal/server ./internal/server/routes -run 'Supplier' -count=1`；首轮parser0.003s/service0.370s/handler0.429s/server0.022s/routes0.023s通过，repository因畸形身份标记StartSupply返回JSON解析错误与测试预期业务错误不符而失败，后续用例恢复也受fatal断言影响；拒绝接单本身有效，测试已修正：畸形类型允许解析阶段拒绝（不要求一定到达SQL业务错误），missing/null/false仍要求业务拒绝；每个子测试t.Cleanup恢复合法快照避免串扰，生产错误映射未改。等待冻结后的最终重跑。日志`/tmp/supplier-identity-backend-tests.log`。
+- server构建通过exit0：`GOMAXPROCS=1 GOMEMLIMIT=600MiB GOGC=30 GOPROXY=off CGO_ENABLED=0 go build -p=1 -o /tmp/supplier-identity-build-rPydJC/server ./cmd/server`；SHA256=`df34a1b5efcf05f1340de39a034653e63f9fba620784f84278a7be1a7c31ff65`。仅独立临时二进制，未替换运行服务。
+- 本轮仅代码/本地验证；不沿用上轮上线/commit/push授权，不修改已应用258/259，不操作线上数据库。最终回归日志`/tmp/supplier-identity-backend-final.log`：parser0.005s、repository（实际临时PG）4.340s、service0.359s、handler0.429s、server0.028s、routes0.035s全部通过。最终git diff --check与新增/修改行凭据形态扫描通过；未部署、未应用线上260、未commit/push。
+
+### 2026-11-05 首次身份验证发布授权
+
+- 用户要求完成后commit/push/上线，本轮因此获准应用260及现有EC2发布；不新增基础设施、不推ECR、不改DNS、不做模型生成。
+- 最终首次复用逻辑回归：service0.355s、repository含实际PG5.129s通过。前端88测试、ESLint/类型检查已通过，发布双前端与server/migrate重新构建中。
+- STS已核对专用integration-deployer与账号250088785444；备份`/var/lib/sub2api-release-backups/identity-20261105`。部署工具14项离线测试通过0.036s。发布工作区`/tmp/sub2api-release-identity-20261105-lBViEf`。
+- 计划只读线上验证已有未手机认证资源显示phone_verification_required且不可调度；保留原资源/收入，不触发模型生成。实际迁移/镜像/提交结果随后追加。

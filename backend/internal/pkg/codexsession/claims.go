@@ -10,11 +10,31 @@ import (
 )
 
 type Claims struct {
-	Sub        string        `json:"sub"`
-	Email      string        `json:"email"`
-	Exp        int64         `json:"exp"`
-	Iat        int64         `json:"iat"`
-	OpenAIAuth *OpenAIClaims `json:"https://api.openai.com/auth,omitempty"`
+	Sub        string         `json:"sub"`
+	Email      string         `json:"email"`
+	Profile    *ProfileClaims `json:"https://api.openai.com/profile,omitempty"`
+	Exp        int64          `json:"exp"`
+	Iat        int64          `json:"iat"`
+	OpenAIAuth *OpenAIClaims  `json:"https://api.openai.com/auth,omitempty"`
+}
+
+type ProfileClaims struct {
+	Email         string `json:"email"`
+	EmailVerified *bool  `json:"email_verified,omitempty"`
+}
+
+// IdentityEmail rejects conflicting token email claims. Claims remain untrusted
+// until checked against the authenticated upstream identity response.
+func (c *Claims) IdentityEmail() (string, bool) {
+	email := strings.TrimSpace(c.Email)
+	if c.Profile != nil && strings.TrimSpace(c.Profile.Email) != "" {
+		profile := strings.TrimSpace(c.Profile.Email)
+		if email != "" && !strings.EqualFold(email, profile) {
+			return "", false
+		}
+		email = profile
+	}
+	return email, true
 }
 
 type OpenAIClaims struct {

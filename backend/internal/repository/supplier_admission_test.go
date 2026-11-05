@@ -30,7 +30,7 @@ func TestSupplierAdmissionPostgres(t *testing.T) {
 	defer db.Exec(`DROP SCHEMA ` + schema + ` CASCADE`)
 	// Core tables and supplier tables use actual migration definitions. Only the
 	// later independently-added Account/group columns are supplied explicitly.
-	for _, file := range []string{"001_init.sql", "253_supplier_profiles.sql", "254_supplier_resources.sql", "255_supplier_probe_jobs.sql", "036_scheduler_outbox.sql", "152_scheduler_outbox_dedup_key.sql", "153_scheduler_outbox_pending_dedup_key_index_notx.sql", "256_supplier_admission.sql", "258_supplier_supply_controls.sql", "258_supplier_supply_controls.sql"} {
+	for _, file := range []string{"001_init.sql", "253_supplier_profiles.sql", "254_supplier_resources.sql", "255_supplier_probe_jobs.sql", "036_scheduler_outbox.sql", "152_scheduler_outbox_dedup_key.sql", "153_scheduler_outbox_pending_dedup_key_index_notx.sql", "256_supplier_admission.sql", "258_supplier_supply_controls.sql", "258_supplier_supply_controls.sql", "260_supplier_identity_verification.sql", "260_supplier_identity_verification.sql"} {
 		b, e := os.ReadFile("../../migrations/" + file)
 		require.NoError(t, e)
 		_, e = db.Exec(string(b))
@@ -66,7 +66,7 @@ func TestSupplierAdmissionPostgres(t *testing.T) {
 	require.Zero(t, count)
 	verify := func() {
 		t.Helper()
-		_, e := db.Exec(`UPDATE supplier_resources SET probe_state='fresh',probe_error_code=NULL,usage=jsonb_build_object('rate_limit',jsonb_build_object('allowed',true,'limit_reached',false,'primary_window',jsonb_build_object('used_percent',10,'limit_window_seconds',18000,'reset_at',extract(epoch FROM CURRENT_TIMESTAMP+INTERVAL '1 hour')::bigint),'secondary_window',jsonb_build_object('used_percent',20,'limit_window_seconds',604800,'reset_at',extract(epoch FROM CURRENT_TIMESTAMP+INTERVAL '1 day')::bigint))),last_probe_at=CURRENT_TIMESTAMP,last_usage_at=CURRENT_TIMESTAMP`)
+		_, e := db.Exec(`UPDATE supplier_resources SET probe_state='fresh',probe_error_code=NULL,usage=jsonb_build_object('phone_verified',true,'email_matched',true,'rate_limit',jsonb_build_object('allowed',true,'limit_reached',false,'primary_window',jsonb_build_object('used_percent',10,'limit_window_seconds',18000,'reset_at',extract(epoch FROM CURRENT_TIMESTAMP+INTERVAL '1 hour')::bigint),'secondary_window',jsonb_build_object('used_percent',20,'limit_window_seconds',604800,'reset_at',extract(epoch FROM CURRENT_TIMESTAMP+INTERVAL '1 day')::bigint))),last_probe_at=CURRENT_TIMESTAMP,last_usage_at=CURRENT_TIMESTAMP`)
 		require.NoError(t, e)
 	}
 	verify()
@@ -104,6 +104,57 @@ func TestSupplierAdmissionPostgres(t *testing.T) {
 	require.NoError(t, groupErr)
 	var goodQuota string
 	require.NoError(t, db.QueryRow(`SELECT usage::text FROM supplier_resources`).Scan(&goodQuota))
+	// Identity JSON flags, not legacy verification stamps or quota alone, are
+	// authoritative at admission and execution. Preserve the known-good snapshot.
+	for _, flag := range []string{"phone_verified", "email_matched"} {
+		for _, value := range []string{"missing", "false", "null", `"true"`, "1", "{}", "[]"} {
+			t.Run(flag+" rejects "+value, func(t *testing.T) {
+				// Always restore the shared fixture, including after a fatal assertion.
+				t.Cleanup(func() {
+					_, e := db.Exec(`UPDATE supplier_resources SET usage=$1::jsonb`, goodQuota)
+					require.NoError(t, e)
+					require.NoError(t, reconcileSupplierAdmission(ctx, db))
+					check(true, 1)
+					assertExecution(true)
+				})
+				var e error
+				if value == "missing" {
+					_, e = db.Exec(`UPDATE supplier_resources SET usage=usage-$1::text`, flag)
+				} else {
+					_, e = db.Exec(`UPDATE supplier_resources SET usage=jsonb_set(usage,ARRAY[$1]::text[],$2::jsonb)`, flag, value)
+				}
+				require.NoError(t, e)
+				assertExecution(false)
+				var currentVersion int64
+				require.NoError(t, db.QueryRow(`SELECT version FROM supplier_resources`).Scan(&currentVersion))
+				_, e = resourceRepo.StartSupply(ctx, 1, resourceID, currentVersion)
+				if value == "missing" || value == "false" || value == "null" {
+					require.ErrorIs(t, e, service.ErrSupplierSupplyUnavailable)
+				} else {
+					// Malformed JSON field types may be rejected by typed resource
+					// decoding before the SQL eligibility check. Either path must
+					// refuse StartSupply without mutating the resource.
+					require.Error(t, e)
+				}
+				reconcile()
+				check(false, 1)
+			})
+		}
+	}
+	// Pre-migration snapshots can have recent stamps and healthy quota, but no
+	// identity proof. Re-probing with both flags restores the existing binding.
+	_, err = db.Exec(`UPDATE supplier_resources SET usage=usage-'phone_verified'-'email_matched'`)
+	require.NoError(t, err)
+	assertExecution(false)
+	reconcile()
+	check(false, 1)
+	verify()
+	reconcile()
+	check(true, 1)
+	assertExecution(true)
+	var preservedAccount int64
+	require.NoError(t, db.QueryRow(`SELECT account_id FROM supplier_account_bindings`).Scan(&preservedAccount))
+	require.Equal(t, account, preservedAccount)
 	for _, tc := range []struct{ name, invalidate, restore string }{
 		{"authorization expiry", `UPDATE supplier_resources SET authorization_version=authorization_version+1,authorization_expires_at=CURRENT_TIMESTAMP+INTERVAL '1 microsecond'`, `UPDATE supplier_resources SET authorization_version=authorization_version+1,authorization_expires_at=token_expires_at`},
 		{"supplier pause", `UPDATE supplier_resources SET supply_enabled=FALSE`, `UPDATE supplier_resources SET supply_enabled=TRUE`},
@@ -213,7 +264,7 @@ func TestSupplierAdmissionPostgres(t *testing.T) {
 		{"disabled owner", `UPDATE users SET status='disabled'`, `UPDATE users SET status='active'`},
 		{"disabled policy", `UPDATE settings SET value=jsonb_set(value::jsonb,'{auto_admission}','false')::text`, `UPDATE settings SET value=jsonb_set(value::jsonb,'{auto_admission}','true')::text`},
 		{"invalid group", `UPDATE groups SET platform='gemini' WHERE id=2`, `UPDATE groups SET platform='composite' WHERE id=2`},
-		{"rotated unverified", `UPDATE supplier_resources SET credential_version=credential_version+1`, `UPDATE supplier_resources SET probe_state='fresh',usage=jsonb_build_object('rate_limit',jsonb_build_object('allowed',true,'limit_reached',false,'primary_window',jsonb_build_object('used_percent',10,'limit_window_seconds',18000,'reset_at',extract(epoch FROM CURRENT_TIMESTAMP+INTERVAL '1 hour')::bigint),'secondary_window',jsonb_build_object('used_percent',20,'limit_window_seconds',604800,'reset_at',extract(epoch FROM CURRENT_TIMESTAMP+INTERVAL '1 day')::bigint))),last_probe_at=CURRENT_TIMESTAMP,last_usage_at=CURRENT_TIMESTAMP`},
+		{"rotated unverified", `UPDATE supplier_resources SET credential_version=credential_version+1`, `UPDATE supplier_resources SET probe_state='fresh',usage=jsonb_build_object('phone_verified',true,'email_matched',true,'rate_limit',jsonb_build_object('allowed',true,'limit_reached',false,'primary_window',jsonb_build_object('used_percent',10,'limit_window_seconds',18000,'reset_at',extract(epoch FROM CURRENT_TIMESTAMP+INTERVAL '1 hour')::bigint),'secondary_window',jsonb_build_object('used_percent',20,'limit_window_seconds',604800,'reset_at',extract(epoch FROM CURRENT_TIMESTAMP+INTERVAL '1 day')::bigint))),last_probe_at=CURRENT_TIMESTAMP,last_usage_at=CURRENT_TIMESTAMP`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, e := db.Exec(tc.disable)

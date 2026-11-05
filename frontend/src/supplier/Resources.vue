@@ -107,7 +107,7 @@ function syncState(state: string) {
   return t(`supplier.${states[state] || 'unknown'}`)
 }
 function probeError(code: string) {
-  const reasons: Record<string, string> = { expired: 'syncExpired', unauthorized: 'syncUnauthorized', forbidden: 'syncForbidden', rate_limited: 'syncRateLimited', upstream_unavailable: 'syncUnavailable', vault_unavailable: 'importUnconfigured' }
+  const reasons: Record<string, string> = { phone_verification_required: 'phoneVerificationRequired', identity_email_mismatch: 'identityEmailMismatch', identity_unknown: 'identityUnknown', expired: 'syncExpired', unauthorized: 'syncUnauthorized', forbidden: 'syncForbidden', rate_limited: 'syncRateLimited', upstream_unavailable: 'syncUnavailable', vault_unavailable: 'importUnconfigured' }
   return t(`supplier.${reasons[code] || 'syncFailedSafe'}`)
 }
 function updateAuthorization(resource: SupplierResource) {
@@ -136,6 +136,7 @@ function availabilityReason(reason: string) {
     admin_disabled: 'adminDisabledNotice', authorization_required: 'authorizationRequired',
     authorization_expired: 'authorizationRequired', supply_paused: 'supplyPaused',
     disconnected: 'disconnected', reauthorization_required: 'syncReauthorize',
+    phone_verification_required: 'phoneVerificationRequired', identity_email_mismatch: 'identityEmailMismatch', identity_unknown: 'identityUnknown',
     verification_required: 'verificationRequired', quota_unknown: 'quotaUnknown',
     quota_exhausted: 'quotaExhausted', quota_stale: 'quotaStale', unavailable: 'availabilityPending'
   }
