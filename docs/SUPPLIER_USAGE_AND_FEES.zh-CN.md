@@ -207,3 +207,12 @@ session完整结构精简前端13测试、codexsession包测试及typecheck通�
 - 最终首次复用逻辑回归：service0.355s、repository含实际PG5.129s通过。前端88测试、ESLint/类型检查已通过，发布双前端与server/migrate重新构建中。
 - STS已核对专用integration-deployer与账号250088785444；备份`/var/lib/sub2api-release-backups/identity-20261105`。部署工具14项离线测试通过0.036s。发布工作区`/tmp/sub2api-release-identity-20261105-lBViEf`。
 - 计划只读线上验证已有未手机认证资源显示phone_verification_required且不可调度；保留原资源/收入，不触发模型生成。实际迁移/镜像/提交结果随后追加。
+
+### 首次身份验证上线验收完成
+
+- 实现提交`62d74e8d4`已推送origin/feat/modular-upstream-adapters。最终server/migrate构建通过；server SHA256=`e4d9eee33b9d6662f4b6520169dd9cf911a89155868be35c061945fb06b45c5b`，migrate SHA256=`1f3f27923fd13acb4da3499a55dc365cf6358df83112e17bb93e105bc8cef5b9`。
+- 发布双前端类型检查与consumer/supplier构建通过。专用migrator确认唯一待应用260后执行成功，manifest只读检查及runtime严格身份函数false/true验收通过。
+- 最终本机镜像`sub2api-cloud@sha256:0a989fb17622ee00ad21710a1cb889b742f56f90c2051b341b54373ed75c6d6a`已切换四角色，全部healthy；未推ECR、未改DNS、未新增基础设施。
+- 线上只读/me探测确认既有未手机认证资源返回phone_verification_required，availability同码且不可调度；DB绑定Account disabled/schedulable=false/account_groups=0。既有总dispatch仍1，没有本轮新生成。资源/历史收入不删除，重试状态允许完成官方手机验证后自动重新检查。
+- 最终鉴权/owner统计隔离smoke通过；真实HTTPS/SNI/证书及已发布index逐字节匹配通过，admin/supplier入口6/2个资产均200。原group43/customer_charge/100bps策略保留。
+- 同凭据成功后的quota-only路径与更新凭据重查由合成HTTP集成测试覆盖；未将已认证account.test导入线上，也未做真实生成验证。发布结果记录与脚本保存在独立临时release目录，不含可用凭据。
